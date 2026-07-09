@@ -1,0 +1,22 @@
+{
+  "mode": "prompt_json",
+  "backend": "fastapi",
+  "llm_source": "fastapi",
+  "raw_text": "{\"content\":\"\",\"tool_calls\":[{\"id\":\"call_001\",\"name\":\"file_reader\",\"args\":{\"path\":\"docs/agent_intro.txt\",\"max_chars\":null}}]}\n",
+  "parsed_candidate": {
+    "content": "",
+    "tool_calls": [
+      {
+        "id": "call_001",
+        "name": "file_reader",
+        "args": {
+          "path": "docs/agent_intro.txt",
+          "max_chars": null
+        }
+      }
+    ]
+  },
+  "status": "success",
+  "error": null,
+  "generated_at": "2026-07-10T00:24:23+08:00"
+}

@@ -4,6 +4,8 @@ import argparse
 import json
 import re
 import sys
+import urllib.error
+import urllib.request
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -24,6 +26,48 @@ def _load_model_config(model_config: str | Path) -> tuple[Path, dict]:
     if not isinstance(config, dict):
         raise ValueError("model.yaml must contain an object")
     return path, config
+
+
+def _llm_source(config: dict) -> str:
+    runtime = config.get("runtime", {})
+    source = runtime.get("llm_source", "local") if isinstance(runtime, dict) else "local"
+    if source in {"local", "transformers"}:
+        return "local"
+    if source in {"fastapi", "api"}:
+        return "fastapi"
+    raise ValueError("runtime.llm_source must be local or fastapi")
+
+
+def _generation_options(config: dict) -> dict:
+    generation_config = config.get("generation", {})
+    if not isinstance(generation_config, dict):
+        generation_config = {}
+    return {
+        "max_new_tokens": int(generation_config.get("max_new_tokens", 1024)),
+        "do_sample": bool(generation_config.get("do_sample", False)),
+    }
+
+
+def _fastapi_config(config: dict) -> dict:
+    api_config = config.get("fastapi", {})
+    if not isinstance(api_config, dict):
+        raise ValueError("fastapi config must be an object")
+    base_url = api_config.get("base_url")
+    if not isinstance(base_url, str) or not base_url.strip():
+        raise ValueError("fastapi.base_url is required when runtime.llm_source=fastapi")
+    generate_path = api_config.get("generate_path", "/generate")
+    if not isinstance(generate_path, str) or not generate_path.startswith("/"):
+        raise ValueError("fastapi.generate_path must start with /")
+    timeout = float(api_config.get("timeout_seconds", 600))
+    if timeout <= 0:
+        raise ValueError("fastapi.timeout_seconds must be positive")
+    return {
+        "base_url": base_url.rstrip("/"),
+        "generate_path": generate_path,
+        "timeout_seconds": timeout,
+        "api_key": api_config.get("api_key"),
+        "model": api_config.get("model"),
+    }
 
 
 def _artifact_paths(artifact_dir: str | Path, stem: str | None) -> tuple[Path, Path, Path]:
@@ -305,7 +349,6 @@ def _prompt_json_generate(config_path: Path, config: dict, messages: list[dict],
     except ImportError as exc:
         raise RuntimeError("prompt_json mode requires requirements-llm.txt") from exc
     model_config = config.get("model", {})
-    generation_config = config.get("generation", {})
     model_setting = model_config.get("model_name_or_path")
     tokenizer_setting = model_config.get("tokenizer_name_or_path", model_setting)
     if not isinstance(model_setting, str) or not isinstance(tokenizer_setting, str):
@@ -340,14 +383,44 @@ def _prompt_json_generate(config_path: Path, config: dict, messages: list[dict],
     device = next(model.parameters()).device
     inputs = inputs.to(device)
     input_length = inputs["input_ids"].shape[-1]
-    options = {
-        "max_new_tokens": int(generation_config.get("max_new_tokens", 1024)),
-        "do_sample": bool(generation_config.get("do_sample", False)),
-    }
+    options = _generation_options(config)
     with torch.no_grad():
         generated = model.generate(**inputs, **options)
     new_tokens = generated[0][input_length:]
     return tokenizer.decode(new_tokens, skip_special_tokens=True)
+
+
+def _fastapi_prompt_json_generate(config_path: Path, config: dict, messages: list[dict], tools_schema: list[dict]) -> str:
+    del config_path
+    api_config = _fastapi_config(config)
+    prompt_messages = _build_prompt_messages(messages, tools_schema)
+    payload = {
+        "messages": prompt_messages,
+        "generation": _generation_options(config),
+    }
+    if isinstance(api_config["model"], str) and api_config["model"].strip():
+        payload["model"] = api_config["model"]
+    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    if isinstance(api_config["api_key"], str) and api_config["api_key"]:
+        headers["Authorization"] = f"Bearer {api_config['api_key']}"
+    request = urllib.request.Request(
+        url=api_config["base_url"] + api_config["generate_path"],
+        data=data,
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=api_config["timeout_seconds"]) as response:
+            response_data = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"FastAPI LLM request failed with HTTP {exc.code}: {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"FastAPI LLM request failed: {exc}") from exc
+    if not isinstance(response_data, dict) or not isinstance(response_data.get("raw_text"), str):
+        raise ValueError("FastAPI LLM response must contain raw_text string")
+    return response_data["raw_text"]
 
 
 def generate_ai_message(
@@ -363,7 +436,8 @@ def generate_ai_message(
     if not isinstance(tools_schema, list):
         raise ValueError("tools_schema must be an array")
     generated_at = now_iso()
-    backend = "mock" if mode == "mock" else config.get("model", {}).get("backend", "transformers")
+    source = "mock" if mode == "mock" else _llm_source(config)
+    backend = "mock" if mode == "mock" else source
     if mode == "mock":
         ai_message = _mock_generate(messages)
         raw_text = json.dumps({"content": ai_message["content"], "tool_calls": ai_message["tool_calls"]}, ensure_ascii=False)
@@ -371,7 +445,10 @@ def generate_ai_message(
         status = "success"
         error = None
     elif mode == "prompt_json":
-        raw_text = _prompt_json_generate(config_path, config, messages, tools_schema)
+        if source == "local":
+            raw_text = _prompt_json_generate(config_path, config, messages, tools_schema)
+        else:
+            raw_text = _fastapi_prompt_json_generate(config_path, config, messages, tools_schema)
         try:
             parsed_candidate, ai_message = _parse_model_output(raw_text)
             status = "success"
@@ -386,6 +463,7 @@ def generate_ai_message(
     raw_record = {
         "mode": mode,
         "backend": backend,
+        "llm_source": source,
         "raw_text": raw_text,
         "parsed_candidate": parsed_candidate,
         "status": status,
