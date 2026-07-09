@@ -1,0 +1,246 @@
+import { useMemo, useRef, useState } from 'react'
+import type { ChangeEvent, DragEvent, KeyboardEvent } from 'react'
+import './App.css'
+
+type Role = 'user' | 'assistant' | 'tool'
+
+type ChatMessage = {
+  id: number
+  role: Role
+  title: string
+  body: string
+  meta?: string
+}
+
+type Attachment = {
+  id: number
+  name: string
+  size: number
+}
+
+const histories = [
+  { title: '完整演示 / conv_001', meta: '3 轮 · file_reader' },
+  { title: '表格分析任务', meta: 'results.csv' },
+  { title: '工具检索测试', meta: 'docs/search' },
+  { title: '格式转换样例', meta: 'json 输出' },
+]
+
+const seedMessages: ChatMessage[] = [
+  {
+    id: 1,
+    role: 'assistant',
+    title: 'Agent',
+    body: '已连接到本地 Agent 框架。可以输入任务，或附加本地文档后发起分析。',
+    meta: 'ready',
+  },
+  {
+    id: 2,
+    role: 'tool',
+    title: '工具状态',
+    body: '可用工具：file_reader、local_file_search、calculator、table_analyzer、format_converter。',
+    meta: 'basic_tools',
+  },
+]
+
+function formatSize(size: number) {
+  if (size < 1024) return `${size} B`
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
+  return `${(size / 1024 / 1024).toFixed(1)} MB`
+}
+
+function App() {
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [messages, setMessages] = useState<ChatMessage[]>(seedMessages)
+  const [attachments, setAttachments] = useState<Attachment[]>([])
+  const [draft, setDraft] = useState('')
+  const [dragActive, setDragActive] = useState(false)
+  const inputRef = useRef<HTMLTextAreaElement | null>(null)
+  const fileRef = useRef<HTMLInputElement | null>(null)
+
+  const hasDraft = draft.trim().length > 0 || attachments.length > 0
+
+  const activeMeta = useMemo(() => `${messages.length} 条消息`, [messages])
+
+  function addFiles(files: FileList | File[]) {
+    const next = Array.from(files).map((file, index) => ({
+      id: Date.now() + index,
+      name: file.name,
+      size: file.size,
+    }))
+    setAttachments((current) => [...current, ...next])
+  }
+
+  function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
+    if (event.target.files) addFiles(event.target.files)
+    event.target.value = ''
+  }
+
+  function handleDrop(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault()
+    setDragActive(false)
+    if (event.dataTransfer.files.length) addFiles(event.dataTransfer.files)
+  }
+
+  function handleSend() {
+    const text = draft.trim()
+    if (!text && attachments.length === 0) return
+    const now = Date.now()
+    const fileText =
+      attachments.length > 0
+        ? `\n\n附件：${attachments.map((file) => file.name).join('、')}`
+        : ''
+    setMessages((current) => [
+      ...current,
+      {
+        id: now,
+        role: 'user',
+        title: '我',
+        body: text || '处理这些附件',
+        meta: attachments.length > 0 ? `${attachments.length} 个附件` : 'manual',
+      },
+      {
+        id: now + 1,
+        role: 'assistant',
+        title: 'Agent',
+        body: `收到。接入后这里会展示 B1 返回的 final_answer，并同步展开工具调用过程。${fileText}`,
+        meta: 'preview',
+      },
+    ])
+    setDraft('')
+    setAttachments([])
+    requestAnimationFrame(() => {
+      if (inputRef.current) inputRef.current.style.height = '24px'
+    })
+  }
+
+  function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault()
+      handleSend()
+    }
+  }
+
+  function resizeInput() {
+    const node = inputRef.current
+    if (!node) return
+    node.style.height = '24px'
+    node.style.height = `${Math.min(node.scrollHeight, 180)}px`
+  }
+
+  return (
+    <main
+      className={`app-shell ${dragActive ? 'is-dragging' : ''}`}
+      onDragOver={(event) => {
+        event.preventDefault()
+        setDragActive(true)
+      }}
+      onDragLeave={(event) => {
+        if (event.currentTarget === event.target) setDragActive(false)
+      }}
+      onDrop={handleDrop}
+    >
+      <aside className={`sidebar ${sidebarCollapsed ? 'collapsed' : ''}`}>
+        <div className="sidebar-top">
+          <button
+            className="icon-button"
+            type="button"
+            aria-label="折叠侧栏"
+            onClick={() => setSidebarCollapsed((value) => !value)}
+          >
+            <span aria-hidden="true">☰</span>
+          </button>
+          <div className="brand">
+            <strong>Agent</strong>
+            <span>{activeMeta}</span>
+          </div>
+        </div>
+
+        <button className="new-chat" type="button">
+          <span aria-hidden="true">＋</span>
+          <span>新建任务</span>
+        </button>
+
+        <div className="history-list" aria-label="对话记录">
+          {histories.map((item, index) => (
+            <button className={`history-item ${index === 0 ? 'active' : ''}`} key={item.title} type="button">
+              <span className="history-dot" aria-hidden="true" />
+              <span className="history-copy">
+                <strong>{item.title}</strong>
+                <small>{item.meta}</small>
+              </span>
+            </button>
+          ))}
+        </div>
+      </aside>
+
+      <section className="workspace">
+        <section className="conversation" aria-label="消息列表">
+          {messages.map((message) => (
+            <article className={`message ${message.role}`} key={message.id}>
+              <div className="message-avatar" aria-hidden="true">
+                {message.role === 'user' ? '我' : message.role === 'tool' ? 'T' : 'A'}
+              </div>
+              <div className="message-body">
+                <div className="message-title">
+                  <strong>{message.title}</strong>
+                  {message.meta && <span>{message.meta}</span>}
+                </div>
+                <p>{message.body}</p>
+              </div>
+            </article>
+          ))}
+        </section>
+
+        <section className="composer-wrap">
+          {dragActive && <div className="drop-hint">释放文件</div>}
+
+          <div className="composer">
+            {attachments.length > 0 && (
+              <div className="attachment-row">
+                {attachments.map((file) => (
+                  <div className="attachment-chip" key={file.id}>
+                    <span className="file-icon" aria-hidden="true">▣</span>
+                    <span>
+                      <strong>{file.name}</strong>
+                      <small>{formatSize(file.size)}</small>
+                    </span>
+                    <button
+                      type="button"
+                      aria-label={`移除 ${file.name}`}
+                      onClick={() => setAttachments((current) => current.filter((item) => item.id !== file.id))}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="composer-main">
+              <button className="tool-button" type="button" aria-label="添加文件" onClick={() => fileRef.current?.click()}>
+                <span aria-hidden="true">＋</span>
+              </button>
+              <textarea
+                ref={inputRef}
+                value={draft}
+                rows={1}
+                placeholder="输入任务..."
+                onChange={(event) => {
+                  setDraft(event.target.value)
+                  resizeInput()
+                }}
+                onKeyDown={handleKeyDown}
+              />
+              <button className="send-button" type="button" disabled={!hasDraft} aria-label="发送" onClick={handleSend}>
+                <span aria-hidden="true">↑</span>
+              </button>
+              <input ref={fileRef} type="file" multiple hidden onChange={handleFileChange} />
+            </div>
+          </div>
+        </section>
+      </section>
+    </main>
+  )
+}
+
+export default App
