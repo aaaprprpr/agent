@@ -1,0 +1,16 @@
+单开一个终端连ssh
+ssh -N -L 18012:127.0.0.1:8012 root@202.199.13.141 -p 20115
+
+KssAT6iTwb
+
+
+用服务器fastapi的时候去config，model.yaml里面调source
+
+
+
+启动全部
+python code/run_full_demo.py --input data/runtime_input.json --tools_config configs/tools.yaml --memory_config configs/memory.yaml --model_config configs/model.yaml --llm_mode prompt_json --outdir outputs/full_demo
+
+
+
+
