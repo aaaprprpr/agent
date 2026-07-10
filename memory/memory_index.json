@@ -228,5 +228,15 @@
     "conversation_id": "conv_web_20260710_150056_808",
     "created_at": "2026-07-10T15:00:57+08:00",
     "updated_at": "2026-07-10T15:01:24+08:00"
+  },
+  "mem_conversation_conv_web_20260710_153307_832": {
+    "memory_id": "mem_conversation_conv_web_20260710_153307_832",
+    "memory_type": "conversation",
+    "title": "Conversation conv_web_20260710_153307_832",
+    "summary": "听到你这么说，我很关心你。如果你愿意的话，可以和我聊聊发生了什么吗？有时候把心里的话说出来会感觉好一些。如果你需要帮助或只是想找人说话，我都在这里。",
+    "path": "conversations/conv_web_20260710_153307_832.md",
+    "conversation_id": "conv_web_20260710_153307_832",
+    "created_at": "2026-07-10T15:33:09+08:00",
+    "updated_at": "2026-07-10T15:33:25+08:00"
   }
 }

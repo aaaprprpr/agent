@@ -11,4 +11,11 @@ memory:
     field_weights:
       title: 5
       summary: 3
+      final_answer: 4
+      user_messages: 4
       content: 1
+    auto_select:
+      enabled: true
+      memory_types: [global, conversation]
+      min_score: 2
+      max_candidates: 50
