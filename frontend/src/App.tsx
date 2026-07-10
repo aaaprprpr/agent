@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent, DragEvent, KeyboardEvent } from 'react'
 import './App.css'
 
@@ -127,6 +127,10 @@ function App() {
     node.style.height = `${Math.min(node.scrollHeight, 180)}px`
   }
 
+  useLayoutEffect(() => {
+    resizeInput()
+  }, [draft])
+
   return (
     <main
       className={`app-shell ${dragActive ? 'is-dragging' : ''}`}
@@ -224,10 +228,11 @@ function App() {
                 ref={inputRef}
                 value={draft}
                 rows={1}
+                autoComplete="off"
+                spellCheck={false}
                 placeholder="输入任务..."
                 onChange={(event) => {
                   setDraft(event.target.value)
-                  resizeInput()
                 }}
                 onKeyDown={handleKeyDown}
               />

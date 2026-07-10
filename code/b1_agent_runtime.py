@@ -76,7 +76,7 @@ def generate_ai_message(*args, **kwargs) -> dict:
 
     return b4_generate_ai_message(*args, **kwargs)
 
-
+# just for inspection
 def _load_fixture_inputs(input_file: Path, runtime: dict) -> dict:
     fixtures = runtime["fixtures"]
     selected_memory = read_json(resolve_from_file(fixtures["selected_memory_path"], input_file))

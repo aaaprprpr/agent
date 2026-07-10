@@ -295,15 +295,16 @@
 }
 
 .composer-main {
-  display: flex;
-  align-items: flex-end;
-  gap: 10px;
-  padding: 10px;
+  position: relative;
+  min-height: 50px;
+  padding: 13px 54px 13px 54px;
 }
 
 .composer-main textarea {
+  display: block;
   min-width: 0;
   width: 100%;
+  min-height: 24px;
   height: 24px;
   max-height: 180px;
   border: 0;
@@ -311,11 +312,11 @@
   resize: none;
   overflow: hidden;
   scrollbar-width: none;
-  padding: 6px 2px;
+  padding: 0;
   background: transparent;
   color: #222;
   font: inherit;
-  line-height: 1.5;
+  line-height: 24px;
 }
 
 .composer-main textarea::-webkit-scrollbar {
@@ -327,9 +328,18 @@
 }
 
 .send-button {
+  position: absolute;
+  right: 10px;
+  bottom: 7px;
   border-color: #222;
   background: #222;
   color: #fff;
+}
+
+.tool-button {
+  position: absolute;
+  left: 10px;
+  bottom: 7px;
 }
 
 .send-button:hover:not(:disabled) {
