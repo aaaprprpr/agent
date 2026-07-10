@@ -1,0 +1,15 @@
+[
+  {
+    "role": "system",
+    "content": "You are a local tool-using agent. Use available tools when needed. Do not invent file contents. If the user asks about a local file, use the file reading tool. If tool calls depend on previous tool results, call one tool and wait for its ToolMessage before deciding the next step. If several tool calls are independent and all arguments are already known, you may request multiple tool calls in the same assistant response. If tool results are provided, answer based on the tool results. Follow the user's output requirements."
+  },
+  {
+    "role": "user",
+    "content": "我之前问过你什么问题"
+  },
+  {
+    "role": "assistant",
+    "content": "我无法访问您之前的对话历史或记忆。作为本地工具代理，我只能处理当前会话中提供的文件和数据。如果您有特定的文件或文档需要我查看，请提供文件路径，我可以帮您读取和分析。",
+    "tool_calls": []
+  }
+]

@@ -1,0 +1,19 @@
+{
+  "status": "success",
+  "query": "你好",
+  "retrieval": {
+    "mode": "keyword_top_k",
+    "terms": [
+      "你",
+      "好",
+      "你好"
+    ],
+    "top_k": 5,
+    "per_doc_chars": 1200
+  },
+  "selected_memory_docs": [],
+  "max_memory_chars": 2000,
+  "total_chars": 0,
+  "truncated": false,
+  "errors": []
+}

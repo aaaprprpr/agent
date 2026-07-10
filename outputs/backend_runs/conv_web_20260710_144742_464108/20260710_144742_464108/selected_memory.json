@@ -1,0 +1,41 @@
+{
+  "status": "success",
+  "query": "帮我阅读 docs/agent_intro.txt，总结三条中文要点。",
+  "retrieval": {
+    "mode": "keyword_top_k",
+    "terms": [
+      "帮",
+      "我",
+      "阅",
+      "读",
+      "帮我",
+      "我阅",
+      "阅读",
+      "docs",
+      "agent_intro",
+      "txt",
+      "总",
+      "结",
+      "三",
+      "条",
+      "中",
+      "文",
+      "要",
+      "点",
+      "总结",
+      "结三",
+      "三条",
+      "条中",
+      "中文",
+      "文要",
+      "要点"
+    ],
+    "top_k": 5,
+    "per_doc_chars": 1200
+  },
+  "selected_memory_docs": [],
+  "max_memory_chars": 2000,
+  "total_chars": 0,
+  "truncated": false,
+  "errors": []
+}

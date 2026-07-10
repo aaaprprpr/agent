@@ -1,0 +1,13 @@
+{
+  "mode": "prompt_json",
+  "backend": "fastapi",
+  "llm_source": "fastapi",
+  "raw_text": "{\"content\":\"我是你的本地工具代理助手。我可以帮你读取本地文件、搜索文件内容、分析表格数据以及进行简单的算术计算。有什么需要我帮忙的吗？\",\"tool_calls\":[]}\n",
+  "parsed_candidate": {
+    "content": "我是你的本地工具代理助手。我可以帮你读取本地文件、搜索文件内容、分析表格数据以及进行简单的算术计算。有什么需要我帮忙的吗？",
+    "tool_calls": []
+  },
+  "status": "success",
+  "error": null,
+  "generated_at": "2026-07-10T14:32:01+08:00"
+}

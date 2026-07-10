@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import type { ChangeEvent, DragEvent, KeyboardEvent } from 'react'
 import './App.css'
 
@@ -7,9 +7,7 @@ type Role = 'user' | 'assistant' | 'tool'
 type ChatMessage = {
   id: number
   role: Role
-  title: string
   body: string
-  meta?: string
   status?: 'pending' | 'error'
 }
 
@@ -20,28 +18,13 @@ type Attachment = {
 }
 
 const histories = [
-  { title: '完整演示 / conv_001', meta: '3 轮 · file_reader' },
-  { title: '表格分析任务', meta: 'results.csv' },
-  { title: '工具检索测试', meta: 'docs/search' },
-  { title: '格式转换样例', meta: 'json 输出' },
+  { title: '完整演示 / conv_001' },
+  { title: '表格分析任务' },
+  { title: '工具检索测试' },
+  { title: '格式转换样例' },
 ]
 
-const seedMessages: ChatMessage[] = [
-  {
-    id: 1,
-    role: 'assistant',
-    title: 'Agent',
-    body: '已连接到本地 Agent 框架。可以输入任务，或附加本地文档后发起分析。',
-    meta: 'ready',
-  },
-  {
-    id: 2,
-    role: 'tool',
-    title: '工具状态',
-    body: '可用工具：file_reader、local_file_search、calculator、table_analyzer、format_converter。',
-    meta: 'basic_tools',
-  },
-]
+const seedMessages: ChatMessage[] = []
 
 const API_BASE = import.meta.env.VITE_AGENT_API_BASE ?? 'http://127.0.0.1:8020'
 
@@ -49,6 +32,18 @@ function formatSize(size: number) {
   if (size < 1024) return `${size} B`
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
   return `${(size / 1024 / 1024).toFixed(1)} MB`
+}
+
+function LoadingBubble() {
+  return (
+    <span className="loading-bubble" aria-label="等待回复">
+      <span className="loading-dots" aria-hidden="true">
+        <span />
+        <span />
+        <span />
+      </span>
+    </span>
+  )
 }
 
 function App() {
@@ -62,8 +57,6 @@ function App() {
   const fileRef = useRef<HTMLInputElement | null>(null)
 
   const canSend = draft.trim().length > 0 && !isRunning
-
-  const activeMeta = useMemo(() => `${messages.length} 条消息`, [messages])
 
   function addFiles(files: FileList | File[]) {
     const next = Array.from(files).map((file, index) => ({
@@ -90,22 +83,17 @@ function App() {
     if (!text || isRunning) return
     const now = Date.now()
     const pendingId = now + 1
-    const attachmentMeta = attachments.length > 0 ? `${attachments.length} 个附件待接入` : 'web'
     setMessages((current) => [
       ...current,
       {
         id: now,
         role: 'user',
-        title: '我',
         body: text,
-        meta: attachmentMeta,
       },
       {
         id: pendingId,
         role: 'assistant',
-        title: 'Agent',
-        body: '正在运行 Agent...',
-        meta: 'running',
+        body: '...',
         status: 'pending',
       },
     ])
@@ -126,19 +114,12 @@ function App() {
         const detail = payload?.detail ?? `HTTP ${response.status}`
         throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
       }
-      const trace = payload?.trace ?? {}
-      const metaParts = [
-        payload?.status ?? 'success',
-        trace.llm_call_count != null ? `${trace.llm_call_count} 次模型` : '',
-        trace.tool_rounds_used != null ? `${trace.tool_rounds_used} 轮工具` : '',
-      ].filter(Boolean)
       setMessages((current) =>
         current.map((message) =>
           message.id === pendingId
             ? {
                 ...message,
                 body: payload?.final_answer || 'Agent 没有返回内容。',
-                meta: metaParts.join(' · '),
                 status: undefined,
               }
             : message,
@@ -152,7 +133,6 @@ function App() {
             ? {
                 ...item,
                 body: `请求失败：${message}`,
-                meta: 'error',
                 status: 'error',
               }
             : item,
@@ -205,7 +185,6 @@ function App() {
           </button>
           <div className="brand">
             <strong>Agent</strong>
-            <span>{activeMeta}</span>
           </div>
         </div>
 
@@ -225,10 +204,8 @@ function App() {
         <div className="history-list" aria-label="对话记录">
           {histories.map((item, index) => (
             <button className={`history-item ${index === 0 ? 'active' : ''}`} key={item.title} type="button">
-              <span className="history-dot" aria-hidden="true" />
               <span className="history-copy">
                 <strong>{item.title}</strong>
-                <small>{item.meta}</small>
               </span>
             </button>
           ))}
@@ -239,15 +216,8 @@ function App() {
         <section className="conversation" aria-label="消息列表">
           {messages.map((message) => (
             <article className={`message ${message.role} ${message.status ?? ''}`} key={message.id}>
-              <div className="message-avatar" aria-hidden="true">
-                {message.role === 'user' ? '我' : message.role === 'tool' ? 'T' : 'A'}
-              </div>
               <div className="message-body">
-                <div className="message-title">
-                  <strong>{message.title}</strong>
-                  {message.meta && <span>{message.meta}</span>}
-                </div>
-                <p>{message.body}</p>
+                {message.status === 'pending' ? <LoadingBubble /> : <p>{message.body}</p>}
               </div>
             </article>
           ))}
