@@ -14,7 +14,7 @@ from common.conversation_store import (
     list_messages,
     list_tool_steps,
     record_tool_step,
-    search_messages,
+    update_message,
     upsert_conversation,
 )
 from common.io_utils import append_jsonl, read_json, read_text, read_yaml, write_json, write_text
@@ -145,6 +145,22 @@ def append_conversation_message(
         run_id=run_id,
         message_order=message_order,
         is_trivial=is_trivial,
+        token_count=token_count,
+        metadata=metadata,
+    )
+
+
+def update_conversation_message(
+    config_path: str,
+    message_id: str,
+    content: str | None = None,
+    token_count: int | None = None,
+    metadata: dict | None = None,
+) -> dict:
+    return update_message(
+        _conversation_db_path(config_path),
+        message_id,
+        content=content,
         token_count=token_count,
         metadata=metadata,
     )

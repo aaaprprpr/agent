@@ -29,6 +29,15 @@ def _json_dumps(value: Any) -> str | None:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
+def _json_loads(value: str | None) -> Any:
+    if not value:
+        return None
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return None
+
+
 def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex}"
 
@@ -322,6 +331,50 @@ def append_message(
     }
 
 
+def update_message(
+    db_path: str | Path,
+    message_id: str,
+    *,
+    content: str | None = None,
+    token_count: int | None = None,
+    metadata: dict | None = None,
+) -> dict:
+    if content is not None and (not isinstance(content, str) or not content):
+        raise ValueError("content must be a non-empty string")
+    init_store(db_path)
+    now = now_iso()
+    assignments = []
+    values: list[Any] = []
+    if content is not None:
+        assignments.append("content = ?")
+        values.append(content)
+    if token_count is not None:
+        assignments.append("token_count = ?")
+        values.append(token_count)
+    if metadata is not None:
+        assignments.append("metadata_json = ?")
+        values.append(_json_dumps(metadata))
+    if not assignments:
+        raise ValueError("update_message requires at least one field to update")
+    values.append(message_id)
+    with _connect(db_path) as connection:
+        row = connection.execute(
+            "SELECT conversation_id FROM conversation_messages WHERE id = ?",
+            (message_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError("message_id does not exist")
+        connection.execute(
+            f"UPDATE conversation_messages SET {', '.join(assignments)} WHERE id = ?",
+            values,
+        )
+        connection.execute(
+            "UPDATE conversations SET updated_at = ?, last_message_at = ? WHERE id = ?",
+            (now, now, row["conversation_id"]),
+        )
+    return {"status": "success", "message_id": message_id, "updated_at": now}
+
+
 def record_tool_step(
     db_path: str | Path,
     conversation_id: str,
@@ -411,7 +464,12 @@ def list_messages(db_path: str | Path, conversation_id: str) -> list[dict]:
             """,
             (conversation_id,),
         ).fetchall()
-    return [dict(row) for row in rows]
+    result = []
+    for row in rows:
+        item = dict(row)
+        item["metadata"] = _json_loads(item.get("metadata_json"))
+        result.append(item)
+    return result
 
 
 def search_messages(
