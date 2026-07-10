@@ -131,6 +131,14 @@ def _read_json_file(path_text: str) -> dict | list | None:
         return json.load(file)
 
 
+def _write_json_file(path_text: str, payload: dict | list) -> None:
+    path = Path(path_text)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="\n") as file:
+        json.dump(payload, file, ensure_ascii=False, indent=2)
+        file.write("\n")
+
+
 def _short_title(text: str, limit: int = 18) -> str:
     compact = re.sub(r"\s+", " ", text).strip()
     if not compact:
@@ -240,9 +248,10 @@ def _message_ui_status(message: dict) -> str | None:
 
 
 def _build_runtime_payload(request: RunRequest, conversation_id: str, user_input: str) -> dict:
-    # The SQLite conversation store supplies short-term context. B5 snapshot
-    # memory remains available, but the minimal web chat path avoids duplicating it.
-    selected_memory_ids = []
+    # Web chat uses SQLite as the primary memory store. Legacy markdown memory
+    # remains available through selected_memory_ids/use_global_memory, but B1
+    # must not save markdown snapshots for normal web turns.
+    selected_memory_ids = request.selected_memory_ids
     use_global_memory = request.use_global_memory
     return {
         "conversation_id": conversation_id,
@@ -252,7 +261,7 @@ def _build_runtime_payload(request: RunRequest, conversation_id: str, user_input
         "use_global_memory": use_global_memory,
         "toolset": request.toolset,
         "max_turns": request.max_turns,
-        "save_memory": request.save_memory,
+        "save_memory": "none",
     }
 
 
@@ -357,8 +366,7 @@ def _call_agent(request: RunRequest) -> RunResponse:
         is_trivial=_is_trivial_conversation(history, raw_user_input),
         trivial_reason="only trivial user messages" if _is_trivial_conversation(history, raw_user_input) else None,
     )
-    contextual_input = _contextual_user_input(history, raw_user_input)
-    runtime_payload = _build_runtime_payload(request, conversation_id, contextual_input)
+    runtime_payload = _build_runtime_payload(request, conversation_id, raw_user_input)
     run_id = _now_stamp()
     user_message_id, assistant_message_id = _start_run_messages(
         conversation_id,
@@ -388,6 +396,15 @@ def _call_agent(request: RunRequest) -> RunResponse:
         result,
         full_trace,
     )
+    full_trace["memory_save"] = {
+        "requested": "database",
+        "status": "success",
+        "conversation_id": conversation_id,
+        "user_message_id": user_message_id,
+        "assistant_message_id": assistant_message_id,
+        "storage": "sqlite",
+    }
+    _write_json_file(result["trace_path"], full_trace)
     return RunResponse(
         conversation_id=result["conversation_id"],
         user_message_id=user_message_id,
