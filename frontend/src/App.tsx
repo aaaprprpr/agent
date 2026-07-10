@@ -1,11 +1,11 @@
-import { useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { ChangeEvent, DragEvent, KeyboardEvent } from 'react'
 import './App.css'
 
 type Role = 'user' | 'assistant' | 'tool'
 
 type ChatMessage = {
-  id: number
+  id: number | string
   role: Role
   body: string
   status?: 'pending' | 'error'
@@ -22,6 +22,17 @@ type HistoryItem = {
   title: string
   messages: ChatMessage[]
   memoryReady: boolean
+}
+
+type BackendConversation = {
+  id: string
+  title: string
+}
+
+type BackendMessage = {
+  id: string
+  role: Role
+  content: string
 }
 
 const API_BASE = import.meta.env.VITE_AGENT_API_BASE ?? 'http://127.0.0.1:8020'
@@ -73,8 +84,12 @@ function App() {
   const [draft, setDraft] = useState('')
   const [dragActive, setDragActive] = useState(false)
   const [isRunning, setIsRunning] = useState(false)
+  const [isLoadingHistory, setIsLoadingHistory] = useState(false)
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
   const fileRef = useRef<HTMLInputElement | null>(null)
+  const conversationRef = useRef<HTMLElement | null>(null)
+  const stickToBottomRef = useRef(true)
+  const [showScrollBottom, setShowScrollBottom] = useState(false)
 
   const canSend = draft.trim().length > 0 && !isRunning
 
@@ -90,6 +105,76 @@ function App() {
           : item,
       ),
     )
+  }
+
+  function isConversationAtBottom() {
+    const node = conversationRef.current
+    if (!node) return true
+    return node.scrollHeight - node.scrollTop - node.clientHeight <= 80
+  }
+
+  function updateScrollButton() {
+    const node = conversationRef.current
+    if (!node) {
+      setShowScrollBottom(false)
+      return
+    }
+    const atBottom = isConversationAtBottom()
+    const canScroll = node.scrollHeight > node.clientHeight + 4
+    stickToBottomRef.current = atBottom
+    setShowScrollBottom(canScroll && !atBottom)
+  }
+
+  function scrollToBottom(behavior: ScrollBehavior = 'smooth') {
+    const node = conversationRef.current
+    if (!node) return
+    node.scrollTo({ top: node.scrollHeight, behavior })
+    stickToBottomRef.current = true
+    setShowScrollBottom(false)
+  }
+
+  async function loadConversationList() {
+    try {
+      const response = await fetch(`${API_BASE}/api/conversations`)
+      if (!response.ok) return
+      const payload = (await response.json()) as BackendConversation[]
+      setHistories((current) => {
+        const byId = new Map(current.map((item) => [item.id, item]))
+        return payload.map((item) => ({
+          id: item.id,
+          title: item.title,
+          messages: byId.get(item.id)?.messages ?? [],
+          memoryReady: true,
+        }))
+      })
+    } catch {
+      // History is optional for the UI; chat can still run without it.
+    }
+  }
+
+  async function loadConversation(conversationId: string) {
+    if (isRunning || isLoadingHistory) return
+    setIsLoadingHistory(true)
+    try {
+      const response = await fetch(`${API_BASE}/api/conversations/${conversationId}`)
+      if (!response.ok) return
+      const payload = (await response.json()) as { messages: BackendMessage[] }
+      const loadedMessages = payload.messages
+        .filter((message) => message.role === 'user' || message.role === 'assistant')
+        .map((message) => ({
+          id: message.id,
+          role: message.role,
+          body: message.content,
+        })) satisfies ChatMessage[]
+      stickToBottomRef.current = true
+      setCurrentConversationId(conversationId)
+      setMessages(loadedMessages)
+      setAttachments([])
+      setDraft('')
+      updateHistoryMessages(conversationId, loadedMessages, true)
+    } finally {
+      setIsLoadingHistory(false)
+    }
   }
 
   function addFiles(files: FileList | File[]) {
@@ -115,6 +200,7 @@ function App() {
   async function handleSend() {
     const text = draft.trim()
     if (!text || isRunning) return
+    stickToBottomRef.current = isConversationAtBottom()
     const conversationId = currentConversationId ?? createConversationId()
     const existingHistory = histories.find((item) => item.id === conversationId)
     const now = Date.now()
@@ -170,28 +256,30 @@ function App() {
         const detail = payload?.detail ?? `HTTP ${response.status}`
         throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
       }
+      stickToBottomRef.current = isConversationAtBottom()
       const finalMessages: ChatMessage[] = optimisticMessages.map((message): ChatMessage =>
-          message.id === pendingId
-            ? {
-                ...message,
-                body: payload?.final_answer || 'Agent 没有返回内容。',
-                status: undefined,
-              }
-            : message,
+        message.id === pendingId
+          ? {
+              ...message,
+              body: payload?.final_answer || 'Agent 没有返回内容。',
+              status: undefined,
+            }
+          : message,
       )
       const memorySaved = payload?.trace?.memory_save?.status === 'success'
       setMessages(finalMessages)
       updateHistoryMessages(conversationId, finalMessages, memorySaved || existingHistory?.memoryReady)
     } catch (error) {
+      stickToBottomRef.current = isConversationAtBottom()
       const message = error instanceof Error ? error.message : String(error)
       const failedMessages: ChatMessage[] = optimisticMessages.map((item): ChatMessage =>
-          item.id === pendingId
-            ? {
-                ...item,
-                body: `请求失败：${message}`,
-                status: 'error',
-              }
-            : item,
+        item.id === pendingId
+          ? {
+              ...item,
+              body: `请求失败：${message}`,
+              status: 'error',
+            }
+          : item,
       )
       setMessages(failedMessages)
       updateHistoryMessages(conversationId, failedMessages)
@@ -217,6 +305,18 @@ function App() {
   useLayoutEffect(() => {
     resizeInput()
   }, [draft])
+
+  useEffect(() => {
+    loadConversationList()
+  }, [])
+
+  useLayoutEffect(() => {
+    if (stickToBottomRef.current) {
+      scrollToBottom('auto')
+      return
+    }
+    updateScrollButton()
+  }, [messages])
 
   return (
     <main
@@ -249,6 +349,7 @@ function App() {
           className="new-chat"
           type="button"
           onClick={() => {
+            stickToBottomRef.current = true
             setMessages([])
             setCurrentConversationId(null)
             setAttachments([])
@@ -266,11 +367,7 @@ function App() {
               key={item.id}
               type="button"
               onClick={() => {
-                if (isRunning) return
-                setCurrentConversationId(item.id)
-                setMessages(item.messages)
-                setAttachments([])
-                setDraft('')
+                void loadConversation(item.id)
               }}
             >
               <span className="history-copy">
@@ -282,7 +379,7 @@ function App() {
       </aside>
 
       <section className="workspace">
-        <section className="conversation" aria-label="消息列表">
+        <section className="conversation" aria-label="消息列表" ref={conversationRef} onScroll={updateScrollButton}>
           {messages.map((message) => (
             <article className={`message ${message.role} ${message.status ?? ''}`} key={message.id}>
               <div className="message-body">
@@ -291,6 +388,17 @@ function App() {
             </article>
           ))}
         </section>
+
+        {showScrollBottom && (
+          <button
+            className="scroll-bottom-button"
+            type="button"
+            aria-label="跳到最新消息"
+            onClick={() => scrollToBottom()}
+          >
+            ↓
+          </button>
+        )}
 
         <section className="composer-wrap">
           {dragActive && <div className="drop-hint">释放文件</div>}

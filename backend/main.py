@@ -23,7 +23,9 @@ from b1_agent_runtime import run as run_agent_runtime  # noqa: E402
 from b5_memory import (  # noqa: E402
     append_conversation_message,
     init_conversation_db,
+    list_conversation_records,
     list_conversation_messages,
+    list_message_tool_steps,
     record_conversation_tool_step,
     upsert_conversation_record,
 )
@@ -59,6 +61,28 @@ class RunResponse(BaseModel):
     elapsed_ms: float
     output_dir: str
     trace: dict
+
+
+class ConversationSummary(BaseModel):
+    id: str
+    title: str
+    is_trivial: bool = False
+    created_at: str
+    updated_at: str
+    last_message_at: str | None = None
+
+
+class ConversationMessage(BaseModel):
+    id: str
+    role: str
+    content: str
+    message_order: int
+    created_at: str
+
+
+class ConversationDetail(BaseModel):
+    conversation_id: str
+    messages: list[ConversationMessage]
 
 
 app = FastAPI(title="Agent Backend", version="0.1.0")
@@ -334,6 +358,48 @@ def health() -> dict:
         "agent_runtime": "b1",
         "model_config": str(MODEL_CONFIG),
     }
+
+
+@app.get("/api/conversations", response_model=list[ConversationSummary])
+def get_conversations(limit: int = 50) -> list[ConversationSummary]:
+    init_conversation_db(str(MEMORY_CONFIG))
+    records = list_conversation_records(str(MEMORY_CONFIG), max(1, min(limit, 200)))
+    return [
+        ConversationSummary(
+            id=record["id"],
+            title=record["title"],
+            is_trivial=bool(record["is_trivial"]),
+            created_at=record["created_at"],
+            updated_at=record["updated_at"],
+            last_message_at=record.get("last_message_at"),
+        )
+        for record in records
+    ]
+
+
+@app.get("/api/conversations/{conversation_id}", response_model=ConversationDetail)
+def get_conversation(conversation_id: str) -> ConversationDetail:
+    conversation_id = _safe_conversation_id(conversation_id)
+    init_conversation_db(str(MEMORY_CONFIG))
+    messages = list_conversation_messages(str(MEMORY_CONFIG), conversation_id)
+    visible = [
+        ConversationMessage(
+            id=message["id"],
+            role=message["role"],
+            content=message["content"],
+            message_order=message["message_order"],
+            created_at=message["created_at"],
+        )
+        for message in messages
+        if message["role"] in {"user", "assistant"}
+    ]
+    return ConversationDetail(conversation_id=conversation_id, messages=visible)
+
+
+@app.get("/api/messages/{message_id}/tool-steps")
+def get_message_tool_steps(message_id: str) -> dict:
+    init_conversation_db(str(MEMORY_CONFIG))
+    return {"message_id": message_id, "tool_steps": list_message_tool_steps(str(MEMORY_CONFIG), message_id)}
 
 
 @app.post("/api/run", response_model=RunResponse)
