@@ -20,3 +20,7 @@
 {"timestamp": "2026-07-10T00:54:20+08:00", "operation": "save", "status": "success", "memory_id": "mem_conversation_conv_001"}
 {"timestamp": "2026-07-10T08:48:23+08:00", "operation": "load", "status": "success", "selected_ids": ["mem_course_001", "mem_conversation_conv_000"], "errors": []}
 {"timestamp": "2026-07-10T08:49:46+08:00", "operation": "load", "status": "success", "selected_ids": ["mem_course_001", "mem_conversation_conv_000"], "errors": []}
+{"timestamp": "2026-07-10T11:01:45+08:00", "operation": "load", "status": "success", "selected_ids": ["mem_conversation_conv_000", "mem_course_001"], "retrieval_mode": "keyword_top_k", "errors": []}
+{"timestamp": "2026-07-10T11:05:31+08:00", "operation": "load", "status": "success", "selected_ids": ["mem_conversation_conv_000", "mem_course_001"], "retrieval_mode": "keyword_top_k", "errors": []}
+{"timestamp": "2026-07-10T11:06:30+08:00", "operation": "load", "status": "success", "selected_ids": ["mem_conversation_conv_000", "mem_course_001"], "retrieval_mode": "keyword_top_k", "errors": []}
+{"timestamp": "2026-07-10T11:06:40+08:00", "operation": "save", "status": "success", "memory_id": "mem_conversation_conv_001", "update_classification": "rewrite_or_conflict"}

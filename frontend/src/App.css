@@ -246,6 +246,15 @@
   background: #fafafa;
 }
 
+.message.pending .message-body {
+  color: #666;
+}
+
+.message.error .message-body {
+  border-color: #efc0c0;
+  background: #fff7f7;
+}
+
 .message-title {
   display: flex;
   align-items: center;

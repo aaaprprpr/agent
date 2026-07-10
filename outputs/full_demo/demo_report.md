@@ -2,9 +2,9 @@
 
 - Conversation: `conv_001`
 - Status: `success`
-- Message flow: `system → user → assistant → tool → assistant → tool → assistant`
-- Tool rounds: `2`
-- LLM calls: `3`
+- Message flow: `system → user → assistant → tool → assistant`
+- Tool rounds: `1`
+- LLM calls: `2`
 - Loaded memory documents: `2`
 - Available tools: `5`
 
@@ -12,7 +12,7 @@
 
 1. Agent 系统由模型、工具、记忆和执行循环四个核心部分组成。
 2. 工具调用使模型能够读取本地文件、执行计算等操作，并将结果用于后续回答。
-3. Memory 为 Agent 提供全局知识和历史对话上下文，支持持续交互。
+3. Memory 为 Agent 提供全局知识和历史对话上下文，支持持续对话。
 
 ## Output Files
 
@@ -32,6 +32,8 @@
 - `selected_memory.json`
 - `tool_call_log.jsonl`
 - `tool_messages.json`
+- `tool_result_cache.json`
 - `tool_schema_report.json`
+- `tool_stats.json`
 - `tools_schema.json`
 - `trace.json`

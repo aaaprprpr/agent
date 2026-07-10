@@ -10,6 +10,7 @@ type ChatMessage = {
   title: string
   body: string
   meta?: string
+  status?: 'pending' | 'error'
 }
 
 type Attachment = {
@@ -42,6 +43,8 @@ const seedMessages: ChatMessage[] = [
   },
 ]
 
+const API_BASE = import.meta.env.VITE_AGENT_API_BASE ?? 'http://127.0.0.1:8020'
+
 function formatSize(size: number) {
   if (size < 1024) return `${size} B`
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
@@ -54,10 +57,11 @@ function App() {
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [draft, setDraft] = useState('')
   const [dragActive, setDragActive] = useState(false)
+  const [isRunning, setIsRunning] = useState(false)
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
   const fileRef = useRef<HTMLInputElement | null>(null)
 
-  const hasDraft = draft.trim().length > 0 || attachments.length > 0
+  const canSend = draft.trim().length > 0 && !isRunning
 
   const activeMeta = useMemo(() => `${messages.length} 条消息`, [messages])
 
@@ -81,36 +85,82 @@ function App() {
     if (event.dataTransfer.files.length) addFiles(event.dataTransfer.files)
   }
 
-  function handleSend() {
+  async function handleSend() {
     const text = draft.trim()
-    if (!text && attachments.length === 0) return
+    if (!text || isRunning) return
     const now = Date.now()
-    const fileText =
-      attachments.length > 0
-        ? `\n\n附件：${attachments.map((file) => file.name).join('、')}`
-        : ''
+    const pendingId = now + 1
+    const attachmentMeta = attachments.length > 0 ? `${attachments.length} 个附件待接入` : 'web'
     setMessages((current) => [
       ...current,
       {
         id: now,
         role: 'user',
         title: '我',
-        body: text || '处理这些附件',
-        meta: attachments.length > 0 ? `${attachments.length} 个附件` : 'manual',
+        body: text,
+        meta: attachmentMeta,
       },
       {
-        id: now + 1,
+        id: pendingId,
         role: 'assistant',
         title: 'Agent',
-        body: `收到。接入后这里会展示 B1 返回的 final_answer，并同步展开工具调用过程。${fileText}`,
-        meta: 'preview',
+        body: '正在运行 Agent...',
+        meta: 'running',
+        status: 'pending',
       },
     ])
     setDraft('')
     setAttachments([])
+    setIsRunning(true)
     requestAnimationFrame(() => {
       if (inputRef.current) inputRef.current.style.height = '24px'
     })
+    try {
+      const response = await fetch(`${API_BASE}/api/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_input: text }),
+      })
+      const payload = await response.json().catch(() => null)
+      if (!response.ok) {
+        const detail = payload?.detail ?? `HTTP ${response.status}`
+        throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
+      }
+      const trace = payload?.trace ?? {}
+      const metaParts = [
+        payload?.status ?? 'success',
+        trace.llm_call_count != null ? `${trace.llm_call_count} 次模型` : '',
+        trace.tool_rounds_used != null ? `${trace.tool_rounds_used} 轮工具` : '',
+      ].filter(Boolean)
+      setMessages((current) =>
+        current.map((message) =>
+          message.id === pendingId
+            ? {
+                ...message,
+                body: payload?.final_answer || 'Agent 没有返回内容。',
+                meta: metaParts.join(' · '),
+                status: undefined,
+              }
+            : message,
+        ),
+      )
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setMessages((current) =>
+        current.map((item) =>
+          item.id === pendingId
+            ? {
+                ...item,
+                body: `请求失败：${message}`,
+                meta: 'error',
+                status: 'error',
+              }
+            : item,
+        ),
+      )
+    } finally {
+      setIsRunning(false)
+    }
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -159,7 +209,15 @@ function App() {
           </div>
         </div>
 
-        <button className="new-chat" type="button">
+        <button
+          className="new-chat"
+          type="button"
+          onClick={() => {
+            setMessages(seedMessages)
+            setAttachments([])
+            setDraft('')
+          }}
+        >
           <span aria-hidden="true">＋</span>
           <span>新建任务</span>
         </button>
@@ -180,7 +238,7 @@ function App() {
       <section className="workspace">
         <section className="conversation" aria-label="消息列表">
           {messages.map((message) => (
-            <article className={`message ${message.role}`} key={message.id}>
+            <article className={`message ${message.role} ${message.status ?? ''}`} key={message.id}>
               <div className="message-avatar" aria-hidden="true">
                 {message.role === 'user' ? '我' : message.role === 'tool' ? 'T' : 'A'}
               </div>
@@ -236,7 +294,7 @@ function App() {
                 }}
                 onKeyDown={handleKeyDown}
               />
-              <button className="send-button" type="button" disabled={!hasDraft} aria-label="发送" onClick={handleSend}>
+              <button className="send-button" type="button" disabled={!canSend} aria-label="发送" onClick={handleSend}>
                 <span aria-hidden="true">↑</span>
               </button>
               <input ref={fileRef} type="file" multiple hidden onChange={handleFileChange} />

@@ -4,9 +4,4 @@ outputs/_test_*/
 outputs/tmp*/
 models/*
 !models/.gitkeep
-ssh.txt
-启动说明书.txt
-*.pem
-*.key
-*.pub
-change/
+

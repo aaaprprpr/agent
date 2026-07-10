@@ -7,7 +7,7 @@
       "name": "file_reader",
       "args": {
         "path": "docs/agent_intro.txt",
-        "max_chars": null
+        "max_chars": 5000
       }
     }
   ]
