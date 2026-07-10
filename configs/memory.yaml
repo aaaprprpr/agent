@@ -8,3 +8,7 @@ memory:
     mode: keyword_top_k
     top_k: 5
     per_doc_chars: 1200
+    field_weights:
+      title: 5
+      summary: 3
+      content: 1

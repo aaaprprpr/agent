@@ -12,6 +12,66 @@ from common.logging_utils import now_iso
 from common.path_utils import resolve_cli_path, resolve_from_file
 
 
+CHINESE_STOPWORD_WORDS = {
+    "帮我",
+    "请问",
+    "能否",
+    "可以",
+    "如何",
+    "怎么",
+    "怎样",
+    "什么",
+    "为什么",
+    "一下",
+}
+
+CHINESE_STOPWORD_CHARS = {
+    "我",
+    "帮",
+    "请",
+    "的",
+    "了",
+    "吗",
+    "呢",
+    "啊",
+    "和",
+    "与",
+    "及",
+    "或",
+    "在",
+    "是",
+    "为",
+    "对",
+    "把",
+    "给",
+    "中",
+    "如",
+    "何",
+}
+
+ENGLISH_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "for",
+    "how",
+    "is",
+    "of",
+    "or",
+    "the",
+    "to",
+    "what",
+}
+
+DEFAULT_FIELD_WEIGHTS = {
+    "title": 5,
+    "summary": 3,
+    "content": 1,
+}
+
+
 def _memory_paths(config_path: str | Path) -> dict[str, Path | int]:
     path = Path(config_path).resolve()
     config = read_yaml(path)
@@ -48,6 +108,31 @@ def _read_index(index_path: Path) -> dict:
     return index
 
 
+def _unique_in_order(items: list[str]) -> list[str]:
+    result = []
+    seen = set()
+    for item in items:
+        if item and item not in seen:
+            seen.add(item)
+            result.append(item)
+    return result
+
+
+def _split_chinese_by_stopwords(text: str) -> list[str]:
+    pieces = [text]
+    for stopword in sorted(CHINESE_STOPWORD_WORDS, key=len, reverse=True):
+        next_pieces = []
+        for piece in pieces:
+            next_pieces.extend(part for part in piece.split(stopword) if part)
+        pieces = next_pieces
+    cleaned = []
+    for piece in pieces:
+        stripped = "".join(char for char in piece if char not in CHINESE_STOPWORD_CHARS)
+        if len(stripped) >= 2:
+            cleaned.append(stripped)
+    return cleaned
+
+
 def _query_terms(query: str | None) -> list[str]:
     if not query:
         return []
@@ -56,28 +141,71 @@ def _query_terms(query: str | None) -> list[str]:
     terms: list[str] = []
     for word in words:
         if re.fullmatch(r"[\u4e00-\u9fff]+", word):
-            terms.extend(list(word))
-            terms.extend(word[index : index + 2] for index in range(max(0, len(word) - 1)))
-        elif len(word) >= 2:
+            for phrase in _split_chinese_by_stopwords(word):
+                terms.append(phrase)
+                terms.extend(phrase[index : index + 2] for index in range(max(0, len(phrase) - 1)))
+        elif len(word) >= 2 and word not in ENGLISH_STOPWORDS:
             terms.append(word)
     counts = Counter(terms)
-    return [term for term, _ in counts.most_common()]
+    ranked = [term for term, _ in counts.most_common()]
+    return _unique_in_order(ranked)
 
 
-def _score_memory(metadata: dict, content: str, terms: list[str]) -> int:
-    if not terms:
-        return 0
-    blob = "\n".join(
-        [
-            str(metadata.get("title", "")),
-            str(metadata.get("summary", "")),
-            content,
-        ]
-    ).lower()
-    return sum(blob.count(term) for term in terms)
+def _retrieval_config(paths: dict[str, Path | int]) -> dict:
+    config = paths.get("retrieval", {})
+    return config if isinstance(config, dict) else {}
+
+
+def _field_weights(retrieval: dict) -> dict[str, int]:
+    configured = retrieval.get("field_weights", {})
+    weights = dict(DEFAULT_FIELD_WEIGHTS)
+    if isinstance(configured, dict):
+        for field, value in configured.items():
+            if field in weights:
+                try:
+                    parsed = int(value)
+                except (TypeError, ValueError):
+                    continue
+                if parsed > 0:
+                    weights[field] = parsed
+    return weights
+
+
+def _term_counts(text: str, terms: list[str]) -> dict[str, int]:
+    lowered = text.lower()
+    counts = {}
+    for term in terms:
+        count = lowered.count(term)
+        if count > 0:
+            counts[term] = count
+    return counts
+
+
+def _score_memory(metadata: dict, content: str, terms: list[str], weights: dict[str, int]) -> dict:
+    fields = {
+        "title": str(metadata.get("title", "")),
+        "summary": str(metadata.get("summary", "")),
+        "content": content,
+    }
+    field_matches = {field: _term_counts(text, terms) for field, text in fields.items()}
+    field_scores = {
+        field: sum(matches.values()) * weights.get(field, 1)
+        for field, matches in field_matches.items()
+    }
+    matched_terms = _unique_in_order(
+        [term for term in terms if any(term in matches for matches in field_matches.values())]
+    )
+    return {
+        "total_score": sum(field_scores.values()),
+        "field_scores": field_scores,
+        "field_matches": field_matches,
+        "matched_terms": matched_terms,
+    }
 
 
 def _best_excerpt(content: str, terms: list[str], limit: int) -> str:
+    if limit <= 0:
+        return ""
     if len(content) <= limit:
         return content
     lowered = content.lower()
@@ -92,12 +220,11 @@ def _best_excerpt(content: str, terms: list[str], limit: int) -> str:
     start = max(0, end - limit)
     prefix = "..." if start > 0 else ""
     suffix = "..." if end < len(content) else ""
+    available = limit - len(prefix) - len(suffix)
+    if available <= 0:
+        return content[:limit]
+    end = min(len(content), start + available)
     return prefix + content[start:end] + suffix
-
-
-def _retrieval_config(paths: dict[str, Path | int]) -> dict:
-    config = paths.get("retrieval", {})
-    return config if isinstance(config, dict) else {}
 
 
 def _compact_summary(text: str, limit: int = 200) -> str:
@@ -148,6 +275,7 @@ def load_memory(
     per_doc_chars = int(retrieval.get("per_doc_chars", paths["max_chars"]))
     top_k = max(1, top_k)
     per_doc_chars = max(1, per_doc_chars)
+    weights = _field_weights(retrieval)
     terms = _query_terms(query)
 
     candidates = []
@@ -171,14 +299,17 @@ def load_memory(
             errors.append({"memory_id": memory_id, "type": "FileNotFoundError", "message": f"memory file not found: {relative_path}"})
             continue
         original = read_text(document_path)
-        score = _score_memory(metadata, original, terms)
+        score = _score_memory(metadata, original, terms, weights)
         candidates.append(
             {
                 "memory_id": memory_id,
                 "metadata": metadata,
                 "relative_path": relative_path,
                 "original": original,
-                "score": score,
+                "score": score["total_score"],
+                "field_scores": score["field_scores"],
+                "field_matches": score["field_matches"],
+                "matched_terms": score["matched_terms"],
                 "explicit": memory_id in selected_memory_ids,
             }
         )
@@ -197,13 +328,17 @@ def load_memory(
         ranked_ids.add(item["memory_id"])
         unique_ranked.append(item)
     ranked = unique_ranked
+    initially_selected_ids = {item["memory_id"] for item in ranked}
 
     docs = []
+    included_ids = set()
+    length_dropped_ids = []
     remaining = int(paths["max_chars"])
     any_truncated = False
-    for item in ranked:
+    for index, item in enumerate(ranked):
         if remaining <= 0:
             any_truncated = True
+            length_dropped_ids.extend(candidate["memory_id"] for candidate in ranked[index:])
             break
         memory_id = item["memory_id"]
         metadata = item["metadata"]
@@ -214,6 +349,7 @@ def load_memory(
         truncated = len(included) < len(original)
         any_truncated = any_truncated or truncated
         if included:
+            included_ids.add(memory_id)
             docs.append(
                 {
                     "memory_id": memory_id,
@@ -226,9 +362,45 @@ def load_memory(
                     "truncated": truncated,
                     "retrieval_score": item["score"],
                     "selection_reason": "explicit_id" if item["explicit"] else ("keyword_top_k" if terms else "configured_order"),
+                    "matched_terms": item["matched_terms"],
+                    "field_scores": item["field_scores"],
                 }
             )
             remaining -= len(included)
+        else:
+            length_dropped_ids.append(memory_id)
+
+    ranked_candidates_report = []
+    for rank, item in enumerate(
+        sorted(candidates, key=lambda candidate: (not candidate["explicit"], -candidate["score"], candidate["memory_id"])),
+        1,
+    ):
+        memory_id = item["memory_id"]
+        included = memory_id in included_ids
+        if included:
+            drop_reason = None
+        elif memory_id in length_dropped_ids:
+            drop_reason = "length_limit_exceeded"
+        elif memory_id not in initially_selected_ids and not item["explicit"]:
+            drop_reason = "top_k_excluded"
+        else:
+            drop_reason = "not_included"
+        ranked_candidates_report.append(
+            {
+                "rank": rank,
+                "memory_id": memory_id,
+                "memory_type": item["metadata"].get("memory_type"),
+                "title": item["metadata"].get("title", memory_id),
+                "path": item["relative_path"],
+                "explicit": item["explicit"],
+                "included": included,
+                "drop_reason": drop_reason,
+                "retrieval_score": item["score"],
+                "matched_terms": item["matched_terms"],
+                "field_scores": item["field_scores"],
+            }
+        )
+
     if errors and docs:
         status = "partial"
     elif errors:
@@ -243,7 +415,14 @@ def load_memory(
             "terms": terms,
             "top_k": top_k,
             "per_doc_chars": per_doc_chars,
+            "field_weights": weights,
         },
+        "ranked_candidates": ranked_candidates_report,
+        "discarded_memory_ids": [
+            item["memory_id"]
+            for item in ranked_candidates_report
+            if not item["included"] and item["drop_reason"] is not None
+        ],
         "selected_memory_docs": docs,
         "max_memory_chars": paths["max_chars"],
         "total_chars": sum(item["included_chars"] for item in docs),
@@ -260,6 +439,12 @@ def load_memory(
                 "status": status,
                 "selected_ids": [item["memory_id"] for item in docs],
                 "retrieval_mode": result["retrieval"]["mode"],
+                "query": query,
+                "query_terms": terms,
+                "selected_count": len(docs),
+                "candidate_count": len(ranked_candidates_report),
+                "truncated": any_truncated,
+                "discarded_memory_ids": result["discarded_memory_ids"],
                 "errors": errors,
             },
             output_dir / "memory_log.jsonl",
