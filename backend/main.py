@@ -6,11 +6,12 @@ import re
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
+from typing import Iterator, Literal
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 
@@ -20,6 +21,7 @@ if str(CODE_DIR) not in sys.path:
     sys.path.insert(0, str(CODE_DIR))
 
 from b1_agent_runtime import run as run_agent_runtime  # noqa: E402
+from b1_agent_runtime import run_stream as run_agent_runtime_stream  # noqa: E402
 from b5_memory import (  # noqa: E402
     append_conversation_message,
     init_conversation_db,
@@ -80,6 +82,7 @@ class ConversationMessage(BaseModel):
     message_order: int
     created_at: str
     status: Literal["pending", "error"] | None = None
+    tool_steps: list[dict] = Field(default_factory=list)
 
 
 class ConversationDetail(BaseModel):
@@ -139,6 +142,10 @@ def _write_json_file(path_text: str, payload: dict | list) -> None:
         file.write("\n")
 
 
+def _stream_event(payload: dict) -> str:
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
+
+
 def _short_title(text: str, limit: int = 18) -> str:
     compact = re.sub(r"\s+", " ", text).strip()
     if not compact:
@@ -194,9 +201,22 @@ def _contextual_user_input(history: list[dict], user_input: str) -> str:
 
 def _extract_tool_steps(trace: dict) -> list[dict]:
     steps = []
-    for turn in trace.get("turns", []):
+    turns = trace.get("turns", [])
+    if not isinstance(turns, list):
+        return steps
+    for turn_index, turn in enumerate(turns):
         if not isinstance(turn, dict):
             continue
+        ai_message = turn.get("ai_message") if isinstance(turn.get("ai_message"), dict) else {}
+        raw_tool_calls = ai_message.get("tool_calls") if isinstance(ai_message, dict) else []
+        tool_calls_by_id = {
+            call.get("id"): call
+            for call in raw_tool_calls
+            if isinstance(call, dict) and isinstance(call.get("id"), str)
+        } if isinstance(raw_tool_calls, list) else {}
+        next_prompt_messages = None
+        if turn_index + 1 < len(turns) and isinstance(turns[turn_index + 1], dict):
+            next_prompt_messages = turns[turn_index + 1].get("llm_prompt_messages")
         for tool_message in turn.get("tool_messages", []):
             if not isinstance(tool_message, dict):
                 continue
@@ -205,12 +225,27 @@ def _extract_tool_steps(trace: dict) -> list[dict]:
                 parsed = json.loads(raw_content) if isinstance(raw_content, str) else {}
             except json.JSONDecodeError:
                 parsed = {}
+            tool_call_id = tool_message.get("tool_call_id")
+            tool_call = tool_calls_by_id.get(tool_call_id)
+            input_data = parsed.get("input")
+            if tool_call is not None:
+                input_data = {
+                    "tool_call": tool_call,
+                    "skill_input": input_data,
+                }
+            output_data = parsed.get("output")
+            if next_prompt_messages:
+                output_data = {
+                    "skill_output": output_data,
+                    "tool_message": tool_message,
+                    "next_llm_prompt_messages": next_prompt_messages,
+                }
             steps.append(
                 {
-                    "tool_call_id": tool_message.get("tool_call_id"),
+                    "tool_call_id": tool_call_id,
                     "tool_name": tool_message.get("name") or parsed.get("skill_name") or "unknown",
-                    "input_data": parsed.get("input"),
-                    "output_data": parsed.get("output"),
+                    "input_data": input_data,
+                    "output_data": output_data,
                     "status": tool_message.get("status") or parsed.get("status") or "unknown",
                     "error": parsed.get("error"),
                     "latency_ms": parsed.get("latency_ms"),
@@ -418,6 +453,137 @@ def _call_agent(request: RunRequest) -> RunResponse:
     )
 
 
+def _stream_agent(request: RunRequest) -> Iterator[str]:
+    conversation_id = _safe_conversation_id(request.conversation_id)
+    raw_user_input = request.user_input.strip()
+    init_conversation_db(str(MEMORY_CONFIG))
+    history = list_conversation_messages(str(MEMORY_CONFIG), conversation_id)
+    title = _history_title(history, raw_user_input)
+    upsert_conversation_record(
+        str(MEMORY_CONFIG),
+        conversation_id,
+        title,
+        is_trivial=_is_trivial_conversation(history, raw_user_input),
+        trivial_reason="only trivial user messages" if _is_trivial_conversation(history, raw_user_input) else None,
+    )
+    contextual_input = _contextual_user_input(history, raw_user_input)
+    runtime_payload = _build_runtime_payload(request, conversation_id, contextual_input)
+    run_id = _now_stamp()
+    user_message_id, assistant_message_id = _start_run_messages(
+        conversation_id,
+        run_id,
+        raw_user_input,
+        history,
+    )
+    output_dir = OUTPUT_ROOT / conversation_id / run_id
+    yield _stream_event(
+        {
+            "type": "start",
+            "conversation_id": conversation_id,
+            "user_message_id": user_message_id,
+            "assistant_message_id": assistant_message_id,
+        }
+    )
+    streamed_answer = ""
+    try:
+        for event in run_agent_runtime_stream(
+            runtime_payload,
+            str(TOOLS_CONFIG),
+            str(MEMORY_CONFIG),
+            str(MODEL_CONFIG),
+            str(output_dir),
+            request.llm_mode,
+            RUNTIME_BASE,
+        ):
+            if not isinstance(event, dict):
+                continue
+            event_type = event.get("type")
+            if event_type == "delta":
+                delta = str(event.get("text", ""))
+                if not delta:
+                    continue
+                streamed_answer += delta
+                update_conversation_message(
+                    str(MEMORY_CONFIG),
+                    assistant_message_id,
+                    content=streamed_answer,
+                    metadata={"ui_status": "pending", "agent_status": "running_stream"},
+                )
+                yield _stream_event(
+                    {
+                        "type": "delta",
+                        "conversation_id": conversation_id,
+                        "assistant_message_id": assistant_message_id,
+                        "text": delta,
+                    }
+                )
+            elif event_type == "tool_start":
+                yield _stream_event(
+                    {
+                        "type": "tool_start",
+                        "conversation_id": conversation_id,
+                        "assistant_message_id": assistant_message_id,
+                        "tool_calls": event.get("tool_calls", []),
+                    }
+                )
+            elif event_type == "tool_done":
+                yield _stream_event(
+                    {
+                        "type": "tool_done",
+                        "conversation_id": conversation_id,
+                        "assistant_message_id": assistant_message_id,
+                        "tool_messages": event.get("tool_messages", []),
+                    }
+                )
+            elif event_type == "done":
+                result = event.get("result")
+                if not isinstance(result, dict):
+                    raise ValueError("stream runtime finished without a result object")
+                full_trace = _read_trace_full(result["trace_path"])
+                _finish_run_message(
+                    conversation_id,
+                    assistant_message_id,
+                    run_id,
+                    result,
+                    full_trace,
+                )
+                full_trace["memory_save"] = {
+                    "requested": "database",
+                    "status": "success",
+                    "conversation_id": conversation_id,
+                    "user_message_id": user_message_id,
+                    "assistant_message_id": assistant_message_id,
+                    "storage": "sqlite",
+                }
+                _write_json_file(result["trace_path"], full_trace)
+                tool_steps = list_message_tool_steps(str(MEMORY_CONFIG), assistant_message_id)
+                yield _stream_event(
+                    {
+                        "type": "done",
+                        "conversation_id": result["conversation_id"],
+                        "user_message_id": user_message_id,
+                        "assistant_message_id": assistant_message_id,
+                        "status": result["status"],
+                        "final_answer": result["final_answer"],
+                        "elapsed_ms": result["elapsed_ms"],
+                        "output_dir": str(output_dir),
+                        "trace": _read_trace(result["trace_path"]),
+                        "tool_steps": tool_steps,
+                    }
+                )
+                return
+    except Exception as exc:
+        _mark_run_failed(assistant_message_id, exc)
+        yield _stream_event(
+            {
+                "type": "error",
+                "conversation_id": conversation_id,
+                "assistant_message_id": assistant_message_id,
+                "message": f"{type(exc).__name__}: {exc}",
+            }
+        )
+
+
 @app.get("/api/health")
 def health() -> dict:
     return {
@@ -457,6 +623,7 @@ def get_conversation(conversation_id: str) -> ConversationDetail:
             message_order=message["message_order"],
             created_at=message["created_at"],
             status=_message_ui_status(message),
+            tool_steps=list_message_tool_steps(str(MEMORY_CONFIG), message["id"]) if message["role"] == "assistant" else [],
         )
         for message in messages
         if message["role"] in {"user", "assistant"}
@@ -482,6 +649,16 @@ async def run_agent(request: RunRequest) -> RunResponse:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
+
+
+@app.post("/api/run/stream")
+async def run_agent_stream(request: RunRequest) -> StreamingResponse:
+    if not request.user_input.strip():
+        raise HTTPException(status_code=400, detail="user_input is required")
+    return StreamingResponse(
+        _stream_agent(request),
+        media_type="application/x-ndjson; charset=utf-8",
+    )
 
 
 if __name__ == "__main__":

@@ -9,6 +9,14 @@ type ChatMessage = {
   role: Role
   body: string
   status?: 'pending' | 'error'
+  toolDetails?: ToolDetail[]
+  toolPanelOpen?: boolean
+}
+
+type ToolDetail = {
+  label: string
+  body: string
+  status?: string
 }
 
 type Attachment = {
@@ -34,7 +42,45 @@ type BackendMessage = {
   role: Role
   content: string
   status?: 'pending' | 'error' | null
+  tool_steps?: Record<string, unknown>[]
 }
+
+type RunStreamEvent =
+  | {
+      type: 'start'
+      conversation_id: string
+      user_message_id?: string
+      assistant_message_id?: string
+    }
+  | {
+      type: 'delta'
+      text: string
+      conversation_id?: string
+      assistant_message_id?: string
+    }
+  | {
+      type: 'tool_start' | 'tool_done'
+      conversation_id?: string
+      assistant_message_id?: string
+      tool_calls?: unknown[]
+      tool_messages?: unknown[]
+    }
+  | {
+      type: 'done'
+      conversation_id: string
+      user_message_id?: string
+      assistant_message_id?: string
+      status: string
+      final_answer: string
+      trace?: { memory_save?: { status?: string } }
+      tool_steps?: Record<string, unknown>[]
+    }
+  | {
+      type: 'error'
+      conversation_id?: string
+      assistant_message_id?: string
+      message: string
+    }
 
 const API_BASE = import.meta.env.VITE_AGENT_API_BASE ?? 'http://127.0.0.1:8020'
 const ACTIVE_CONVERSATION_KEY = 'agent.activeConversationId'
@@ -65,6 +111,60 @@ function formatSize(size: number) {
   return `${(size / 1024 / 1024).toFixed(1)} MB`
 }
 
+function prettyJson(value: unknown) {
+  if (typeof value === 'string') return value
+  try {
+    return JSON.stringify(value, null, 2)
+  } catch {
+    return String(value)
+  }
+}
+
+function toolNameFromRecord(value: unknown, fallback: string) {
+  if (!value || typeof value !== 'object') return fallback
+  const record = value as Record<string, unknown>
+  const name = record.name ?? record.tool_name
+  return typeof name === 'string' && name.trim() ? name : fallback
+}
+
+function toolDetailsFromCalls(calls?: unknown[]) {
+  if (!Array.isArray(calls) || calls.length === 0) return []
+  return calls.map((call, index) => ({
+    label: `调用 ${toolNameFromRecord(call, `tool_${index + 1}`)}`,
+    body: prettyJson(call),
+    status: 'pending',
+  }))
+}
+
+function toolDetailsFromSteps(steps?: Record<string, unknown>[]) {
+  if (!Array.isArray(steps) || steps.length === 0) return []
+  return steps.map((step, index) => ({
+    label: `${index + 1}. ${toolNameFromRecord(step, 'tool')}`,
+    body: prettyJson({
+      tool_name: step.tool_name,
+      tool_call_id: step.tool_call_id,
+      input: step.input ?? step.input_json,
+      output: step.output ?? step.output_json,
+      error: step.error ?? step.error_json,
+      latency_ms: step.latency_ms,
+      created_at: step.created_at,
+    }),
+    status: typeof step.status === 'string' ? step.status : undefined,
+  }))
+}
+
+function toolDetailsFromMessages(messages?: unknown[]) {
+  if (!Array.isArray(messages) || messages.length === 0) return []
+  return messages.map((message, index) => ({
+    label: `结果 ${toolNameFromRecord(message, `tool_${index + 1}`)}`,
+    body: prettyJson(message),
+    status:
+      message && typeof message === 'object' && typeof (message as Record<string, unknown>).status === 'string'
+        ? String((message as Record<string, unknown>).status)
+        : undefined,
+  }))
+}
+
 function LoadingBubble() {
   return (
     <span className="loading-bubble" aria-label="等待回复">
@@ -74,6 +174,49 @@ function LoadingBubble() {
         <span />
       </span>
     </span>
+  )
+}
+
+function ChevronDownIcon() {
+  return (
+    <svg className="tool-trace-icon" viewBox="0 0 16 16" aria-hidden="true">
+      <path d="M4.25 6.25L8 10l3.75-3.75" />
+    </svg>
+  )
+}
+
+function ToolTrace({
+  message,
+  onToggle,
+}: {
+  message: ChatMessage
+  onToggle: (messageId: number | string) => void
+}) {
+  const details = message.toolDetails ?? []
+  if (details.length === 0) return null
+  const open = Boolean(message.toolPanelOpen)
+  const active = message.status === 'pending'
+  return (
+    <div className={`tool-trace ${open ? 'open' : ''}`}>
+      <button className="tool-trace-toggle" type="button" onClick={() => onToggle(message.id)}>
+        <ChevronDownIcon />
+        <span>{active ? '处理中' : '工具调用'}</span>
+        <small>{details.length} 项</small>
+      </button>
+      {open && (
+        <div className="tool-trace-panel">
+          {details.map((detail, index) => (
+            <section className="tool-trace-item" key={`${detail.label}-${index}`}>
+              <div className="tool-trace-title">
+                <span>{detail.label}</span>
+                {detail.status && <em>{detail.status}</em>}
+              </div>
+              <pre>{detail.body}</pre>
+            </section>
+          ))}
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -134,6 +277,17 @@ function App() {
           : item,
       ),
     )
+  }
+
+  function toggleToolPanel(messageId: number | string) {
+    const conversationId = currentConversationIdRef.current
+    setMessages((current) => {
+      const nextMessages = current.map((message) =>
+        message.id === messageId ? { ...message, toolPanelOpen: !message.toolPanelOpen } : message,
+      )
+      if (conversationId) updateHistoryMessages(conversationId, nextMessages)
+      return nextMessages
+    })
   }
 
   function isConversationAtBottom() {
@@ -206,6 +360,7 @@ function App() {
           role: message.role,
           body: message.content,
           status: message.status ?? undefined,
+          toolDetails: toolDetailsFromSteps(message.tool_steps),
         })) satisfies ChatMessage[]
       if (currentConversationIdRef.current !== conversationId) return
       setMessages(loadedMessages)
@@ -281,8 +436,126 @@ function App() {
     requestAnimationFrame(() => {
       if (inputRef.current) inputRef.current.style.height = '24px'
     })
+    let activeUserId: number | string = now
+    let activeAssistantId: number | string = pendingId
+    let streamedAnswer = ''
+    let currentMessages = optimisticMessages
+
+    function applyMessageState(nextMessages: ChatMessage[], memoryReady?: boolean) {
+      currentMessages = nextMessages
+      if (currentConversationIdRef.current === conversationId) {
+        stickToBottomRef.current = isConversationAtBottom()
+        setMessages(nextMessages)
+      }
+      updateHistoryMessages(conversationId, nextMessages, memoryReady)
+    }
+
+    function replaceAssistant(body: string, status?: 'pending' | 'error', memoryReady?: boolean) {
+      applyMessageState(
+        currentMessages.map((message): ChatMessage =>
+          message.id === activeAssistantId
+            ? {
+                ...message,
+                body,
+                status,
+              }
+            : message,
+        ),
+        memoryReady,
+      )
+    }
+
+    function adoptBackendMessageIds(event: Extract<RunStreamEvent, { type: 'start' }>) {
+      const nextUserId = event.user_message_id ?? activeUserId
+      const nextAssistantId = event.assistant_message_id ?? activeAssistantId
+      applyMessageState(
+        currentMessages.map((message): ChatMessage => {
+          if (message.id === activeUserId) return { ...message, id: nextUserId }
+          if (message.id === activeAssistantId) return { ...message, id: nextAssistantId }
+          return message
+        }),
+      )
+      activeUserId = nextUserId
+      activeAssistantId = nextAssistantId
+    }
+
+    function handleStreamEvent(event: RunStreamEvent) {
+      if (event.type === 'start') {
+        adoptBackendMessageIds(event)
+        return
+      }
+      if (event.type === 'delta') {
+        streamedAnswer += event.text
+        replaceAssistant(streamedAnswer, 'pending')
+        return
+      }
+      if (event.type === 'tool_start') {
+        const toolDetails = toolDetailsFromCalls(event.tool_calls)
+        if (toolDetails.length === 0) return
+        applyMessageState(
+          currentMessages.map((message): ChatMessage =>
+            message.id === activeAssistantId
+              ? {
+                  ...message,
+                  toolDetails: [...(message.toolDetails ?? []), ...toolDetails],
+                  toolPanelOpen: true,
+                }
+              : message,
+          ),
+        )
+        return
+      }
+      if (event.type === 'tool_done') {
+        const resultDetails = toolDetailsFromMessages(event.tool_messages)
+        applyMessageState(
+          currentMessages.map((message): ChatMessage =>
+            message.id === activeAssistantId
+              ? {
+                  ...message,
+                  toolDetails: [
+                    ...(message.toolDetails ?? []).map((detail) =>
+                      detail.status === 'pending' ? { ...detail, status: 'done' } : detail,
+                    ),
+                    ...resultDetails,
+                  ],
+                }
+              : message,
+          ),
+        )
+        return
+      }
+      if (event.type === 'done') {
+        const finalAnswer = event.final_answer || streamedAnswer || 'Agent 没有返回内容。'
+        const memorySaved = event.trace?.memory_save?.status === 'success'
+        const savedToolDetails = toolDetailsFromSteps(event.tool_steps)
+        applyMessageState(
+          currentMessages.map((message): ChatMessage =>
+            message.id === activeAssistantId
+              ? {
+                  ...message,
+                  body: finalAnswer,
+                  status: undefined,
+                  toolDetails: savedToolDetails.length > 0 ? savedToolDetails : message.toolDetails,
+                }
+              : message,
+          ),
+          memorySaved || existingHistory?.memoryReady,
+        )
+        return
+      }
+      if (event.type === 'error') {
+        throw new Error(event.message)
+      }
+    }
+
+    function consumeStreamLine(line: string) {
+      const trimmed = line.trim()
+      if (!trimmed) return
+      handleStreamEvent(JSON.parse(trimmed) as RunStreamEvent)
+    }
+
     try {
-      const response = await fetch(`${API_BASE}/api/run`, {
+      const response = await fetch(`${API_BASE}/api/run/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -290,30 +563,31 @@ function App() {
           conversation_id: conversationId,
         }),
       })
-      const payload = await response.json().catch(() => null)
       if (!response.ok) {
+        const payload = await response.json().catch(() => null)
         const detail = payload?.detail ?? `HTTP ${response.status}`
         throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
       }
-      const finalMessages: ChatMessage[] = optimisticMessages.map((message): ChatMessage =>
-        message.id === pendingId
-          ? {
-              ...message,
-              body: payload?.final_answer || 'Agent 没有返回内容。',
-              status: undefined,
-            }
-          : message,
-      )
-      const memorySaved = payload?.trace?.memory_save?.status === 'success'
-      if (currentConversationIdRef.current === conversationId) {
-        stickToBottomRef.current = isConversationAtBottom()
-        setMessages(finalMessages)
+      if (!response.body) {
+        throw new Error('浏览器没有返回可读的流式响应')
       }
-      updateHistoryMessages(conversationId, finalMessages, memorySaved || existingHistory?.memoryReady)
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      while (true) {
+        const { value, done } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() ?? ''
+        for (const line of lines) consumeStreamLine(line)
+      }
+      buffer += decoder.decode()
+      consumeStreamLine(buffer)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      const failedMessages: ChatMessage[] = optimisticMessages.map((item): ChatMessage =>
-        item.id === pendingId
+      const failedMessages: ChatMessage[] = currentMessages.map((item): ChatMessage =>
+        item.id === activeAssistantId
           ? {
               ...item,
               body: `请求失败：${message}`,
@@ -434,7 +708,12 @@ function App() {
           {messages.map((message) => (
             <article className={`message ${message.role} ${message.status ?? ''}`} key={message.id}>
               <div className="message-body">
-                {message.status === 'pending' ? <LoadingBubble /> : <p>{message.body}</p>}
+                {message.role === 'assistant' && <ToolTrace message={message} onToggle={toggleToolPanel} />}
+                {message.status === 'pending' && (!message.body || message.body === '...') ? (
+                  <LoadingBubble />
+                ) : (
+                  <p>{message.body}</p>
+                )}
               </div>
             </article>
           ))}

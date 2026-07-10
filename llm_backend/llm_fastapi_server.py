@@ -14,11 +14,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 MODEL_CONFIG_PATH = PROJECT_ROOT / "configs" / "model.yaml"
 SERVER_HOST = "0.0.0.0"
 SERVER_PORT = 8012
+MAX_BATCH_ITEMS = 32
+DEFAULT_BATCH_SIZE = 8
 API_KEY: str | None = None
 _MODEL_CACHE: dict[tuple[str, ...], tuple[Any, Any]] = {}
 
 
-app = FastAPI(title="B4 Raw LLM FastAPI Server", version="1.0.0")
+app = FastAPI(title="B4 Raw LLM FastAPI Server", version="1.1.0")
 
 
 def read_yaml(path: str | Path) -> Any:
@@ -202,6 +204,65 @@ def _validate_generation_options(options: Any) -> dict[str, Any]:
     return result
 
 
+def _options_key(options: dict[str, Any]) -> str:
+    try:
+        return json.dumps(options, sort_keys=True, separators=(",", ":"))
+    except TypeError:
+        return repr(sorted(options.items(), key=lambda item: item[0]))
+
+
+def _merge_generation_options(base_options: Any, override_options: Any) -> dict[str, Any]:
+    if base_options is None:
+        base_options = {}
+    if not isinstance(base_options, dict):
+        raise ValueError("generation must be an object")
+    if override_options is None:
+        return _validate_generation_options(base_options)
+    if not isinstance(override_options, dict):
+        raise ValueError("item generation must be an object")
+    return _validate_generation_options({**base_options, **override_options})
+
+
+def _validate_batch_size(value: Any) -> int:
+    if value is None:
+        return DEFAULT_BATCH_SIZE
+    try:
+        batch_size = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("batch_size must be a positive integer") from exc
+    if batch_size <= 0:
+        raise ValueError("batch_size must be a positive integer")
+    return min(batch_size, MAX_BATCH_ITEMS)
+
+
+def _validate_batch_requests(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], int]:
+    items = payload.get("requests")
+    if items is None:
+        items = payload.get("batch")
+    if not isinstance(items, list) or not items:
+        raise ValueError("requests must be a non-empty array")
+    if len(items) > MAX_BATCH_ITEMS:
+        raise ValueError(f"requests length cannot exceed {MAX_BATCH_ITEMS}")
+
+    base_generation = payload.get("generation")
+    requests = []
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            raise ValueError(f"request {index} must be an object")
+        request_id = item.get("id", item.get("request_id"))
+        if request_id is not None and not isinstance(request_id, str):
+            raise ValueError(f"request {index} id must be a string")
+        requests.append(
+            {
+                "index": index,
+                "id": request_id,
+                "messages": _validate_messages(item.get("messages")),
+                "generation": _merge_generation_options(base_generation, item.get("generation")),
+            }
+        )
+    return requests, _validate_batch_size(payload.get("batch_size"))
+
+
 class RawModelServer:
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -281,6 +342,91 @@ class RawModelServer:
                 },
             }
 
+    def generate_batch(self, requests: list[dict[str, Any]], batch_size: int) -> dict[str, Any]:
+        tokenizer, model, torch = self.load()
+        results: list[dict[str, Any] | None] = [None] * len(requests)
+        grouped: dict[str, dict[str, Any]] = {}
+        for item in requests:
+            key = _options_key(item["generation"])
+            grouped.setdefault(key, {"generation": item["generation"], "items": []})["items"].append(item)
+
+        total_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        with self._generate_lock:
+            for group in grouped.values():
+                options = dict(group["generation"])
+                items = group["items"]
+                for start in range(0, len(items), batch_size):
+                    chunk = items[start : start + batch_size]
+                    chunk_results = self._generate_batch_same_options(tokenizer, model, torch, chunk, dict(options))
+                    for result in chunk_results:
+                        usage = result.get("usage", {})
+                        total_usage["prompt_tokens"] += int(usage.get("prompt_tokens", 0))
+                        total_usage["completion_tokens"] += int(usage.get("completion_tokens", 0))
+                        total_usage["total_tokens"] += int(usage.get("total_tokens", 0))
+                        results[int(result["index"])] = result
+
+        ordered_results = [item for item in results if item is not None]
+        return {
+            "status": "success",
+            "results": ordered_results,
+            "usage": total_usage,
+            "batch_size": batch_size,
+        }
+
+    def _generate_batch_same_options(
+        self,
+        tokenizer: Any,
+        model: Any,
+        torch: Any,
+        items: list[dict[str, Any]],
+        options: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        prompts = [self._render_chat_prompt(tokenizer, item["messages"]) for item in items]
+        self._ensure_pad_token(tokenizer, options)
+        old_padding_side = getattr(tokenizer, "padding_side", None)
+        if old_padding_side is not None:
+            tokenizer.padding_side = "left"
+        try:
+            inputs = tokenizer(prompts, return_tensors="pt", padding=True)
+        finally:
+            if old_padding_side is not None:
+                tokenizer.padding_side = old_padding_side
+
+        device = next(model.parameters()).device
+        inputs = inputs.to(device)
+        prompt_width = int(inputs["input_ids"].shape[-1])
+        if "attention_mask" in inputs:
+            prompt_lengths = [int(value) for value in inputs["attention_mask"].sum(dim=1).tolist()]
+        else:
+            prompt_lengths = [prompt_width] * len(items)
+
+        with torch.no_grad():
+            generated = model.generate(**inputs, **options)
+
+        pad_token_id = options.get("pad_token_id")
+        results = []
+        for row_index, item in enumerate(items):
+            new_tokens = generated[row_index][prompt_width:]
+            raw_text = tokenizer.decode(new_tokens, skip_special_tokens=True)
+            if pad_token_id is None:
+                completion_tokens = int(new_tokens.shape[-1])
+            else:
+                completion_tokens = int((new_tokens != pad_token_id).sum().item())
+            prompt_tokens = prompt_lengths[row_index]
+            results.append(
+                {
+                    "index": item["index"],
+                    "id": item["id"],
+                    "raw_text": raw_text,
+                    "usage": {
+                        "prompt_tokens": prompt_tokens,
+                        "completion_tokens": completion_tokens,
+                        "total_tokens": prompt_tokens + completion_tokens,
+                    },
+                }
+            )
+        return results
+
     def generate_stream(self, messages: list[dict[str, Any]], options: dict[str, Any]) -> Iterator[str]:
         tokenizer, model, torch = self.load()
         try:
@@ -349,6 +495,29 @@ class RawModelServer:
         except TypeError:
             return tokenizer.apply_chat_template(messages, **kwargs)
 
+    @staticmethod
+    def _render_chat_prompt(tokenizer: Any, messages: list[dict[str, Any]]) -> str:
+        kwargs = {
+            "tokenize": False,
+            "add_generation_prompt": True,
+        }
+        try:
+            return tokenizer.apply_chat_template(messages, enable_thinking=False, **kwargs)
+        except TypeError:
+            return tokenizer.apply_chat_template(messages, **kwargs)
+
+    @staticmethod
+    def _ensure_pad_token(tokenizer: Any, options: dict[str, Any]) -> None:
+        if getattr(tokenizer, "pad_token_id", None) is not None:
+            options.setdefault("pad_token_id", tokenizer.pad_token_id)
+            return
+        if getattr(tokenizer, "eos_token_id", None) is None:
+            raise ValueError("batch generation requires tokenizer.pad_token_id or tokenizer.eos_token_id")
+        eos_token = getattr(tokenizer, "eos_token", None)
+        if eos_token is not None and getattr(tokenizer, "pad_token", None) is None:
+            tokenizer.pad_token = eos_token
+        options.setdefault("pad_token_id", tokenizer.eos_token_id)
+
 
 MODEL_SERVER = RawModelServer()
 
@@ -358,7 +527,7 @@ def root() -> dict[str, Any]:
     return {
         "status": "ok",
         "service": "b4_raw_llm",
-        "endpoints": ["/health", "/generate", "/generate_stream"],
+        "endpoints": ["/health", "/generate", "/generate_stream", "/generate_batch"],
     }
 
 
@@ -378,6 +547,18 @@ def generate(payload: dict[str, Any], request: Request) -> dict[str, Any]:
         messages = _validate_messages(payload.get("messages"))
         options = _validate_generation_options(payload.get("generation"))
         return MODEL_SERVER.generate(messages, options)
+    except ValueError as exc:
+        raise _api_error(400, str(exc), "invalid_request_error") from exc
+    except Exception as exc:
+        raise _api_error(500, str(exc), "server_error") from exc
+
+
+@app.post("/generate_batch")
+def generate_batch(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    _check_auth(request)
+    try:
+        batch_requests, batch_size = _validate_batch_requests(payload)
+        return MODEL_SERVER.generate_batch(batch_requests, batch_size)
     except ValueError as exc:
         raise _api_error(400, str(exc), "invalid_request_error") from exc
     except Exception as exc:

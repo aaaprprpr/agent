@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import codecs
 import json
 import re
 import sys
@@ -8,7 +9,7 @@ import urllib.error
 import urllib.request
 from copy import deepcopy
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from common.io_utils import append_jsonl, read_json, read_yaml, write_json
 from common.logging_utils import now_iso
@@ -78,12 +79,16 @@ def _fastapi_config(config: dict) -> dict:
     generate_path = api_config.get("generate_path", "/generate")
     if not isinstance(generate_path, str) or not generate_path.startswith("/"):
         raise ValueError("fastapi.generate_path must start with /")
+    stream_path = api_config.get("stream_path", "/generate_stream")
+    if not isinstance(stream_path, str) or not stream_path.startswith("/"):
+        raise ValueError("fastapi.stream_path must start with /")
     timeout = float(api_config.get("timeout_seconds", 600))
     if timeout <= 0:
         raise ValueError("fastapi.timeout_seconds must be positive")
     return {
         "base_url": base_url.rstrip("/"),
         "generate_path": generate_path,
+        "stream_path": stream_path,
         "timeout_seconds": timeout,
         "api_key": api_config.get("api_key"),
         "model": api_config.get("model"),
@@ -222,6 +227,27 @@ def _parse_content_fragment(raw_text: str, original_error: json.JSONDecodeError)
     if not content:
         raise original_error
     return {"content": content, "tool_calls": []}
+
+
+def _streaming_content_prefix(raw_text: str) -> str:
+    match = re.search(r'"content"\s*:\s*"', raw_text)
+    if not match:
+        return ""
+    chars = []
+    escaped = False
+    for char in raw_text[match.end() :]:
+        if escaped:
+            chars.append(char)
+            escaped = False
+            continue
+        if char == "\\":
+            chars.append(char)
+            escaped = True
+            continue
+        if char == '"':
+            break
+        chars.append(char)
+    return _decode_partial_json_string("".join(chars))
 
 
 def _candidate_to_message(candidate: dict) -> tuple[dict, dict]:
@@ -563,6 +589,93 @@ def _fastapi_prompt_json_generate(config_path: Path, config: dict, messages: lis
     return response_data["raw_text"]
 
 
+def _iter_fastapi_text_response(request: urllib.request.Request, timeout_seconds: float) -> Iterator[str]:
+    decoder = codecs.getincrementaldecoder("utf-8")()
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            while True:
+                chunk = response.read(1)
+                if not chunk:
+                    break
+                text = decoder.decode(chunk)
+                if text:
+                    yield text
+            tail = decoder.decode(b"", final=True)
+            if tail:
+                yield tail
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"FastAPI LLM stream request failed with HTTP {exc.code}: {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"FastAPI LLM stream request failed: {exc}") from exc
+
+
+def _fastapi_prompt_json_stream(config_path: Path, config: dict, messages: list[dict], tools_schema: list[dict]) -> Iterator[str]:
+    del config_path
+    api_config = _fastapi_config(config)
+    prompt_messages = _build_prompt_messages(messages, tools_schema)
+    payload = {
+        "messages": prompt_messages,
+        "generation": _generation_options(config),
+    }
+    if isinstance(api_config["model"], str) and api_config["model"].strip():
+        payload["model"] = api_config["model"]
+    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    if isinstance(api_config["api_key"], str) and api_config["api_key"]:
+        headers["Authorization"] = f"Bearer {api_config['api_key']}"
+    request = urllib.request.Request(
+        url=api_config["base_url"] + api_config["stream_path"],
+        data=data,
+        headers=headers,
+        method="POST",
+    )
+    yield from _iter_fastapi_text_response(request, api_config["timeout_seconds"])
+
+
+def _write_generation_artifacts(
+    mode: str,
+    backend: str,
+    source: str,
+    raw_text: str,
+    prompt_messages: list[dict] | None,
+    parsed_candidate: dict | None,
+    ai_message: dict,
+    status: str,
+    error: dict | None,
+    generated_at: str,
+    artifact_dir: str | None,
+    artifact_stem: str | None,
+) -> None:
+    if not artifact_dir:
+        return
+    raw_record = {
+        "mode": mode,
+        "backend": backend,
+        "llm_source": source,
+        "raw_text": raw_text,
+        "prompt_messages": prompt_messages,
+        "parsed_candidate": parsed_candidate,
+        "status": status,
+        "error": error,
+        "generated_at": generated_at,
+    }
+    raw_path, message_path, log_path = _artifact_paths(artifact_dir, artifact_stem)
+    write_json(raw_record, raw_path)
+    write_json(ai_message, message_path)
+    append_jsonl(
+        {
+            "timestamp": generated_at,
+            "mode": mode,
+            "status": status,
+            "raw_output_path": str(raw_path),
+            "ai_message_path": str(message_path),
+            "error": error,
+        },
+        log_path,
+    )
+
+
 def generate_ai_message(
     model_config: str,
     messages: list[dict],
@@ -578,6 +691,7 @@ def generate_ai_message(
     generated_at = now_iso()
     source = "mock" if mode == "mock" else _llm_source(config)
     backend = "mock" if mode == "mock" else source
+    prompt_messages = None
     if mode == "mock":
         ai_message = _mock_generate(messages)
         raw_text = json.dumps({"content": ai_message["content"], "tool_calls": ai_message["tool_calls"]}, ensure_ascii=False)
@@ -585,6 +699,7 @@ def generate_ai_message(
         status = "success"
         error = None
     elif mode == "prompt_json":
+        prompt_messages = _build_prompt_messages(messages, tools_schema)
         if source == "local":
             raw_text = _prompt_json_generate(config_path, config, messages, tools_schema)
         else:
@@ -600,35 +715,106 @@ def generate_ai_message(
             error = {"type": type(exc).__name__, "message": str(exc)}
     else:
         raise ValueError("mode must be mock or prompt_json")
-    raw_record = {
-        "mode": mode,
-        "backend": backend,
-        "llm_source": source,
-        "raw_text": raw_text,
-        "parsed_candidate": parsed_candidate,
-        "status": status,
-        "error": error,
-        "generated_at": generated_at,
-    }
     if artifact_dir:
-        raw_path, message_path, log_path = _artifact_paths(artifact_dir, artifact_stem)
-        write_json(raw_record, raw_path)
-        write_json(ai_message, message_path)
-        append_jsonl(
-            {
-                "timestamp": generated_at,
-                "mode": mode,
-                "status": status,
-                "raw_output_path": str(raw_path),
-                "ai_message_path": str(message_path),
-                "error": error,
-            },
-            log_path,
+        _write_generation_artifacts(
+            mode,
+            backend,
+            source,
+            raw_text,
+            prompt_messages,
+            parsed_candidate,
+            ai_message,
+            status,
+            error,
+            generated_at,
+            artifact_dir,
+            artifact_stem,
         )
     return {
         "ai_message": ai_message,
         "status": status,
         "error": error,
+        "prompt_messages": prompt_messages,
+    }
+
+
+def stream_ai_message(
+    model_config: str,
+    messages: list[dict],
+    tools_schema: list[dict],
+    mode: str = "prompt_json",
+    artifact_dir: str | None = None,
+    artifact_stem: str | None = None,
+) -> Iterator[dict]:
+    config_path, config = _load_model_config(model_config)
+    messages = validate_messages(deepcopy(messages))
+    if not isinstance(tools_schema, list):
+        raise ValueError("tools_schema must be an array")
+    generated_at = now_iso()
+    source = "mock" if mode == "mock" else _llm_source(config)
+    backend = "mock" if mode == "mock" else source
+    prompt_messages = None
+    parsed_candidate = None
+    status = "success"
+    error = None
+
+    if mode == "mock":
+        ai_message = _mock_generate(messages)
+        raw_text = json.dumps({"content": ai_message["content"], "tool_calls": ai_message["tool_calls"]}, ensure_ascii=False)
+        parsed_candidate = {"content": ai_message["content"], "tool_calls": ai_message["tool_calls"]}
+        if ai_message["content"]:
+            yield {"type": "delta", "text": ai_message["content"]}
+    elif mode == "prompt_json":
+        prompt_messages = _build_prompt_messages(messages, tools_schema)
+        if source == "fastapi":
+            raw_parts = []
+            emitted_chars = 0
+            for chunk in _fastapi_prompt_json_stream(config_path, config, messages, tools_schema):
+                raw_parts.append(chunk)
+                content = _streaming_content_prefix("".join(raw_parts))
+                if len(content) > emitted_chars:
+                    delta = content[emitted_chars:]
+                    emitted_chars = len(content)
+                    if delta:
+                        yield {"type": "delta", "text": delta}
+            raw_text = "".join(raw_parts)
+        elif source == "local":
+            raw_text = _prompt_json_generate(config_path, config, messages, tools_schema)
+        else:
+            raise ValueError("runtime.llm_source must be local or fastapi")
+        try:
+            parsed_candidate, ai_message = _parse_model_output(raw_text)
+            if source == "local" and ai_message["content"]:
+                yield {"type": "delta", "text": ai_message["content"]}
+        except Exception as exc:
+            ai_message = make_ai_message(PARSE_ERROR_CONTENT, [])
+            status = "error"
+            error = {"type": type(exc).__name__, "message": str(exc)}
+    else:
+        raise ValueError("mode must be mock or prompt_json")
+
+    _write_generation_artifacts(
+        mode,
+        backend,
+        source,
+        raw_text,
+        prompt_messages,
+        parsed_candidate,
+        ai_message,
+        status,
+        error,
+        generated_at,
+        artifact_dir,
+        artifact_stem,
+    )
+    yield {
+        "type": "done",
+        "result": {
+            "ai_message": ai_message,
+            "status": status,
+            "error": error,
+            "prompt_messages": prompt_messages,
+        },
     }
 
 

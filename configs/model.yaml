@@ -26,6 +26,7 @@ tool_calling:
 fastapi:
   base_url: http://127.0.0.1:8012
   generate_path: /generate
+  stream_path: /generate_stream
   timeout_seconds: 600
   api_key: null
   model: null

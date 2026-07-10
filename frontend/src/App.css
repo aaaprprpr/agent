@@ -237,6 +237,101 @@
   background: #fff7f7;
 }
 
+.tool-trace {
+  margin: -4px 0 8px;
+  color: #777;
+}
+
+.tool-trace-toggle {
+  min-width: 132px;
+  min-height: 30px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: #777;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.2;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.14s ease, color 0.14s ease;
+}
+
+.tool-trace-toggle:hover {
+  color: #333;
+  background: #f4f4f4;
+}
+
+.tool-trace-icon {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 15px;
+  color: #999;
+  transform: rotate(-90deg);
+  transition: transform 0.14s ease, color 0.14s ease;
+}
+
+.tool-trace-icon path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.tool-trace.open .tool-trace-icon {
+  transform: rotate(0deg);
+}
+
+.tool-trace-toggle small {
+  color: #aaa;
+  font-size: 11px;
+}
+
+.tool-trace-panel {
+  max-width: min(720px, 76vw);
+  margin-top: 7px;
+  padding: 9px 10px;
+  border-left: 2px solid #dedede;
+  border-radius: 8px;
+  background: #fafafa;
+}
+
+.tool-trace-item + .tool-trace-item {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #ececec;
+}
+
+.tool-trace-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 5px;
+  color: #555;
+  font-size: 12px;
+}
+
+.tool-trace-title em {
+  color: #999;
+  font-style: normal;
+  font-size: 11px;
+}
+
+.tool-trace pre {
+  margin: 0;
+  color: #777;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .message-body p {
   margin: 0;
   color: #2f2f2f;

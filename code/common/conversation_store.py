@@ -381,4 +381,11 @@ def list_tool_steps(db_path: str | Path, assistant_message_id: str) -> list[dict
             """,
             (assistant_message_id,),
         ).fetchall()
-    return [dict(row) for row in rows]
+    result = []
+    for row in rows:
+        item = dict(row)
+        item["input"] = _json_loads(item.get("input_json"))
+        item["output"] = _json_loads(item.get("output_json"))
+        item["error"] = _json_loads(item.get("error_json"))
+        result.append(item)
+    return result
