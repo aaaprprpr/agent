@@ -5,3 +5,7 @@ outputs/tmp*/
 models/*
 !models/.gitkeep
 
+outputs
+memory
+memory\conversations
+memory\memory_index.json

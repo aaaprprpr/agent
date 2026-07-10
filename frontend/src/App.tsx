@@ -163,7 +163,6 @@ function App() {
         body: JSON.stringify({
           user_input: text,
           conversation_id: conversationId,
-          selected_memory_ids: existingHistory?.memoryReady ? [`mem_conversation_${conversationId}`] : [],
         }),
       })
       const payload = await response.json().catch(() => null)
