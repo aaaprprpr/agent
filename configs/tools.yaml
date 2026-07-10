@@ -2,6 +2,12 @@ default_toolset: basic_tools
 
 settings:
   data_root: ../data
+  retry:
+    max_attempts: 2
+    recoverable_errors: [OSError, TimeoutError, ConnectionError]
+  cache:
+    enabled: true
+    cacheable_tools: [calculator, file_reader, local_file_search, table_analyzer]
 
 toolsets:
   basic_tools:
@@ -79,6 +85,7 @@ tools:
   format_converter:
     module: skills.format_converter
     function: format_converter
+    side_effects: true
     description: Convert text to markdown bullets or formatted JSON and write the converted content to a file.
     parameters:
       text: {type: string, description: Input text.}

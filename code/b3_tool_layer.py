@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib
 import inspect
 import json
 import sys
+from copy import deepcopy
 from pathlib import Path
 from time import perf_counter
 from typing import Any
@@ -27,6 +29,17 @@ JSON_TYPES = {
     "array": list,
 }
 
+PYTHON_TO_JSON_TYPES = {
+    str: "string",
+    int: "integer",
+    float: "number",
+    bool: "boolean",
+    dict: "object",
+    list: "array",
+}
+
+INJECTED_PARAMETERS = {"data_root", "output_dir"}
+
 
 def _load_tools_config(tools_config: str | Path) -> tuple[Path, dict]:
     config_path = Path(tools_config).resolve()
@@ -46,6 +59,68 @@ def _resolve_toolset(config: dict, toolset: str | None) -> tuple[str, list[str]]
     if not isinstance(names, list) or not all(isinstance(name, str) for name in names):
         raise ValueError(f"toolset {selected} must be a list of tool names")
     return selected, names
+
+
+def _load_tool_function(tool: dict) -> Any:
+    module = importlib.import_module(tool["module"])
+    return getattr(module, tool["function"])
+
+
+def _annotation_to_json_type(annotation: Any, default: Any = inspect._empty) -> str:
+    if annotation in PYTHON_TO_JSON_TYPES:
+        return PYTHON_TO_JSON_TYPES[annotation]
+    origin = getattr(annotation, "__origin__", None)
+    if origin in PYTHON_TO_JSON_TYPES:
+        return PYTHON_TO_JSON_TYPES[origin]
+    if default is not inspect._empty and default is not None:
+        for python_type, json_type in PYTHON_TO_JSON_TYPES.items():
+            if python_type is int and isinstance(default, bool):
+                continue
+            if isinstance(default, python_type):
+                return json_type
+    return "string"
+
+
+def _tool_with_inferred_schema(tool: dict) -> tuple[dict, dict]:
+    enriched = deepcopy(tool)
+    parameters = deepcopy(enriched.get("parameters", {}))
+    required = list(enriched.get("required", []))
+    inference = {
+        "schema_source": "yaml",
+        "auto_inferred_parameters": [],
+        "code_signature": None,
+        "error": None,
+    }
+    if not isinstance(parameters, dict):
+        parameters = {}
+    try:
+        function = _load_tool_function(enriched)
+        signature = inspect.signature(function)
+        inference["code_signature"] = f"{enriched['module']}.{enriched['function']}{signature}"
+        for name, parameter in signature.parameters.items():
+            if name in INJECTED_PARAMETERS or parameter.kind in {
+                inspect.Parameter.VAR_POSITIONAL,
+                inspect.Parameter.VAR_KEYWORD,
+            }:
+                continue
+            if name not in parameters:
+                schema = {
+                    "type": _annotation_to_json_type(parameter.annotation, parameter.default),
+                    "description": "Auto-inferred from Python function signature.",
+                }
+                if schema["type"] == "array":
+                    schema["items"] = {"type": "string"}
+                parameters[name] = schema
+                inference["auto_inferred_parameters"].append(name)
+            if parameter.default is inspect._empty and name not in required:
+                required.append(name)
+        if inference["auto_inferred_parameters"]:
+            inference["schema_source"] = "yaml+python_signature"
+    except Exception as exc:
+        inference["error"] = {"type": type(exc).__name__, "message": str(exc)}
+    enriched["parameters"] = parameters
+    enriched["required"] = required
+    return enriched, inference
 
 
 def _parameter_schema(tool: dict) -> dict:
@@ -76,6 +151,7 @@ def get_tools_schema(
     _, config = _load_tools_config(tools_config)
     selected, tool_names = _resolve_toolset(config, toolset)
     schema = []
+    details = []
     for name in tool_names:
         tool = config["tools"].get(name)
         if not isinstance(tool, dict):
@@ -86,22 +162,30 @@ def get_tools_schema(
         returns = tool["returns"]
         if not isinstance(returns, dict):
             raise ValueError(f"tool {name} returns must be an object")
+        enriched_tool, inference = _tool_with_inferred_schema(tool)
         schema.append(
             {
                 "type": "function",
                 "function": {
                     "name": name,
                     "description": tool["description"],
-                    "parameters": _parameter_schema(tool),
+                    "parameters": _parameter_schema(enriched_tool),
                     "x-returns": {"type": "object", "properties": returns},
                 },
             }
         )
+        details.append({"name": name, **inference})
     if outdir:
         output_dir = Path(outdir)
         write_json(schema, output_dir / "tools_schema.json")
         write_json(
-            {"status": "success", "toolset": selected, "tool_count": len(schema), "tools": tool_names},
+            {
+                "status": "success",
+                "toolset": selected,
+                "tool_count": len(schema),
+                "tools": tool_names,
+                "schema_details": details,
+            },
             output_dir / "tool_schema_report.json",
         )
     return schema
@@ -142,6 +226,94 @@ def _error_result(name: str, args: dict, exc: Exception, latency_ms: float = 0.0
     )
 
 
+def _retry_settings(config: dict, definition: dict) -> tuple[int, set[str]]:
+    retry_config = config.get("settings", {}).get("retry", {})
+    if not isinstance(retry_config, dict):
+        retry_config = {}
+    max_attempts = int(definition.get("max_attempts", retry_config.get("max_attempts", 1)))
+    if definition.get("side_effects"):
+        max_attempts = 1
+    max_attempts = max(1, max_attempts)
+    recoverable = retry_config.get("recoverable_errors", ["OSError", "TimeoutError", "ConnectionError"])
+    if not isinstance(recoverable, list):
+        recoverable = []
+    return max_attempts, {str(name) for name in recoverable}
+
+
+def _cache_settings(config: dict, output_dir: Path | None) -> tuple[bool, set[str]]:
+    cache_config = config.get("settings", {}).get("cache", {})
+    if not isinstance(cache_config, dict):
+        cache_config = {}
+    enabled = bool(cache_config.get("enabled", False)) and output_dir is not None
+    cacheable = cache_config.get("cacheable_tools", [])
+    if not isinstance(cacheable, list):
+        cacheable = []
+    return enabled, {str(name) for name in cacheable}
+
+
+def _read_cache(path: Path) -> dict:
+    if not path.is_file():
+        return {}
+    try:
+        cache = read_json(path)
+    except Exception:
+        return {}
+    return cache if isinstance(cache, dict) else {}
+
+
+def _cache_key(name: str, args: dict) -> str:
+    raw = json.dumps({"name": name, "args": args}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _run_configured_tool(name: str, args: dict, definition: dict, resolved_data_root: Path, output_dir: Path | None) -> Any:
+    function = _load_tool_function(definition)
+    kwargs = dict(args)
+    signature = inspect.signature(function)
+    if "data_root" in signature.parameters:
+        kwargs["data_root"] = str(resolved_data_root)
+    if "output_dir" in signature.parameters:
+        kwargs["output_dir"] = str(output_dir) if output_dir else None
+    return function(**kwargs)
+
+
+def _stats_from_records(records: list[dict]) -> dict:
+    by_tool: dict[str, dict] = {}
+    for record in records:
+        name = record["name"]
+        entry = by_tool.setdefault(
+            name,
+            {
+                "count": 0,
+                "success_count": 0,
+                "error_count": 0,
+                "cache_hit_count": 0,
+                "latency_ms_total": 0.0,
+            },
+        )
+        entry["count"] += 1
+        if record["status"] == "success":
+            entry["success_count"] += 1
+        else:
+            entry["error_count"] += 1
+        if record.get("cache_hit"):
+            entry["cache_hit_count"] += 1
+        entry["latency_ms_total"] += float(record.get("latency_ms") or 0.0)
+    for entry in by_tool.values():
+        count = entry["count"] or 1
+        entry["avg_latency_ms"] = round(entry["latency_ms_total"] / count, 3)
+        entry["failure_rate"] = round(entry["error_count"] / count, 4)
+        entry.pop("latency_ms_total", None)
+    return {
+        "generated_at": now_iso(),
+        "total_calls": len(records),
+        "success_count": sum(1 for record in records if record["status"] == "success"),
+        "error_count": sum(1 for record in records if record["status"] == "error"),
+        "cache_hit_count": sum(1 for record in records if record.get("cache_hit")),
+        "by_tool": by_tool,
+    }
+
+
 def execute_tool_calls(
     tool_calls: list[dict],
     tools_config: str,
@@ -157,8 +329,14 @@ def execute_tool_calls(
     tool_messages = []
     log_records = []
     output_dir = Path(outdir) if outdir else None
+    cache_enabled, cacheable_tools = _cache_settings(config, output_dir)
+    cache_path = output_dir / "tool_result_cache.json" if output_dir else None
+    cache = _read_cache(cache_path) if cache_enabled and cache_path else {}
+    cache_dirty = False
     for index, raw_call in enumerate(tool_calls):
         start = perf_counter()
+        attempts_used = 0
+        cache_hit = False
         try:
             call = normalize_tool_call(raw_call, index)
         except Exception as exc:
@@ -170,22 +348,40 @@ def execute_tool_calls(
             if name not in allowed_tools or name not in config["tools"]:
                 result = _error_result(name, args, ValueError(f"tool is not available in {selected}: {name}"))
             else:
-                definition = config["tools"][name]
+                definition, _ = _tool_with_inferred_schema(config["tools"][name])
                 try:
                     _validate_args(args, definition)
-                    module = importlib.import_module(definition["module"])
-                    function = getattr(module, definition["function"])
-                    kwargs = dict(args)
-                    signature = inspect.signature(function)
-                    if "data_root" in signature.parameters:
-                        kwargs["data_root"] = str(resolved_data_root)
-                    if "output_dir" in signature.parameters:
-                        kwargs["output_dir"] = str(output_dir) if output_dir else None
-                    output = function(**kwargs)
-                    latency_ms = round((perf_counter() - start) * 1000, 3)
-                    result = make_skill_result(name, "success", args, output, None, latency_ms)
-                except (ImportError, AttributeError) as exc:
-                    raise RuntimeError(f"cannot load configured tool {name}: {exc}") from exc
+                    key = _cache_key(name, args)
+                    if cache_enabled and name in cacheable_tools and key in cache:
+                        cached = cache[key]
+                        if isinstance(cached, dict) and isinstance(cached.get("skill_result"), dict):
+                            result = deepcopy(cached["skill_result"])
+                            result["latency_ms"] = 0.0
+                            cache_hit = True
+                        else:
+                            raise ValueError("invalid cached tool result")
+                    else:
+                        max_attempts, recoverable_errors = _retry_settings(config, definition)
+                        last_exc: Exception | None = None
+                        for attempt in range(1, max_attempts + 1):
+                            attempts_used = attempt
+                            try:
+                                output = _run_configured_tool(name, args, definition, resolved_data_root, output_dir)
+                                latency_ms = round((perf_counter() - start) * 1000, 3)
+                                result = make_skill_result(name, "success", args, output, None, latency_ms)
+                                if cache_enabled and name in cacheable_tools:
+                                    cache[key] = {
+                                        "created_at": now_iso(),
+                                        "skill_result": result,
+                                    }
+                                    cache_dirty = True
+                                break
+                            except Exception as exc:
+                                last_exc = exc
+                                if type(exc).__name__ not in recoverable_errors or attempt >= max_attempts:
+                                    raise
+                        else:
+                            raise last_exc or RuntimeError("tool execution failed")
                 except Exception as exc:
                     latency_ms = round((perf_counter() - start) * 1000, 3)
                     result = _error_result(name, args, exc, latency_ms)
@@ -202,12 +398,17 @@ def execute_tool_calls(
                 "args": call["args"],
                 "skill_result": result,
                 "latency_ms": result["latency_ms"],
+                "attempts": attempts_used,
+                "cache_hit": cache_hit,
             }
         )
     if outdir:
         write_json(tool_messages, output_dir / "tool_messages.json")
         for record in log_records:
             append_jsonl(record, output_dir / "tool_call_log.jsonl")
+        write_json(_stats_from_records(log_records), output_dir / "tool_stats.json")
+        if cache_enabled and cache_dirty and cache_path:
+            write_json(cache, cache_path)
     return tool_messages
 
 

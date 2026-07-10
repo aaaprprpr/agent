@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import argparse
 import json
+import os
 import threading
 from pathlib import Path
 from typing import Any
@@ -10,14 +12,16 @@ from fastapi.responses import JSONResponse
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-MODEL_CONFIG_PATH = PROJECT_ROOT / "configs" / "model.yaml"
-SERVER_HOST = "0.0.0.0"
-SERVER_PORT = 8012
-API_KEY: str | None = None
-_MODEL_CACHE: dict[tuple[str, ...], tuple[Any, Any]] = {}
+DEFAULT_MODEL_CONFIG_PATH = PROJECT_ROOT / "configs" / "model.yaml"
+DEFAULT_SERVER_HOST = "127.0.0.1"
+DEFAULT_SERVER_PORT = 8012
+MODEL_CONFIG_PATH = DEFAULT_MODEL_CONFIG_PATH
+API_KEY: str | None = os.environ.get("B4_LLM_API_KEY") or None
+
+_MODEL_CACHE: dict[tuple[str, ...], tuple[Any, Any, str]] = {}
 
 
-app = FastAPI(title="B4 Raw LLM FastAPI Server", version="1.0.0")
+app = FastAPI(title="B4 Raw LLM FastAPI Server", version="2.0.0")
 
 
 def read_yaml(path: str | Path) -> Any:
@@ -53,6 +57,37 @@ def _dtype_value(torch_module: Any, configured: str) -> Any:
     return mapping[configured]
 
 
+def _read_model_metadata(model_path: Path) -> dict[str, Any]:
+    config_path = model_path / "config.json"
+    if not config_path.is_file():
+        return {}
+    with config_path.open("r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def _select_loader(transformers_module: Any, model_path: Path, model_config: dict[str, Any]) -> tuple[Any, Any, str]:
+    requested = str(model_config.get("model_loader", "auto")).lower()
+    metadata = _read_model_metadata(model_path)
+    architectures = metadata.get("architectures") or []
+    model_type = metadata.get("model_type")
+    is_qwen35 = model_type == "qwen3_5" or "Qwen3_5ForConditionalGeneration" in architectures
+
+    if requested in {"qwen3_5", "qwen35", "multimodal"} or (requested == "auto" and is_qwen35):
+        processor_cls = getattr(transformers_module, "AutoProcessor", None)
+        model_cls = getattr(transformers_module, "AutoModelForMultimodalLM", None)
+        if processor_cls is not None and model_cls is not None:
+            return processor_cls, model_cls, "multimodal"
+        direct_cls = getattr(transformers_module, "Qwen3_5ForConditionalGeneration", None)
+        if processor_cls is not None and direct_cls is not None:
+            return processor_cls, direct_cls, "qwen3_5_direct"
+        if requested != "auto":
+            raise RuntimeError("transformers does not provide Qwen3.5 multimodal loader classes")
+
+    tokenizer_cls = getattr(transformers_module, "AutoTokenizer")
+    causal_cls = getattr(transformers_module, "AutoModelForCausalLM")
+    return tokenizer_cls, causal_cls, "causal_lm"
+
+
 def _model_cache_key(
     model_path: Path,
     tokenizer_path: Path,
@@ -61,6 +96,7 @@ def _model_cache_key(
     dtype: Any,
     device_map: Any,
     max_memory: Any,
+    loader_name: str,
 ) -> tuple[str, ...]:
     try:
         device_map_key = json.dumps(device_map, sort_keys=True, separators=(",", ":"))
@@ -78,12 +114,18 @@ def _model_cache_key(
         str(dtype),
         device_map_key,
         max_memory_key,
+        loader_name,
     )
 
 
+def _from_pretrained_with_dtype(cls: Any, path: Path, kwargs: dict[str, Any], dtype: Any) -> Any:
+    try:
+        return cls.from_pretrained(str(path), dtype=dtype, **kwargs)
+    except TypeError:
+        return cls.from_pretrained(str(path), torch_dtype=dtype, **kwargs)
+
+
 def _load_model_bundle(
-    auto_model: Any,
-    auto_tokenizer: Any,
     model_path: Path,
     tokenizer_path: Path,
     local_only: bool,
@@ -91,7 +133,11 @@ def _load_model_bundle(
     dtype: Any,
     device_map: Any,
     max_memory: Any,
-) -> tuple[Any, Any]:
+    model_config: dict[str, Any],
+) -> tuple[Any, Any, str]:
+    import transformers
+
+    processor_cls, model_cls, loader_name = _select_loader(transformers, model_path, model_config)
     cache_key = _model_cache_key(
         model_path,
         tokenizer_path,
@@ -100,25 +146,27 @@ def _load_model_bundle(
         dtype,
         device_map,
         max_memory,
+        loader_name,
     )
     cached = _MODEL_CACHE.get(cache_key)
     if cached is not None:
         return cached
-    tokenizer = auto_tokenizer.from_pretrained(
+
+    processor = processor_cls.from_pretrained(
         str(tokenizer_path),
         local_files_only=local_only,
         trust_remote_code=trust_remote_code,
     )
-    model = auto_model.from_pretrained(
-        str(model_path),
-        local_files_only=local_only,
-        trust_remote_code=trust_remote_code,
-        dtype=dtype,
-        device_map=device_map,
-        max_memory=max_memory,
-    )
-    _MODEL_CACHE[cache_key] = (tokenizer, model)
-    return tokenizer, model
+    model_kwargs = {
+        "local_files_only": local_only,
+        "trust_remote_code": trust_remote_code,
+        "device_map": device_map,
+    }
+    if max_memory is not None:
+        model_kwargs["max_memory"] = max_memory
+    model = _from_pretrained_with_dtype(model_cls, model_path, model_kwargs, dtype)
+    _MODEL_CACHE[cache_key] = (processor, model, loader_name)
+    return processor, model, loader_name
 
 
 def _api_error(status_code: int, message: str, error_type: str) -> HTTPException:
@@ -195,10 +243,56 @@ def _validate_generation_options(options: Any) -> dict[str, Any]:
     }
     if result["max_new_tokens"] <= 0:
         raise ValueError("generation.max_new_tokens must be positive")
-    for name in ("temperature", "top_p", "top_k", "repetition_penalty"):
-        if name in options:
-            result[name] = options[name]
+    if result["do_sample"]:
+        for name in ("temperature", "top_p", "top_k", "repetition_penalty"):
+            if name in options and options[name] is not None:
+                result[name] = options[name]
     return result
+
+
+def _max_input_tokens(config: dict[str, Any]) -> int | None:
+    context = config.get("context", {})
+    if not isinstance(context, dict):
+        return None
+    value = context.get("max_input_tokens")
+    if value is None:
+        return None
+    value = int(value)
+    if value <= 0:
+        raise ValueError("context.max_input_tokens must be positive")
+    return value
+
+
+def _move_inputs_to_device(inputs: Any, device: Any) -> Any:
+    if hasattr(inputs, "to"):
+        return inputs.to(device)
+    if isinstance(inputs, dict):
+        return {key: value.to(device) if hasattr(value, "to") else value for key, value in inputs.items()}
+    raise TypeError("chat template output must be a tensor batch or dict")
+
+
+def _decode_new_tokens(processor: Any, new_tokens: Any) -> str:
+    if hasattr(processor, "decode"):
+        return processor.decode(new_tokens, skip_special_tokens=True)
+    tokenizer = getattr(processor, "tokenizer", None)
+    if tokenizer is not None and hasattr(tokenizer, "decode"):
+        return tokenizer.decode(new_tokens, skip_special_tokens=True)
+    if hasattr(processor, "batch_decode"):
+        return processor.batch_decode([new_tokens], skip_special_tokens=True)[0]
+    raise TypeError("processor/tokenizer does not provide decode or batch_decode")
+
+
+def _apply_chat_template(processor: Any, messages: list[dict[str, Any]]) -> Any:
+    kwargs = {
+        "tokenize": True,
+        "add_generation_prompt": True,
+        "return_tensors": "pt",
+        "return_dict": True,
+    }
+    try:
+        return processor.apply_chat_template(messages, enable_thinking=False, **kwargs)
+    except TypeError:
+        return processor.apply_chat_template(messages, **kwargs)
 
 
 class RawModelServer:
@@ -206,20 +300,21 @@ class RawModelServer:
         self._lock = threading.Lock()
         self._generate_lock = threading.Lock()
         self._loaded_key: str | None = None
-        self._tokenizer: Any | None = None
+        self._processor: Any | None = None
         self._model: Any | None = None
         self._torch: Any | None = None
+        self._loader_name: str | None = None
+        self._max_input_tokens: int | None = None
 
-    def load(self) -> tuple[Any, Any, Any]:
+    def load(self) -> tuple[Any, Any, Any, str, int | None]:
         path = _model_config_path()
         key = str(path)
         with self._lock:
-            if self._loaded_key == key and self._tokenizer is not None and self._model is not None:
-                return self._tokenizer, self._model, self._torch
+            if self._loaded_key == key and self._processor is not None and self._model is not None:
+                return self._processor, self._model, self._torch, self._loader_name or "unknown", self._max_input_tokens
 
             try:
                 import torch
-                from transformers import AutoModelForCausalLM, AutoTokenizer
             except ImportError as exc:
                 raise RuntimeError("install torch and transformers before starting the server") from exc
 
@@ -238,9 +333,7 @@ class RawModelServer:
                 raise FileNotFoundError(f"local model path does not exist: {model_path}")
 
             dtype = _dtype_value(torch, str(model_config.get("torch_dtype", "auto")))
-            tokenizer, model = _load_model_bundle(
-                AutoModelForCausalLM,
-                AutoTokenizer,
+            processor, model, loader_name = _load_model_bundle(
                 model_path,
                 tokenizer_path,
                 bool(model_config.get("local_files_only", True)),
@@ -248,50 +341,52 @@ class RawModelServer:
                 dtype,
                 model_config.get("device_map", "auto"),
                 model_config.get("max_memory"),
+                model_config,
             )
             model.eval()
             self._loaded_key = key
-            self._tokenizer = tokenizer
+            self._processor = processor
             self._model = model
             self._torch = torch
-            return tokenizer, model, torch
+            self._loader_name = loader_name
+            self._max_input_tokens = _max_input_tokens(config)
+            return processor, model, torch, loader_name, self._max_input_tokens
 
     def generate(self, messages: list[dict[str, Any]], options: dict[str, Any]) -> dict[str, Any]:
-        tokenizer, model, torch = self.load()
+        processor, model, torch, loader_name, max_input_tokens = self.load()
         with self._generate_lock:
-            inputs = self._apply_chat_template(tokenizer, messages)
-            device = next(model.parameters()).device
-            inputs = inputs.to(device)
+            inputs = _apply_chat_template(processor, messages)
             input_length = int(inputs["input_ids"].shape[-1])
-            if getattr(tokenizer, "pad_token_id", None) is not None:
-                options.setdefault("pad_token_id", tokenizer.pad_token_id)
-            elif getattr(tokenizer, "eos_token_id", None) is not None:
-                options.setdefault("pad_token_id", tokenizer.eos_token_id)
+            if max_input_tokens is not None and input_length > max_input_tokens:
+                raise ValueError(
+                    f"prompt has {input_length} tokens, exceeding context.max_input_tokens={max_input_tokens}"
+                )
+            device = next(model.parameters()).device
+            inputs = _move_inputs_to_device(inputs, device)
+            eos_token_id = getattr(processor, "eos_token_id", None)
+            pad_token_id = getattr(processor, "pad_token_id", None)
+            tokenizer = getattr(processor, "tokenizer", None)
+            if pad_token_id is None and tokenizer is not None:
+                pad_token_id = getattr(tokenizer, "pad_token_id", None)
+            if eos_token_id is None and tokenizer is not None:
+                eos_token_id = getattr(tokenizer, "eos_token_id", None)
+            if pad_token_id is not None:
+                options.setdefault("pad_token_id", pad_token_id)
+            elif eos_token_id is not None:
+                options.setdefault("pad_token_id", eos_token_id)
             with torch.no_grad():
                 generated = model.generate(**inputs, **options)
             new_tokens = generated[0][input_length:]
-            raw_text = tokenizer.decode(new_tokens, skip_special_tokens=True)
+            raw_text = _decode_new_tokens(processor, new_tokens)
             return {
                 "raw_text": raw_text,
+                "loader": loader_name,
                 "usage": {
                     "prompt_tokens": input_length,
                     "completion_tokens": int(new_tokens.shape[-1]),
                     "total_tokens": input_length + int(new_tokens.shape[-1]),
                 },
             }
-
-    @staticmethod
-    def _apply_chat_template(tokenizer: Any, messages: list[dict[str, Any]]) -> Any:
-        kwargs = {
-            "tokenize": True,
-            "add_generation_prompt": True,
-            "return_tensors": "pt",
-            "return_dict": True,
-        }
-        try:
-            return tokenizer.apply_chat_template(messages, enable_thinking=False, **kwargs)
-        except TypeError:
-            return tokenizer.apply_chat_template(messages, **kwargs)
 
 
 MODEL_SERVER = RawModelServer()
@@ -312,6 +407,7 @@ def health() -> dict[str, Any]:
         "status": "ok",
         "service": "b4_raw_llm",
         "model_config": str(_model_config_path()),
+        "auth_enabled": bool(API_KEY),
     }
 
 
@@ -328,10 +424,29 @@ def generate(payload: dict[str, Any], request: Request) -> dict[str, Any]:
         raise _api_error(500, str(exc), "server_error") from exc
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Serve Qwen/Transformers generation for B4 over FastAPI.")
+    parser.add_argument("--model_config", default=str(DEFAULT_MODEL_CONFIG_PATH))
+    parser.add_argument("--host", default=DEFAULT_SERVER_HOST)
+    parser.add_argument("--port", type=int, default=DEFAULT_SERVER_PORT)
+    parser.add_argument(
+        "--api_key",
+        default=None,
+        help="Optional bearer token. If omitted, B4_LLM_API_KEY environment variable is used.",
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    global MODEL_CONFIG_PATH, API_KEY
+    args = build_parser().parse_args(argv)
+    MODEL_CONFIG_PATH = Path(args.model_config).expanduser().resolve()
+    if args.api_key is not None:
+        API_KEY = args.api_key or None
+
     import uvicorn
 
-    uvicorn.run(app, host=SERVER_HOST, port=SERVER_PORT)
+    uvicorn.run(app, host=args.host, port=args.port)
     return 0
 
 

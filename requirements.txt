@@ -18,3 +18,5 @@ packaging==26.2
 regex==2026.5.9
 requests==2.34.2
 tqdm==4.68.3
+fastapi
+uvicorn

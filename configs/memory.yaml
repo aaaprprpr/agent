@@ -4,3 +4,7 @@ memory:
   conversation_memory_dir: conversations
   index_path: memory_index.json
   max_memory_chars: 2000
+  retrieval:
+    mode: keyword_top_k
+    top_k: 5
+    per_doc_chars: 1200

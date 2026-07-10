@@ -4,6 +4,7 @@ import argparse
 import json
 import re
 import sys
+from collections import Counter
 from pathlib import Path
 
 from common.io_utils import append_jsonl, read_json, read_text, read_yaml, write_json, write_text
@@ -25,12 +26,16 @@ def _memory_paths(config_path: str | Path) -> dict[str, Path | int]:
     max_chars = memory["max_memory_chars"]
     if not isinstance(max_chars, int) or isinstance(max_chars, bool) or max_chars <= 0:
         raise ValueError("max_memory_chars must be a positive integer")
+    retrieval = memory.get("retrieval", {})
+    if not isinstance(retrieval, dict):
+        retrieval = {}
     return {
         "root": root,
         "global": root / memory["global_memory_dir"],
         "conversations": root / memory["conversation_memory_dir"],
         "index": root / memory["index_path"],
         "max_chars": max_chars,
+        "retrieval": retrieval,
     }
 
 
@@ -41,6 +46,84 @@ def _read_index(index_path: Path) -> dict:
     if not isinstance(index, dict):
         raise ValueError("memory_index.json must be an object")
     return index
+
+
+def _query_terms(query: str | None) -> list[str]:
+    if not query:
+        return []
+    lowered = query.lower()
+    words = re.findall(r"[a-z0-9_]+|[\u4e00-\u9fff]+", lowered)
+    terms: list[str] = []
+    for word in words:
+        if re.fullmatch(r"[\u4e00-\u9fff]+", word):
+            terms.extend(list(word))
+            terms.extend(word[index : index + 2] for index in range(max(0, len(word) - 1)))
+        elif len(word) >= 2:
+            terms.append(word)
+    counts = Counter(terms)
+    return [term for term, _ in counts.most_common()]
+
+
+def _score_memory(metadata: dict, content: str, terms: list[str]) -> int:
+    if not terms:
+        return 0
+    blob = "\n".join(
+        [
+            str(metadata.get("title", "")),
+            str(metadata.get("summary", "")),
+            content,
+        ]
+    ).lower()
+    return sum(blob.count(term) for term in terms)
+
+
+def _best_excerpt(content: str, terms: list[str], limit: int) -> str:
+    if len(content) <= limit:
+        return content
+    lowered = content.lower()
+    first_hit = None
+    for term in terms:
+        hit = lowered.find(term)
+        if hit >= 0 and (first_hit is None or hit < first_hit):
+            first_hit = hit
+    center = first_hit if first_hit is not None else 0
+    start = max(0, center - limit // 4)
+    end = min(len(content), start + limit)
+    start = max(0, end - limit)
+    prefix = "..." if start > 0 else ""
+    suffix = "..." if end < len(content) else ""
+    return prefix + content[start:end] + suffix
+
+
+def _retrieval_config(paths: dict[str, Path | int]) -> dict:
+    config = paths.get("retrieval", {})
+    return config if isinstance(config, dict) else {}
+
+
+def _compact_summary(text: str, limit: int = 200) -> str:
+    compact = re.sub(r"\s+", " ", text).strip()
+    return compact[:limit]
+
+
+def _extract_final_answer(markdown: str) -> str:
+    match = re.search(r"## Final Answer\s*(.*?)\s*## Messages", markdown, flags=re.S)
+    if not match:
+        return ""
+    return match.group(1).strip()
+
+
+def _classify_memory_update(old_answer: str, new_answer: str) -> str:
+    old_norm = re.sub(r"\s+", " ", old_answer).strip()
+    new_norm = re.sub(r"\s+", " ", new_answer).strip()
+    if not old_norm:
+        return "new_memory"
+    if old_norm == new_norm:
+        return "duplicate_no_change"
+    if old_norm in new_norm:
+        return "supplement"
+    if new_norm in old_norm:
+        return "shorter_rewrite"
+    return "rewrite_or_conflict"
 
 
 def load_memory(
@@ -60,10 +143,15 @@ def load_memory(
     ordered_ids.extend(selected_memory_ids)
     ordered_ids = list(dict.fromkeys(ordered_ids))
 
-    docs = []
+    retrieval = _retrieval_config(paths)
+    top_k = int(retrieval.get("top_k", 5))
+    per_doc_chars = int(retrieval.get("per_doc_chars", paths["max_chars"]))
+    top_k = max(1, top_k)
+    per_doc_chars = max(1, per_doc_chars)
+    terms = _query_terms(query)
+
+    candidates = []
     errors = []
-    remaining = int(paths["max_chars"])
-    any_truncated = False
     for memory_id in ordered_ids:
         metadata = index.get(memory_id)
         if not isinstance(metadata, dict):
@@ -83,7 +171,46 @@ def load_memory(
             errors.append({"memory_id": memory_id, "type": "FileNotFoundError", "message": f"memory file not found: {relative_path}"})
             continue
         original = read_text(document_path)
-        included = original[:remaining] if remaining > 0 else ""
+        score = _score_memory(metadata, original, terms)
+        candidates.append(
+            {
+                "memory_id": memory_id,
+                "metadata": metadata,
+                "relative_path": relative_path,
+                "original": original,
+                "score": score,
+                "explicit": memory_id in selected_memory_ids,
+            }
+        )
+
+    explicit_candidates = [item for item in candidates if item["explicit"]]
+    ranked_candidates = [item for item in candidates if not item["explicit"]]
+    if terms:
+        ranked_candidates.sort(key=lambda item: (-item["score"], item["memory_id"]))
+        ranked_candidates = ranked_candidates[:top_k]
+    ranked = explicit_candidates + ranked_candidates
+    ranked_ids = set()
+    unique_ranked = []
+    for item in ranked:
+        if item["memory_id"] in ranked_ids:
+            continue
+        ranked_ids.add(item["memory_id"])
+        unique_ranked.append(item)
+    ranked = unique_ranked
+
+    docs = []
+    remaining = int(paths["max_chars"])
+    any_truncated = False
+    for item in ranked:
+        if remaining <= 0:
+            any_truncated = True
+            break
+        memory_id = item["memory_id"]
+        metadata = item["metadata"]
+        original = item["original"]
+        relative_path = item["relative_path"]
+        limit = min(per_doc_chars, remaining)
+        included = _best_excerpt(original, terms, limit)
         truncated = len(included) < len(original)
         any_truncated = any_truncated or truncated
         if included:
@@ -97,6 +224,8 @@ def load_memory(
                     "original_chars": len(original),
                     "included_chars": len(included),
                     "truncated": truncated,
+                    "retrieval_score": item["score"],
+                    "selection_reason": "explicit_id" if item["explicit"] else ("keyword_top_k" if terms else "configured_order"),
                 }
             )
             remaining -= len(included)
@@ -109,6 +238,12 @@ def load_memory(
     result = {
         "status": status,
         "query": query,
+        "retrieval": {
+            "mode": "keyword_top_k" if terms else "configured_order",
+            "terms": terms,
+            "top_k": top_k,
+            "per_doc_chars": per_doc_chars,
+        },
         "selected_memory_docs": docs,
         "max_memory_chars": paths["max_chars"],
         "total_chars": sum(item["included_chars"] for item in docs),
@@ -124,6 +259,7 @@ def load_memory(
                 "operation": "load",
                 "status": status,
                 "selected_ids": [item["memory_id"] for item in docs],
+                "retrieval_mode": result["retrieval"]["mode"],
                 "errors": errors,
             },
             output_dir / "memory_log.jsonl",
@@ -162,7 +298,10 @@ def save_memory(
     target_path = Path(target_dir) / f"{conversation_id}.md"
     relative_path = f"{relative_dir}/{conversation_id}.md"
     title = f"{save_type.title()} {conversation_id}"
-    summary = answer[:200]
+    summary = _compact_summary(answer, 200)
+    old_text = read_text(target_path) if target_path.is_file() else ""
+    old_answer = _extract_final_answer(old_text)
+    update_kind = _classify_memory_update(old_answer, answer)
     markdown = (
         f"# {title}\n\n"
         f"- memory_id: `{memory_id}`\n"
@@ -201,6 +340,14 @@ def save_memory(
         "index_path": Path(paths["index"]).name,
         "created_at": created_at,
         "updated_at": now,
+        "update_analysis": {
+            "existed_before": bool(old_text),
+            "classification": update_kind,
+            "old_chars": len(old_text),
+            "new_chars": len(markdown),
+            "old_summary": _compact_summary(old_answer, 120),
+            "new_summary": _compact_summary(answer, 120),
+        },
         "source_paths": {
             "messages": str(messages_path),
             "trace": str(trace_path),
@@ -211,7 +358,13 @@ def save_memory(
         output_dir = Path(outdir)
         write_json(result, output_dir / "saved_memory.json")
         append_jsonl(
-            {"timestamp": now, "operation": "save", "status": "success", "memory_id": memory_id},
+            {
+                "timestamp": now,
+                "operation": "save",
+                "status": "success",
+                "memory_id": memory_id,
+                "update_classification": update_kind,
+            },
             output_dir / "memory_log.jsonl",
         )
     return result
