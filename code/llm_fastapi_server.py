@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 import threading
+from queue import Empty
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -280,6 +281,61 @@ class RawModelServer:
                 },
             }
 
+    def generate_stream(self, messages: list[dict[str, Any]], options: dict[str, Any]) -> Iterator[str]:
+        tokenizer, model, torch = self.load()
+        try:
+            from transformers import TextIteratorStreamer
+        except ImportError as exc:
+            raise RuntimeError("transformers TextIteratorStreamer is required for streaming") from exc
+
+        with self._generate_lock:
+            inputs = self._apply_chat_template(tokenizer, messages)
+            device = next(model.parameters()).device
+            inputs = inputs.to(device)
+            if getattr(tokenizer, "pad_token_id", None) is not None:
+                options.setdefault("pad_token_id", tokenizer.pad_token_id)
+            elif getattr(tokenizer, "eos_token_id", None) is not None:
+                options.setdefault("pad_token_id", tokenizer.eos_token_id)
+
+            streamer = TextIteratorStreamer(
+                tokenizer,
+                skip_prompt=True,
+                skip_special_tokens=True,
+                timeout=1.0,
+            )
+            generation_options = dict(options)
+            generation_options["streamer"] = streamer
+            errors: list[BaseException] = []
+
+            def run_generation() -> None:
+                try:
+                    with torch.no_grad():
+                        model.generate(**inputs, **generation_options)
+                except BaseException as exc:
+                    errors.append(exc)
+
+            worker = threading.Thread(target=run_generation, daemon=True)
+            worker.start()
+            while worker.is_alive():
+                try:
+                    chunk = next(streamer)
+                except Empty:
+                    continue
+                except StopIteration:
+                    break
+                if chunk:
+                    yield chunk
+            worker.join()
+            while True:
+                try:
+                    chunk = next(streamer)
+                except (Empty, StopIteration):
+                    break
+                if chunk:
+                    yield chunk
+            if errors:
+                yield f"\n[stream_error] {type(errors[0]).__name__}: {errors[0]}"
+
     @staticmethod
     def _apply_chat_template(tokenizer: Any, messages: list[dict[str, Any]]) -> Any:
         kwargs = {
@@ -302,7 +358,7 @@ def root() -> dict[str, Any]:
     return {
         "status": "ok",
         "service": "b4_raw_llm",
-        "endpoints": ["/health", "/generate"],
+        "endpoints": ["/health", "/generate", "/generate_stream"],
     }
 
 
@@ -322,6 +378,20 @@ def generate(payload: dict[str, Any], request: Request) -> dict[str, Any]:
         messages = _validate_messages(payload.get("messages"))
         options = _validate_generation_options(payload.get("generation"))
         return MODEL_SERVER.generate(messages, options)
+    except ValueError as exc:
+        raise _api_error(400, str(exc), "invalid_request_error") from exc
+    except Exception as exc:
+        raise _api_error(500, str(exc), "server_error") from exc
+
+
+@app.post("/generate_stream")
+def generate_stream(payload: dict[str, Any], request: Request) -> StreamingResponse:
+    _check_auth(request)
+    try:
+        messages = _validate_messages(payload.get("messages"))
+        options = _validate_generation_options(payload.get("generation"))
+        stream = MODEL_SERVER.generate_stream(messages, options)
+        return StreamingResponse(stream, media_type="text/plain; charset=utf-8")
     except ValueError as exc:
         raise _api_error(400, str(exc), "invalid_request_error") from exc
     except Exception as exc:

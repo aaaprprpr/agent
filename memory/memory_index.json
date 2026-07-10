@@ -243,11 +243,11 @@
     "memory_id": "mem_conversation_conv_web_20260710_161422_041",
     "memory_type": "conversation",
     "title": "Conversation conv_web_20260710_161422_041",
-    "summary": "用户输入了一个问号，可能是在测试或表达疑问。请问有什么我可以帮您的吗？",
+    "summary": "这是一个最简贪吃蛇的 Python 代码示例，使用 pygame 库：\n\n```python\nimport pygame\nimport random\n\n# 初始化 pygame\npygame.init()\n\n# 设置窗口\nWIDTH, HEIGHT = 400, 400\nCELL_SIZE = 20\nscreen = pygame.display.set_mode((WIDTH, HEIGHT))",
     "path": "conversations/conv_web_20260710_161422_041.md",
     "conversation_id": "conv_web_20260710_161422_041",
     "created_at": "2026-07-10T16:21:36+08:00",
-    "updated_at": "2026-07-10T16:44:44+08:00"
+    "updated_at": "2026-07-10T17:01:08+08:00"
   },
   "mem_conversation_conv_web_20260710_162429_420": {
     "memory_id": "mem_conversation_conv_web_20260710_162429_420",
@@ -263,10 +263,20 @@
     "memory_id": "mem_conversation_conv_web_20260710_162715_450",
     "memory_type": "conversation",
     "title": "Conversation conv_web_20260710_162715_450",
-    "summary": "你好！有什么我可以帮助你的吗？",
+    "summary": "从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前，从前",
     "path": "conversations/conv_web_20260710_162715_450.md",
     "conversation_id": "conv_web_20260710_162715_450",
     "created_at": "2026-07-10T16:27:16+08:00",
-    "updated_at": "2026-07-10T16:29:23+08:00"
+    "updated_at": "2026-07-10T17:13:57+08:00"
+  },
+  "mem_conversation_conv_web_20260710_170948_449": {
+    "memory_id": "mem_conversation_conv_web_20260710_170948_449",
+    "memory_type": "conversation",
+    "title": "Conversation conv_web_20260710_170948_449",
+    "summary": "这是第2次出现“你好”。第一次在对话历史中（用户：隔壁问过什么吗），第二次在当前输入中（这是第几次你好）。",
+    "path": "conversations/conv_web_20260710_170948_449.md",
+    "conversation_id": "conv_web_20260710_170948_449",
+    "created_at": "2026-07-10T17:09:51+08:00",
+    "updated_at": "2026-07-10T17:10:15+08:00"
   }
 }

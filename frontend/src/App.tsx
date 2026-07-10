@@ -33,9 +33,11 @@ type BackendMessage = {
   id: string
   role: Role
   content: string
+  status?: 'pending' | 'error' | null
 }
 
 const API_BASE = import.meta.env.VITE_AGENT_API_BASE ?? 'http://127.0.0.1:8020'
+const ACTIVE_CONVERSATION_KEY = 'agent.activeConversationId'
 
 function pad(value: number, size = 2) {
   return String(value).padStart(size, '0')
@@ -83,15 +85,42 @@ function App() {
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [draft, setDraft] = useState('')
   const [dragActive, setDragActive] = useState(false)
-  const [isRunning, setIsRunning] = useState(false)
+  const [runningConversationIds, setRunningConversationIds] = useState<Set<string>>(() => new Set())
   const [isLoadingHistory, setIsLoadingHistory] = useState(false)
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
   const fileRef = useRef<HTMLInputElement | null>(null)
   const conversationRef = useRef<HTMLElement | null>(null)
+  const currentConversationIdRef = useRef<string | null>(null)
+  const runningConversationIdsRef = useRef<Set<string>>(new Set())
   const stickToBottomRef = useRef(true)
   const [showScrollBottom, setShowScrollBottom] = useState(false)
 
-  const canSend = draft.trim().length > 0 && !isRunning
+  const isCurrentConversationRunning = currentConversationId ? runningConversationIds.has(currentConversationId) : false
+  const hasPendingMessage = messages.some((message) => message.status === 'pending')
+  const canSend = draft.trim().length > 0 && !isCurrentConversationRunning && !hasPendingMessage
+
+  function setActiveConversation(conversationId: string | null) {
+    currentConversationIdRef.current = conversationId
+    setCurrentConversationId(conversationId)
+    if (conversationId) {
+      localStorage.setItem(ACTIVE_CONVERSATION_KEY, conversationId)
+    } else {
+      localStorage.removeItem(ACTIVE_CONVERSATION_KEY)
+    }
+  }
+
+  function setConversationRunning(conversationId: string, running: boolean) {
+    setRunningConversationIds((current) => {
+      const next = new Set(current)
+      if (running) {
+        next.add(conversationId)
+      } else {
+        next.delete(conversationId)
+      }
+      runningConversationIdsRef.current = next
+      return next
+    })
+  }
 
   function updateHistoryMessages(conversationId: string, nextMessages: ChatMessage[], memoryReady?: boolean) {
     setHistories((current) =>
@@ -147,13 +176,24 @@ function App() {
           memoryReady: true,
         }))
       })
+      const activeConversationId = localStorage.getItem(ACTIVE_CONVERSATION_KEY)
+      if (activeConversationId && payload.some((item) => item.id === activeConversationId)) {
+        void loadConversation(activeConversationId)
+      }
     } catch {
       // History is optional for the UI; chat can still run without it.
     }
   }
 
   async function loadConversation(conversationId: string) {
-    if (isRunning || isLoadingHistory) return
+    if (isLoadingHistory) return
+    const cached = histories.find((item) => item.id === conversationId)
+    stickToBottomRef.current = true
+    setActiveConversation(conversationId)
+    setMessages(cached?.messages ?? [])
+    setAttachments([])
+    setDraft('')
+    if (runningConversationIdsRef.current.has(conversationId) && cached) return
     setIsLoadingHistory(true)
     try {
       const response = await fetch(`${API_BASE}/api/conversations/${conversationId}`)
@@ -165,12 +205,10 @@ function App() {
           id: message.id,
           role: message.role,
           body: message.content,
+          status: message.status ?? undefined,
         })) satisfies ChatMessage[]
-      stickToBottomRef.current = true
-      setCurrentConversationId(conversationId)
+      if (currentConversationIdRef.current !== conversationId) return
       setMessages(loadedMessages)
-      setAttachments([])
-      setDraft('')
       updateHistoryMessages(conversationId, loadedMessages, true)
     } finally {
       setIsLoadingHistory(false)
@@ -199,9 +237,10 @@ function App() {
 
   async function handleSend() {
     const text = draft.trim()
-    if (!text || isRunning) return
+    if (!text) return
     stickToBottomRef.current = isConversationAtBottom()
     const conversationId = currentConversationId ?? createConversationId()
+    if (runningConversationIdsRef.current.has(conversationId)) return
     const existingHistory = histories.find((item) => item.id === conversationId)
     const now = Date.now()
     const pendingId = now + 1
@@ -219,7 +258,7 @@ function App() {
         status: 'pending',
       },
     ] satisfies ChatMessage[]
-    setCurrentConversationId(conversationId)
+    setActiveConversation(conversationId)
     setMessages(optimisticMessages)
     setHistories((current) => {
       const exists = current.some((item) => item.id === conversationId)
@@ -238,7 +277,7 @@ function App() {
     })
     setDraft('')
     setAttachments([])
-    setIsRunning(true)
+    setConversationRunning(conversationId, true)
     requestAnimationFrame(() => {
       if (inputRef.current) inputRef.current.style.height = '24px'
     })
@@ -256,7 +295,6 @@ function App() {
         const detail = payload?.detail ?? `HTTP ${response.status}`
         throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
       }
-      stickToBottomRef.current = isConversationAtBottom()
       const finalMessages: ChatMessage[] = optimisticMessages.map((message): ChatMessage =>
         message.id === pendingId
           ? {
@@ -267,10 +305,12 @@ function App() {
           : message,
       )
       const memorySaved = payload?.trace?.memory_save?.status === 'success'
-      setMessages(finalMessages)
+      if (currentConversationIdRef.current === conversationId) {
+        stickToBottomRef.current = isConversationAtBottom()
+        setMessages(finalMessages)
+      }
       updateHistoryMessages(conversationId, finalMessages, memorySaved || existingHistory?.memoryReady)
     } catch (error) {
-      stickToBottomRef.current = isConversationAtBottom()
       const message = error instanceof Error ? error.message : String(error)
       const failedMessages: ChatMessage[] = optimisticMessages.map((item): ChatMessage =>
         item.id === pendingId
@@ -281,10 +321,13 @@ function App() {
             }
           : item,
       )
-      setMessages(failedMessages)
+      if (currentConversationIdRef.current === conversationId) {
+        stickToBottomRef.current = isConversationAtBottom()
+        setMessages(failedMessages)
+      }
       updateHistoryMessages(conversationId, failedMessages)
     } finally {
-      setIsRunning(false)
+      setConversationRunning(conversationId, false)
     }
   }
 
@@ -309,6 +352,14 @@ function App() {
   useEffect(() => {
     loadConversationList()
   }, [])
+
+  useEffect(() => {
+    if (!currentConversationId || !hasPendingMessage || runningConversationIds.has(currentConversationId)) return
+    const timer = window.setInterval(() => {
+      void loadConversation(currentConversationId)
+    }, 2000)
+    return () => window.clearInterval(timer)
+  }, [currentConversationId, hasPendingMessage, runningConversationIds])
 
   useLayoutEffect(() => {
     if (stickToBottomRef.current) {
@@ -351,7 +402,7 @@ function App() {
           onClick={() => {
             stickToBottomRef.current = true
             setMessages([])
-            setCurrentConversationId(null)
+            setActiveConversation(null)
             setAttachments([])
             setDraft('')
           }}

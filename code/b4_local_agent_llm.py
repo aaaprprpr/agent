@@ -183,9 +183,45 @@ def _parse_json_with_backtick_tail(raw_text: str, original_error: json.JSONDecod
     except json.JSONDecodeError:
         raise original_error
     trailing = text[end_index:].strip()
-    if trailing and set(trailing) <= {"`"}:
+    if trailing and set(trailing) <= {"`", '"'}:
         return candidate
     raise original_error
+
+
+def _decode_partial_json_string(fragment: str) -> str:
+    text = fragment.rstrip()
+    while text.endswith("\\"):
+        text = text[:-1]
+    while text:
+        try:
+            return json.loads(f'"{text}"')
+        except json.JSONDecodeError:
+            text = text[:-1]
+    return fragment
+
+
+def _parse_content_fragment(raw_text: str, original_error: json.JSONDecodeError) -> dict:
+    match = re.search(r'"content"\s*:\s*"', raw_text)
+    if not match:
+        raise original_error
+    chars = []
+    escaped = False
+    for char in raw_text[match.end() :]:
+        if escaped:
+            chars.append(char)
+            escaped = False
+            continue
+        if char == "\\":
+            chars.append(char)
+            escaped = True
+            continue
+        if char == '"':
+            break
+        chars.append(char)
+    content = _decode_partial_json_string("".join(chars)).strip()
+    if not content:
+        raise original_error
+    return {"content": content, "tool_calls": []}
 
 
 def _candidate_to_message(candidate: dict) -> tuple[dict, dict]:
@@ -216,7 +252,10 @@ def _parse_model_output(raw_text: str) -> tuple[dict, dict]:
         try:
             candidate = _parse_json_with_backtick_tail(raw_text, exc)
         except json.JSONDecodeError:
-            candidate = _parse_tool_calls_fragment(raw_text, exc)
+            try:
+                candidate = _parse_tool_calls_fragment(raw_text, exc)
+            except Exception:
+                candidate = _parse_content_fragment(raw_text, exc)
     return _candidate_to_message(candidate)
 
 

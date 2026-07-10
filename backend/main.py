@@ -27,6 +27,7 @@ from b5_memory import (  # noqa: E402
     list_conversation_messages,
     list_message_tool_steps,
     record_conversation_tool_step,
+    update_conversation_message,
     upsert_conversation_record,
 )
 
@@ -78,6 +79,7 @@ class ConversationMessage(BaseModel):
     content: str
     message_order: int
     created_at: str
+    status: Literal["pending", "error"] | None = None
 
 
 class ConversationDetail(BaseModel):
@@ -164,6 +166,9 @@ def _history_context(history: list[dict]) -> str:
         "<conversation_history>",
     ]
     for message in visible:
+        metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
+        if metadata.get("ui_status") == "pending":
+            continue
         role = role_labels.get(str(message.get("role")), str(message.get("role")))
         content = str(message.get("content", "")).strip()
         if content:
@@ -228,6 +233,12 @@ def _assistant_metadata(result: dict, trace: dict) -> dict:
     }
 
 
+def _message_ui_status(message: dict) -> str | None:
+    metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
+    status = metadata.get("ui_status")
+    return status if status in {"pending", "error"} else None
+
+
 def _build_runtime_payload(request: RunRequest, conversation_id: str, user_input: str) -> dict:
     # The SQLite conversation store supplies short-term context. B5 snapshot
     # memory remains available, but the minimal web chat path avoids duplicating it.
@@ -268,12 +279,10 @@ def _record_tool_steps(
         )
 
 
-def _record_run_messages(
+def _start_run_messages(
     conversation_id: str,
     run_id: str,
     raw_user_input: str,
-    result: dict,
-    trace: dict,
     history: list[dict],
 ) -> tuple[str, str]:
     user_record = append_conversation_message(
@@ -288,11 +297,10 @@ def _record_run_messages(
         str(MEMORY_CONFIG),
         conversation_id,
         "assistant",
-        result["final_answer"] or "[empty response]",
+        "...",
         run_id=run_id,
-        metadata=_assistant_metadata(result, trace),
+        metadata={"ui_status": "pending", "agent_status": "running"},
     )
-    _record_tool_steps(conversation_id, assistant_record["message_id"], run_id, trace)
     title = _history_title(history, raw_user_input)
     upsert_conversation_record(
         str(MEMORY_CONFIG),
@@ -302,6 +310,38 @@ def _record_run_messages(
         trivial_reason="only trivial user messages" if _is_trivial_conversation(history, raw_user_input) else None,
     )
     return user_record["message_id"], assistant_record["message_id"]
+
+
+def _finish_run_message(
+    conversation_id: str,
+    assistant_message_id: str,
+    run_id: str,
+    result: dict,
+    trace: dict,
+) -> None:
+    metadata = _assistant_metadata(result, trace)
+    if result.get("status") != "success":
+        metadata["ui_status"] = "error"
+    update_conversation_message(
+        str(MEMORY_CONFIG),
+        assistant_message_id,
+        content=result["final_answer"] or "[empty response]",
+        metadata=metadata,
+    )
+    _record_tool_steps(conversation_id, assistant_message_id, run_id, trace)
+
+
+def _mark_run_failed(assistant_message_id: str, error: Exception) -> None:
+    update_conversation_message(
+        str(MEMORY_CONFIG),
+        assistant_message_id,
+        content=f"请求失败：{type(error).__name__}: {error}",
+        metadata={
+            "ui_status": "error",
+            "agent_status": "backend_error",
+            "error": {"type": type(error).__name__, "message": str(error)},
+        },
+    )
 
 
 def _call_agent(request: RunRequest) -> RunResponse:
@@ -320,24 +360,33 @@ def _call_agent(request: RunRequest) -> RunResponse:
     contextual_input = _contextual_user_input(history, raw_user_input)
     runtime_payload = _build_runtime_payload(request, conversation_id, contextual_input)
     run_id = _now_stamp()
-    output_dir = OUTPUT_ROOT / conversation_id / run_id
-    result = run_agent_runtime(
-        runtime_payload,
-        str(TOOLS_CONFIG),
-        str(MEMORY_CONFIG),
-        str(MODEL_CONFIG),
-        str(output_dir),
-        request.llm_mode,
-        RUNTIME_BASE,
-    )
-    full_trace = _read_trace_full(result["trace_path"])
-    user_message_id, assistant_message_id = _record_run_messages(
+    user_message_id, assistant_message_id = _start_run_messages(
         conversation_id,
         run_id,
         raw_user_input,
+        history,
+    )
+    output_dir = OUTPUT_ROOT / conversation_id / run_id
+    try:
+        result = run_agent_runtime(
+            runtime_payload,
+            str(TOOLS_CONFIG),
+            str(MEMORY_CONFIG),
+            str(MODEL_CONFIG),
+            str(output_dir),
+            request.llm_mode,
+            RUNTIME_BASE,
+        )
+    except Exception as exc:
+        _mark_run_failed(assistant_message_id, exc)
+        raise
+    full_trace = _read_trace_full(result["trace_path"])
+    _finish_run_message(
+        conversation_id,
+        assistant_message_id,
+        run_id,
         result,
         full_trace,
-        history,
     )
     return RunResponse(
         conversation_id=result["conversation_id"],
@@ -389,6 +438,7 @@ def get_conversation(conversation_id: str) -> ConversationDetail:
             content=message["content"],
             message_order=message["message_order"],
             created_at=message["created_at"],
+            status=_message_ui_status(message),
         )
         for message in messages
         if message["role"] in {"user", "assistant"}

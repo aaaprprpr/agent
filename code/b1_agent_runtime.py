@@ -224,6 +224,7 @@ def run(
             "latency_ms": None,
         }
         if llm_status != "success":
+            final_answer = ai_message.get("content", "").strip() or "模型输出解析失败，未生成有效回答。"
             status = "llm_parse_error"
             terminal_error = {
                 "type": "LLMParseError",
