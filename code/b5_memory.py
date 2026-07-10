@@ -5,10 +5,10 @@ import json
 import re
 import sys
 from collections import Counter
-from copy import deepcopy
+from difflib import SequenceMatcher
 from pathlib import Path
+from typing import Any
 
-from common.io_utils import append_jsonl, read_json, read_text, read_yaml, write_json, write_text
 from common.conversation_store import (
     append_message,
     init_store,
@@ -16,13 +16,55 @@ from common.conversation_store import (
     list_messages,
     list_tool_steps,
     record_tool_step,
+    search_messages,
     upsert_conversation,
 )
+from common.io_utils import append_jsonl, read_json, read_text, read_yaml, write_json, write_text
 from common.logging_utils import now_iso
 from common.path_utils import resolve_cli_path, resolve_from_file
 
 
-def _memory_paths(config_path: str | Path) -> dict[str, Path | int]:
+LOW_VALUE_TERMS = {
+    "我",
+    "你",
+    "他",
+    "她",
+    "它",
+    "的",
+    "了",
+    "和",
+    "与",
+    "或",
+    "在",
+    "是",
+    "帮",
+    "请",
+    "如何",
+    "怎么",
+    "一个",
+    "一下",
+    "the",
+    "a",
+    "an",
+    "and",
+    "or",
+    "to",
+    "of",
+    "in",
+    "for",
+    "with",
+}
+
+
+ROLE_LABELS = {
+    "system": "system",
+    "user": "user",
+    "assistant": "assistant",
+    "tool": "tool",
+}
+
+
+def _memory_paths(config_path: str | Path) -> dict[str, Any]:
     path = Path(config_path).resolve()
     config = read_yaml(path)
     if not isinstance(config, dict) or not isinstance(config.get("memory"), dict):
@@ -32,13 +74,13 @@ def _memory_paths(config_path: str | Path) -> dict[str, Path | int]:
     missing = [name for name in required if name not in memory]
     if missing:
         raise ValueError(f"memory.yaml missing: {', '.join(missing)}")
-    root = resolve_from_file(memory["root_dir"], path)
     max_chars = memory["max_memory_chars"]
     if not isinstance(max_chars, int) or isinstance(max_chars, bool) or max_chars <= 0:
         raise ValueError("max_memory_chars must be a positive integer")
     retrieval = memory.get("retrieval", {})
     if not isinstance(retrieval, dict):
         retrieval = {}
+    root = resolve_from_file(memory["root_dir"], path)
     return {
         "root": root,
         "global": root / memory["global_memory_dir"],
@@ -63,65 +105,159 @@ def _read_index(index_path: Path) -> dict:
     return index
 
 
-def _query_terms(query: str | None) -> list[str]:
-    if not query:
-        return []
-    lowered = query.lower()
-    words = re.findall(r"[a-z0-9_]+|[\u4e00-\u9fff]+", lowered)
-    terms: list[str] = []
-    for word in words:
-        if re.fullmatch(r"[\u4e00-\u9fff]+", word):
-            terms.extend(list(word))
-            terms.extend(word[index : index + 2] for index in range(max(0, len(word) - 1)))
-        elif len(word) >= 2:
-            terms.append(word)
-    counts = Counter(terms)
-    return [term for term, _ in counts.most_common()]
+def _safe_conversation_id(conversation_id: str) -> str:
+    if not isinstance(conversation_id, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+", conversation_id):
+        raise ValueError("conversation_id may only contain letters, numbers, dot, underscore, and hyphen")
+    return conversation_id
 
 
-def _score_memory(metadata: dict, content: str, terms: list[str]) -> int:
-    if not terms:
-        return 0
-    blob = "\n".join(
-        [
-            str(metadata.get("title", "")),
-            str(metadata.get("summary", "")),
-            content,
-        ]
-    ).lower()
-    return sum(blob.count(term) for term in terms)
+def _positive_int(value: Any, fallback: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    return parsed if parsed > 0 else fallback
 
 
-def _best_excerpt(content: str, terms: list[str], limit: int) -> str:
-    if len(content) <= limit:
-        return content
-    lowered = content.lower()
-    first_hit = None
-    for term in terms:
-        hit = lowered.find(term)
-        if hit >= 0 and (first_hit is None or hit < first_hit):
-            first_hit = hit
-    center = first_hit if first_hit is not None else 0
-    start = max(0, center - limit // 4)
-    end = min(len(content), start + limit)
-    start = max(0, end - limit)
-    prefix = "..." if start > 0 else ""
-    suffix = "..." if end < len(content) else ""
-    return prefix + content[start:end] + suffix
-
-
-def _retrieval_config(paths: dict[str, Path | int]) -> dict:
+def _retrieval_config(paths: dict[str, Any]) -> dict:
     config = paths.get("retrieval", {})
     return config if isinstance(config, dict) else {}
 
 
+def _query_terms(query: str | None) -> list[str]:
+    if not query:
+        return []
+    lowered = query.lower()
+    raw = re.findall(r"[a-z0-9_]+|[\u4e00-\u9fff]+", lowered)
+    terms: list[str] = []
+    for item in raw:
+        if item in LOW_VALUE_TERMS:
+            continue
+        if re.fullmatch(r"[\u4e00-\u9fff]+", item):
+            if len(item) >= 2:
+                terms.append(item)
+                terms.extend(item[index : index + 2] for index in range(len(item) - 1))
+                if len(item) >= 3:
+                    terms.extend(item[index : index + 3] for index in range(len(item) - 2))
+            elif item not in LOW_VALUE_TERMS:
+                terms.append(item)
+        elif len(item) >= 2 and item not in LOW_VALUE_TERMS:
+            terms.append(item)
+    filtered = [term for term in terms if term and term not in LOW_VALUE_TERMS]
+    counts = Counter(filtered)
+    ordered = sorted(counts, key=lambda term: (-counts[term], -len(term), term))
+    return ordered[:24]
+
+
+def _matched_terms(text: str, terms: list[str]) -> list[str]:
+    lowered = text.lower()
+    return [term for term in terms if term.lower() in lowered]
+
+
+def _score_text(text: str, terms: list[str]) -> float:
+    if not terms or not text:
+        return 0.0
+    lowered = text.lower()
+    score = 0.0
+    for term in terms:
+        count = lowered.count(term.lower())
+        if count:
+            score += count * max(1.0, min(len(term), 6) / 2)
+    return score
+
+
+def _score_memory(metadata: dict, content: str, terms: list[str]) -> float:
+    if not terms:
+        return 0.0
+    title = str(metadata.get("title", ""))
+    summary = str(metadata.get("summary", ""))
+    return round(_score_text(title, terms) * 4 + _score_text(summary, terms) * 3 + _score_text(content, terms), 4)
+
+
+def _best_excerpt(content: str, terms: list[str], limit: int) -> str:
+    if limit <= 0 or not content:
+        return ""
+    if len(content) <= limit:
+        return content
+    lowered = content.lower()
+    first_hit: int | None = None
+    for term in terms:
+        hit = lowered.find(term.lower())
+        if hit >= 0 and (first_hit is None or hit < first_hit):
+            first_hit = hit
+    window = max(1, limit - 6)
+    center = first_hit if first_hit is not None else 0
+    start = max(0, center - window // 3)
+    end = min(len(content), start + window)
+    start = max(0, end - window)
+    excerpt = content[start:end]
+    if start > 0:
+        excerpt = "..." + excerpt
+    if end < len(content):
+        excerpt = excerpt + "..."
+    return excerpt[:limit]
+
+
 def _compact_summary(text: str, limit: int = 200) -> str:
-    compact = re.sub(r"\s+", " ", text).strip()
+    compact = re.sub(r"\s+", " ", _strip_memory_blocks(text)).strip()
     return compact[:limit]
+
+
+def _markdown_section(markdown: str, heading: str) -> str:
+    lines = markdown.splitlines()
+    marker = f"## {heading}".strip().lower()
+    collecting = False
+    collected: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            if collecting:
+                break
+            if stripped.lower() == marker:
+                collecting = True
+                continue
+        elif collecting:
+            collected.append(line)
+    return "\n".join(collected).strip()
 
 
 def _extract_final_answer(markdown: str) -> str:
     return _markdown_section(markdown, "Final Answer")
+
+
+def _strip_memory_blocks(text: str) -> str:
+    return re.sub(r"<memory\b[^>]*>.*?</memory>", "", text, flags=re.IGNORECASE | re.DOTALL)
+
+
+def _text_similarity(left: str, right: str) -> float:
+    left_norm = re.sub(r"\s+", " ", left or "").strip()
+    right_norm = re.sub(r"\s+", " ", right or "").strip()
+    if not left_norm and not right_norm:
+        return 1.0
+    if not left_norm or not right_norm:
+        return 0.0
+    return SequenceMatcher(None, left_norm, right_norm).ratio()
+
+
+def _sanitize_messages_for_memory(messages: list[dict]) -> list[dict]:
+    sanitized = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content", "")
+        if isinstance(content, str):
+            content = _strip_memory_blocks(content).strip()
+            if len(content) > 4000:
+                content = content[:4000] + "...[truncated]"
+        item = {
+            "role": message.get("role"),
+            "content": content,
+        }
+        for optional_key in ("name", "tool_call_id", "status"):
+            if optional_key in message:
+                item[optional_key] = message.get(optional_key)
+        sanitized.append(item)
+    return sanitized
 
 
 def _classify_memory_update(old_answer: str, new_answer: str) -> str:
@@ -141,6 +277,219 @@ def _classify_memory_update(old_answer: str, new_answer: str) -> str:
     if similarity >= 0.45:
         return "related_update"
     return "rewrite_or_conflict"
+
+
+def _legacy_metadata_view(metadata: dict, memory_id: str) -> dict:
+    return {
+        "memory_id": memory_id,
+        "memory_type": metadata.get("memory_type"),
+        "title": metadata.get("title", memory_id),
+        "summary": metadata.get("summary", ""),
+        "conversation_id": metadata.get("conversation_id"),
+        "created_at": metadata.get("created_at"),
+        "updated_at": metadata.get("updated_at"),
+    }
+
+
+def _legacy_candidate(
+    memory_id: str,
+    source: str,
+    paths: dict[str, Any],
+    index: dict,
+    terms: list[str],
+    *,
+    explicit: bool = False,
+) -> tuple[dict | None, dict | None]:
+    metadata = index.get(memory_id)
+    if not isinstance(metadata, dict):
+        return None, {"memory_id": memory_id, "type": "MemoryNotFound", "message": "memory_id does not exist"}
+    relative_path = metadata.get("path")
+    if not isinstance(relative_path, str):
+        return None, {"memory_id": memory_id, "type": "InvalidMetadata", "message": "memory path is missing"}
+    root = Path(paths["root"]).resolve()
+    document_path = (Path(paths["root"]) / relative_path).resolve()
+    try:
+        document_path.relative_to(root)
+    except ValueError:
+        return None, {"memory_id": memory_id, "type": "InvalidPath", "message": "memory path escapes root"}
+    if not document_path.is_file():
+        return None, {
+            "memory_id": memory_id,
+            "type": "FileNotFoundError",
+            "message": f"memory file not found: {relative_path}",
+        }
+    content = read_text(document_path)
+    metadata_view = _legacy_metadata_view(metadata, memory_id)
+    rendered = "\n".join(
+        part
+        for part in [
+            f"Legacy memory: {metadata_view['title']}",
+            f"Summary: {metadata_view.get('summary', '')}" if metadata_view.get("summary") else "",
+            content,
+        ]
+        if part
+    )
+    score = _score_memory(metadata_view, content, terms)
+    return (
+        {
+            "memory_id": memory_id,
+            "memory_type": metadata.get("memory_type", "legacy"),
+            "title": metadata_view["title"],
+            "summary": metadata_view.get("summary", ""),
+            "path": relative_path,
+            "raw_content": content,
+            "rendered_content": rendered,
+            "memory_source": source,
+            "selection_reason": "explicit_legacy_memory_id" if explicit else "legacy_global_keyword_top_k",
+            "retrieval_score": score,
+            "matched_terms": _matched_terms(rendered, terms),
+            "created_at": metadata.get("created_at"),
+            "updated_at": metadata.get("updated_at"),
+            "explicit": explicit,
+        },
+        None,
+    )
+
+
+def _db_recent_candidate(
+    config_path: str,
+    conversation_id: str | None,
+    terms: list[str],
+    recent_limit: int,
+) -> list[dict]:
+    if not conversation_id:
+        return []
+    db_path = _conversation_db_path(config_path)
+    if not db_path.is_file():
+        return []
+    messages = [
+        message
+        for message in list_messages(db_path, conversation_id)
+        if message.get("role") in {"system", "user", "assistant"} and str(message.get("content", "")).strip()
+    ]
+    if not messages:
+        return []
+    recent = messages[-recent_limit:]
+    lines = [f"SQLite recent history for conversation `{conversation_id}`:"]
+    for message in recent:
+        role = ROLE_LABELS.get(str(message.get("role")), str(message.get("role")))
+        content = str(message.get("content", "")).strip()
+        lines.append(f"{role}: {content}")
+    rendered = "\n".join(lines)
+    matched = _matched_terms(rendered, terms)
+    score = max(20.0, _score_text(rendered, terms) + 10.0)
+    return [
+        {
+            "memory_id": f"db_recent_{conversation_id}",
+            "memory_type": "conversation_db_recent",
+            "title": f"Recent history: {conversation_id}",
+            "summary": f"{len(recent)} recent message(s) from current SQLite conversation",
+            "path": str(db_path),
+            "raw_content": rendered,
+            "rendered_content": rendered,
+            "memory_source": "db_recent",
+            "selection_reason": "same_conversation_recent_history",
+            "retrieval_score": round(score, 4),
+            "matched_terms": matched,
+            "created_at": recent[0].get("created_at"),
+            "updated_at": recent[-1].get("created_at"),
+            "explicit": False,
+            "message_count": len(recent),
+        }
+    ]
+
+
+def _db_search_candidates(
+    config_path: str,
+    query: str | None,
+    conversation_id: str | None,
+    terms: list[str],
+    top_k: int,
+) -> list[dict]:
+    if not query or not terms:
+        return []
+    db_path = _conversation_db_path(config_path)
+    if not db_path.is_file():
+        return []
+    rows = search_messages(
+        db_path,
+        query,
+        limit=top_k,
+        exclude_conversation_id=conversation_id,
+        include_trivial=False,
+        roles=("user", "assistant"),
+    )
+    candidates = []
+    for row in rows:
+        content = str(row.get("content", "")).strip()
+        if not content:
+            continue
+        role = ROLE_LABELS.get(str(row.get("role")), str(row.get("role")))
+        source = str(row.get("search_backend") or "keyword")
+        rendered = "\n".join(
+            [
+                f"SQLite cross-conversation memory from `{row.get('conversation_id')}`:",
+                f"title: {row.get('conversation_title') or row.get('conversation_id')}",
+                f"created_at: {row.get('created_at')}",
+                f"{role}: {content}",
+            ]
+        )
+        candidates.append(
+            {
+                "memory_id": f"db_search_{row.get('id')}",
+                "memory_type": "conversation_db_search",
+                "title": str(row.get("conversation_title") or row.get("conversation_id")),
+                "summary": f"{role} message from SQLite conversation history",
+                "path": str(db_path),
+                "raw_content": content,
+                "rendered_content": rendered,
+                "memory_source": "db_search",
+                "selection_reason": f"cross_conversation_{source}_keyword_match",
+                "retrieval_score": float(row.get("search_score") or _score_text(rendered, terms)),
+                "matched_terms": _matched_terms(rendered, terms),
+                "created_at": row.get("created_at"),
+                "updated_at": row.get("conversation_updated_at"),
+                "explicit": False,
+                "conversation_id": row.get("conversation_id"),
+                "message_id": row.get("id"),
+                "role": row.get("role"),
+                "search_backend": source,
+            }
+        )
+    return candidates
+
+
+def _candidate_view(candidate: dict, rank: int | None = None) -> dict:
+    view = {
+        "memory_id": candidate.get("memory_id"),
+        "memory_type": candidate.get("memory_type"),
+        "title": candidate.get("title"),
+        "memory_source": candidate.get("memory_source"),
+        "retrieval_score": candidate.get("retrieval_score", 0),
+        "selection_reason": candidate.get("selection_reason"),
+        "matched_terms": candidate.get("matched_terms", []),
+        "selected": candidate.get("selected", False),
+        "dropped_reason": candidate.get("dropped_reason"),
+        "truncated": candidate.get("truncated", False),
+    }
+    if rank is not None:
+        view["rank"] = rank
+    for optional_key in ("path", "conversation_id", "message_id", "search_backend"):
+        if candidate.get(optional_key) is not None:
+            view[optional_key] = candidate.get(optional_key)
+    return view
+
+
+def _dedupe_candidates(candidates: list[dict]) -> list[dict]:
+    seen: set[str] = set()
+    unique = []
+    for candidate in candidates:
+        memory_id = str(candidate.get("memory_id"))
+        if memory_id in seen:
+            continue
+        seen.add(memory_id)
+        unique.append(candidate)
+    return unique
 
 
 def init_conversation_db(config_path: str) -> dict:
@@ -241,154 +590,175 @@ def list_message_tool_steps(config_path: str, assistant_message_id: str) -> list
     return list_tool_steps(_conversation_db_path(config_path), assistant_message_id)
 
 
+def search_conversation_messages(
+    config_path: str,
+    query: str,
+    *,
+    limit: int = 8,
+    conversation_id: str | None = None,
+    exclude_conversation_id: str | None = None,
+    include_trivial: bool = False,
+) -> list[dict]:
+    return search_messages(
+        _conversation_db_path(config_path),
+        query,
+        limit=limit,
+        conversation_id=conversation_id,
+        exclude_conversation_id=exclude_conversation_id,
+        include_trivial=include_trivial,
+    )
+
+
 def load_memory(
     config_path: str,
     selected_memory_ids: list[str],
     use_global_memory: bool,
     query: str | None = None,
     outdir: str | None = None,
+    conversation_id: str | None = None,
 ) -> dict:
     if not isinstance(selected_memory_ids, list) or not all(isinstance(item, str) for item in selected_memory_ids):
         raise ValueError("selected_memory_ids must be a list of strings")
+    if conversation_id is not None:
+        _safe_conversation_id(conversation_id)
+
     paths = _memory_paths(config_path)
-    index = _read_index(paths["index"])
     retrieval = _retrieval_config(paths)
-    top_k = int(retrieval.get("top_k", 5))
-    per_doc_chars = int(retrieval.get("per_doc_chars", paths["max_chars"]))
-    top_k = max(1, top_k)
-    per_doc_chars = max(1, per_doc_chars)
+    top_k = _positive_int(retrieval.get("top_k"), 5)
+    per_doc_chars = _positive_int(retrieval.get("per_doc_chars"), int(paths["max_chars"]))
+    db_recent_messages = _positive_int(retrieval.get("db_recent_messages"), 8)
     terms = _query_terms(query)
+    index = _read_index(paths["index"])
 
-    ordered_ids = []
-    source_by_id: dict[str, str] = {}
-
-    def add_candidate_id(memory_id: str, source: str) -> None:
-        if memory_id not in source_by_id:
-            ordered_ids.append(memory_id)
-            source_by_id[memory_id] = source
-
+    errors: list[dict] = []
+    explicit_candidates: list[dict] = []
     for memory_id in selected_memory_ids:
-        add_candidate_id(memory_id, "explicit_id")
+        candidate, error = _legacy_candidate(memory_id, "legacy_explicit", paths, index, terms, explicit=True)
+        if error:
+            errors.append(error)
+        elif candidate:
+            explicit_candidates.append(candidate)
+
+    db_recent = _db_recent_candidate(config_path, conversation_id, terms, db_recent_messages)
+    db_search = _db_search_candidates(config_path, query, conversation_id, terms, top_k)
+
+    global_candidates: list[dict] = []
     if use_global_memory:
-        for memory_id in sorted(key for key, item in index.items() if item.get("memory_type") == "global"):
-            add_candidate_id(memory_id, "global_memory")
-    if auto_select["enabled"] and terms:
-        auto_pool = []
-        for memory_id, item in sorted(index.items()):
-            if not isinstance(item, dict) or item.get("memory_type") not in auto_select["memory_types"]:
+        selected_set = set(selected_memory_ids)
+        for memory_id, metadata in sorted(index.items()):
+            if memory_id in selected_set or not isinstance(metadata, dict):
                 continue
-            if memory_id in source_by_id:
+            if metadata.get("memory_type") != "global":
                 continue
-            auto_pool.append((_metadata_prefilter_score(item, terms), memory_id))
-        auto_pool.sort(key=lambda item: (-item[0], item[1]))
-        for _, memory_id in auto_pool[: auto_select["max_candidates"]]:
-            add_candidate_id(memory_id, "auto_keyword")
+            candidate, error = _legacy_candidate(memory_id, "legacy_global", paths, index, terms)
+            if error:
+                errors.append(error)
+            elif candidate and (not terms or candidate["retrieval_score"] > 0):
+                global_candidates.append(candidate)
 
-    candidates = []
-    errors = []
-    for memory_id in ordered_ids:
-        metadata = index.get(memory_id)
-        if not isinstance(metadata, dict):
-            errors.append({"memory_id": memory_id, "type": "MemoryNotFound", "message": "memory_id does not exist"})
-            continue
-        relative_path = metadata.get("path")
-        if not isinstance(relative_path, str):
-            errors.append({"memory_id": memory_id, "type": "InvalidMetadata", "message": "memory path is missing"})
-            continue
-        document_path = (paths["root"] / relative_path).resolve()
-        try:
-            document_path.relative_to(paths["root"].resolve())
-        except ValueError:
-            errors.append({"memory_id": memory_id, "type": "InvalidPath", "message": "memory path escapes root"})
-            continue
-        if not document_path.is_file():
-            errors.append({"memory_id": memory_id, "type": "FileNotFoundError", "message": f"memory file not found: {relative_path}"})
-            continue
-        original = read_text(document_path)
-        score = _score_memory(metadata, original, terms)
-        candidates.append(
-            {
-                "memory_id": memory_id,
-                "metadata": metadata_for_view,
-                "relative_path": relative_path,
-                "original": original,
-                "score": score,
-                "explicit": memory_id in selected_memory_ids,
-                "candidate_source": source_by_id.get(memory_id, "unknown"),
-            }
-        )
+    global_candidates.sort(
+        key=lambda item: (
+            float(item.get("retrieval_score", 0)),
+            str(item.get("updated_at") or item.get("created_at") or ""),
+            str(item.get("memory_id")),
+        ),
+        reverse=True,
+    )
+    global_candidates = global_candidates[:top_k]
 
-    preserved_candidates = [item for item in candidates if item["explicit"]]
-    ranked_candidates = [item for item in candidates if not item["explicit"]]
-    if terms:
-        ranked_candidates = [
-            item
-            for item in ranked_candidates
-            if item["candidate_source"] != "auto_keyword" or item["score"] >= auto_select["min_score"]
-        ]
-        ranked_candidates.sort(key=lambda item: (-item["score"], item["memory_id"]))
-        ranked_candidates = ranked_candidates[:top_k]
-    ranked = preserved_candidates + ranked_candidates
-    ranked_ids = set()
-    unique_ranked = []
-    for item in ranked:
-        if item["memory_id"] in ranked_ids:
-            continue
-        ranked_ids.add(item["memory_id"])
-        unique_ranked.append(item)
-    ranked = unique_ranked
+    ranked_other = db_search + global_candidates
+    ranked_other.sort(
+        key=lambda item: (
+            float(item.get("retrieval_score", 0)),
+            str(item.get("updated_at") or item.get("created_at") or ""),
+            str(item.get("memory_id")),
+        ),
+        reverse=True,
+    )
+    ranked_candidates = _dedupe_candidates(explicit_candidates + db_recent + ranked_other[:top_k])
 
-    docs = []
+    selected_docs = []
+    dropped_memory = []
     remaining = int(paths["max_chars"])
     any_truncated = False
-    for item in ranked:
+    selected_by_id: set[str] = set()
+    dropped_by_id: dict[str, str] = {}
+
+    for candidate in ranked_candidates:
+        memory_id = str(candidate["memory_id"])
+        rendered = str(candidate.get("rendered_content") or candidate.get("raw_content") or "")
         if remaining <= 0:
+            candidate["dropped_reason"] = "max_memory_chars_exhausted"
+            dropped_by_id[memory_id] = "max_memory_chars_exhausted"
+            dropped_memory.append(_candidate_view(candidate))
             any_truncated = True
-            break
-        memory_id = item["memory_id"]
-        metadata = item["metadata"]
-        original = item["original"]
-        rendered = item["view"]["rendered_content"] or original
-        relative_path = item["relative_path"]
+            continue
         limit = min(per_doc_chars, remaining)
         included = _best_excerpt(rendered, terms, limit)
+        if not included:
+            candidate["dropped_reason"] = "empty_content"
+            dropped_by_id[memory_id] = "empty_content"
+            dropped_memory.append(_candidate_view(candidate))
+            continue
         truncated = len(included) < len(rendered)
+        candidate["selected"] = True
+        candidate["truncated"] = truncated
+        selected_by_id.add(memory_id)
         any_truncated = any_truncated or truncated
-        if included:
-            docs.append(
-                {
-                    "memory_id": memory_id,
-                    "memory_type": metadata.get("memory_type"),
-                    "title": metadata.get("title", memory_id),
-                    "path": relative_path,
-                    "content": included,
-                    "original_chars": len(original),
-                    "rendered_chars": len(rendered),
-                    "included_chars": len(included),
-                    "truncated": truncated,
-                    "retrieval_score": item["score"],
-                    "selection_reason": "explicit_id" if item["explicit"] else ("keyword_top_k" if terms else "configured_order"),
-                }
-            )
-            remaining -= len(included)
-    if errors and docs:
+        selected_docs.append(
+            {
+                "memory_id": memory_id,
+                "memory_type": candidate.get("memory_type"),
+                "title": candidate.get("title", memory_id),
+                "summary": candidate.get("summary", ""),
+                "path": candidate.get("path"),
+                "content": included,
+                "memory_source": candidate.get("memory_source"),
+                "selection_reason": candidate.get("selection_reason"),
+                "retrieval_score": candidate.get("retrieval_score", 0),
+                "matched_terms": candidate.get("matched_terms", []),
+                "original_chars": len(str(candidate.get("raw_content") or "")),
+                "rendered_chars": len(rendered),
+                "included_chars": len(included),
+                "truncated": truncated,
+            }
+        )
+        remaining -= len(included)
+
+    for candidate in ranked_candidates:
+        memory_id = str(candidate.get("memory_id"))
+        candidate["selected"] = memory_id in selected_by_id
+        candidate["dropped_reason"] = dropped_by_id.get(memory_id)
+
+    if errors and selected_docs:
         status = "partial"
     elif errors:
         status = "error"
     else:
         status = "success"
+
     result = {
         "status": status,
         "query": query,
+        "conversation_id": conversation_id,
         "retrieval": {
-            "mode": "keyword_top_k" if terms else "configured_order",
+            "mode": "sqlite_first_keyword_top_k",
             "terms": terms,
             "top_k": top_k,
             "per_doc_chars": per_doc_chars,
+            "db_recent_messages": db_recent_messages,
+            "sources": {
+                "db_recent": len(db_recent),
+                "db_search": len(db_search),
+                "legacy_explicit": len(explicit_candidates),
+                "legacy_global": len(global_candidates),
+            },
         },
-        "selected_memory_docs": docs,
+        "selected_memory_docs": selected_docs,
+        "ranked_candidates": [_candidate_view(candidate, index + 1) for index, candidate in enumerate(ranked_candidates)],
+        "dropped_memory": dropped_memory,
         "max_memory_chars": paths["max_chars"],
-        "total_chars": sum(item["included_chars"] for item in docs),
+        "total_chars": sum(item["included_chars"] for item in selected_docs),
         "truncated": any_truncated,
         "errors": errors,
     }
@@ -400,19 +770,18 @@ def load_memory(
                 "timestamp": now_iso(),
                 "operation": "load",
                 "status": status,
-                "selected_ids": [item["memory_id"] for item in docs],
-                "retrieval_mode": result["retrieval"]["mode"],
+                "query": query,
+                "conversation_id": conversation_id,
+                "selected_count": len(selected_docs),
+                "selected_ids": [item["memory_id"] for item in selected_docs],
+                "source_counts": result["retrieval"]["sources"],
+                "truncated": any_truncated,
+                "dropped_count": len(dropped_memory),
                 "errors": errors,
             },
             output_dir / "memory_log.jsonl",
         )
     return result
-
-
-def _safe_conversation_id(conversation_id: str) -> str:
-    if not isinstance(conversation_id, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+", conversation_id):
-        raise ValueError("conversation_id may only contain letters, numbers, dot, underscore, and hyphen")
-    return conversation_id
 
 
 def save_memory(
@@ -430,7 +799,7 @@ def save_memory(
     paths = _memory_paths(config_path)
     messages = read_json(messages_path)
     trace = read_json(trace_path)
-    answer = read_text(answer_path).strip()
+    answer = _strip_memory_blocks(read_text(answer_path)).strip()
     if not isinstance(messages, list) or not isinstance(trace, dict):
         raise ValueError("messages must be an array and trace must be an object")
     sanitized_messages = _sanitize_messages_for_memory(messages)
@@ -460,7 +829,7 @@ def save_memory(
     write_text(markdown, target_path)
     index = _read_index(paths["index"])
     existing = index.get(memory_id, {})
-    created_at = existing.get("created_at", now)
+    created_at = existing.get("created_at", now) if isinstance(existing, dict) else now
     index[memory_id] = {
         "memory_id": memory_id,
         "memory_type": save_type,
@@ -548,7 +917,7 @@ def main(argv: list[str] | None = None) -> int:
             if payload.get("save_type") != args.save_type:
                 raise ValueError("CLI save_type must match memory_save_input.json")
             base = input_path.parent
-            result = save_memory(
+            save_memory(
                 str(config_path),
                 payload["conversation_id"],
                 args.save_type,
@@ -561,7 +930,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             if args.select_memory_ids is None and args.use_global_memory is None and not args.query:
                 raise ValueError("select mode requires --select_memory_ids, --use_global_memory, or --query")
-            result = load_memory(
+            load_memory(
                 str(config_path),
                 args.select_memory_ids or [],
                 bool(args.use_global_memory),

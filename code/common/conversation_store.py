@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import uuid
 from pathlib import Path
@@ -30,6 +31,103 @@ def _json_dumps(value: Any) -> str | None:
 
 def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex}"
+
+
+def _search_terms(query: str) -> list[str]:
+    raw_terms = re.findall(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]+", query.lower())
+    terms: list[str] = []
+    for item in raw_terms:
+        if re.fullmatch(r"[\u4e00-\u9fff]+", item):
+            if len(item) >= 2:
+                terms.append(item)
+                terms.extend(item[index : index + 2] for index in range(len(item) - 1))
+            else:
+                terms.append(item)
+        elif len(item) >= 2:
+            terms.append(item)
+    seen: set[str] = set()
+    unique_terms = []
+    for term in terms:
+        if term not in seen:
+            unique_terms.append(term)
+            seen.add(term)
+    return unique_terms[:12]
+
+
+def _fts_query(terms: list[str]) -> str:
+    safe_terms = [term.replace('"', '""') for term in terms if term.strip()]
+    return " OR ".join(f'"{term}"' for term in safe_terms)
+
+
+def _ensure_message_fts(connection: sqlite3.Connection) -> bool:
+    try:
+        connection.execute(
+            """
+            CREATE VIRTUAL TABLE IF NOT EXISTS conversation_messages_fts
+            USING fts5(
+                message_id UNINDEXED,
+                conversation_id UNINDEXED,
+                role UNINDEXED,
+                content,
+                tokenize = 'unicode61'
+            )
+            """
+        )
+        row = connection.execute("SELECT COUNT(*) AS count FROM conversation_messages_fts").fetchone()
+        if row and int(row["count"]) == 0:
+            connection.execute(
+                """
+                INSERT INTO conversation_messages_fts(message_id, conversation_id, role, content)
+                SELECT id, conversation_id, role, content
+                FROM conversation_messages
+                """
+            )
+        return True
+    except sqlite3.OperationalError:
+        return False
+
+
+def _index_message_fts(
+    connection: sqlite3.Connection,
+    message_id: str,
+    conversation_id: str,
+    role: str,
+    content: str,
+) -> None:
+    if not _ensure_message_fts(connection):
+        return
+    try:
+        connection.execute("DELETE FROM conversation_messages_fts WHERE message_id = ?", (message_id,))
+        connection.execute(
+            """
+            INSERT INTO conversation_messages_fts(message_id, conversation_id, role, content)
+            VALUES (?, ?, ?, ?)
+            """,
+            (message_id, conversation_id, role, content),
+        )
+    except sqlite3.OperationalError:
+        return
+
+
+def _keyword_score(row: dict, terms: list[str], current_conversation_id: str | None = None) -> float:
+    content = str(row.get("content", "")).lower()
+    title = str(row.get("conversation_title", "")).lower()
+    summary = str(row.get("conversation_summary") or "").lower()
+    score = 0.0
+    for term in terms:
+        score += content.count(term)
+        score += title.count(term) * 3
+        score += summary.count(term) * 2
+    role = row.get("role")
+    if role == "assistant":
+        score *= 1.15
+    elif role == "tool":
+        score *= 0.4
+    elif role == "system":
+        score *= 0.3
+    if current_conversation_id and row.get("conversation_id") == current_conversation_id:
+        score += 2.0
+    return round(score, 4)
 
 
 def init_store(db_path: str | Path) -> dict:
@@ -97,11 +195,17 @@ def init_store(db_path: str | Path) -> dict:
                 ON tool_steps(conversation_id, step_index);
             """
         )
+        fts_enabled = _ensure_message_fts(connection)
         connection.execute(
             "INSERT OR REPLACE INTO schema_meta(key, value) VALUES (?, ?)",
             ("schema_version", str(SCHEMA_VERSION)),
         )
-    return {"status": "success", "db_path": str(Path(db_path).resolve()), "schema_version": SCHEMA_VERSION}
+    return {
+        "status": "success",
+        "db_path": str(Path(db_path).resolve()),
+        "schema_version": SCHEMA_VERSION,
+        "fts_enabled": fts_enabled,
+    }
 
 
 def upsert_conversation(
@@ -208,6 +312,7 @@ def append_message(
             "UPDATE conversations SET updated_at = ?, last_message_at = ? WHERE id = ?",
             (now, now, conversation_id),
         )
+        _index_message_fts(connection, message_id, conversation_id, role, content)
     return {
         "status": "success",
         "message_id": message_id,
@@ -307,6 +412,107 @@ def list_messages(db_path: str | Path, conversation_id: str) -> list[dict]:
             (conversation_id,),
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+def search_messages(
+    db_path: str | Path,
+    query: str,
+    *,
+    limit: int = 8,
+    conversation_id: str | None = None,
+    exclude_conversation_id: str | None = None,
+    include_trivial: bool = False,
+    roles: tuple[str, ...] = ("user", "assistant"),
+) -> list[dict]:
+    if not isinstance(query, str) or not query.strip():
+        return []
+    terms = _search_terms(query)
+    if not terms:
+        return []
+    limit = max(1, int(limit))
+    init_store(db_path)
+
+    role_values = tuple(role for role in roles if role in {"system", "user", "assistant", "tool"})
+    if not role_values:
+        role_values = ("user", "assistant")
+
+    rows_by_id: dict[str, dict] = {}
+    with _connect(db_path) as connection:
+        conditions = [f"m.role IN ({','.join('?' for _ in role_values)})"]
+        params: list[Any] = list(role_values)
+        if conversation_id:
+            conditions.append("m.conversation_id = ?")
+            params.append(conversation_id)
+        if exclude_conversation_id:
+            conditions.append("m.conversation_id != ?")
+            params.append(exclude_conversation_id)
+        if not include_trivial:
+            conditions.append("m.is_trivial = 0")
+            conditions.append("c.is_trivial = 0")
+        where_sql = " AND ".join(conditions)
+        select_sql = """
+            SELECT m.id, m.conversation_id, m.role, m.content, m.message_order, m.run_id,
+                   m.is_trivial, m.token_count, m.metadata_json, m.created_at,
+                   c.title AS conversation_title, c.summary AS conversation_summary,
+                   c.is_trivial AS conversation_is_trivial,
+                   c.updated_at AS conversation_updated_at,
+                   c.last_message_at AS conversation_last_message_at
+            FROM conversation_messages m
+            JOIN conversations c ON c.id = m.conversation_id
+        """
+
+        fts_enabled = _ensure_message_fts(connection)
+        fts_query = _fts_query(terms)
+        if fts_enabled and fts_query:
+            try:
+                fts_rows = connection.execute(
+                    f"""
+                    {select_sql}
+                    JOIN conversation_messages_fts ON conversation_messages_fts.message_id = m.id
+                    WHERE conversation_messages_fts MATCH ? AND {where_sql}
+                    ORDER BY m.created_at DESC
+                    LIMIT ?
+                    """,
+                    [fts_query, *params, limit * 3],
+                ).fetchall()
+                for row in fts_rows:
+                    data = dict(row)
+                    data["search_backend"] = "fts5"
+                    rows_by_id[data["id"]] = data
+            except sqlite3.OperationalError:
+                pass
+
+        like_terms = terms[:8]
+        like_clauses = []
+        like_params: list[str] = []
+        for term in like_terms:
+            like_clauses.append(
+                "(LOWER(m.content) LIKE ? OR LOWER(c.title) LIKE ? OR LOWER(COALESCE(c.summary, '')) LIKE ?)"
+            )
+            pattern = f"%{term}%"
+            like_params.extend([pattern, pattern, pattern])
+        if like_clauses:
+            like_rows = connection.execute(
+                f"""
+                {select_sql}
+                WHERE {where_sql} AND ({' OR '.join(like_clauses)})
+                ORDER BY m.created_at DESC
+                LIMIT ?
+                """,
+                [*params, *like_params, limit * 3],
+            ).fetchall()
+            for row in like_rows:
+                data = dict(row)
+                data["search_backend"] = rows_by_id.get(data["id"], {}).get("search_backend", "like")
+                rows_by_id[data["id"]] = data
+
+    ranked = []
+    for row in rows_by_id.values():
+        row["search_terms"] = terms
+        row["search_score"] = _keyword_score(row, terms, conversation_id)
+        ranked.append(row)
+    ranked.sort(key=lambda item: (float(item.get("search_score", 0.0)), str(item.get("created_at", ""))), reverse=True)
+    return ranked[:limit]
 
 
 def list_tool_steps(db_path: str | Path, assistant_message_id: str) -> list[dict]:
