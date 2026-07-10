@@ -38,7 +38,7 @@ PYTHON_TO_JSON_TYPES = {
     list: "array",
 }
 
-INJECTED_PARAMETERS = {"data_root", "output_dir"}
+INJECTED_PARAMETERS = {"data_root", "output_dir", "allowed_roots", "default_root"}
 
 
 def _load_tools_config(tools_config: str | Path) -> tuple[Path, dict]:
@@ -261,17 +261,54 @@ def _read_cache(path: Path) -> dict:
     return cache if isinstance(cache, dict) else {}
 
 
-def _cache_key(name: str, args: dict) -> str:
-    raw = json.dumps({"name": name, "args": args}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+def _cache_key(name: str, args: dict, context: dict | None = None) -> str:
+    raw = json.dumps(
+        {"name": name, "args": args, "context": context or {}},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def _run_configured_tool(name: str, args: dict, definition: dict, resolved_data_root: Path, output_dir: Path | None) -> Any:
+def _workspace_root_settings(config: dict, config_path: Path, resolved_data_root: Path) -> tuple[dict[str, str], str]:
+    settings = config.get("settings", {})
+    if not isinstance(settings, dict):
+        settings = {}
+    configured = settings.get("workspace_roots", {})
+    roots: dict[str, str] = {"data": str(resolved_data_root)}
+    if isinstance(configured, dict):
+        for alias, raw_path in configured.items():
+            if not isinstance(alias, str) or not isinstance(raw_path, str):
+                continue
+            normalized_alias = alias.strip()
+            if not normalized_alias.replace("_", "").replace("-", "").isalnum():
+                continue
+            roots[normalized_alias] = str(resolve_from_file(raw_path, config_path))
+    default_root = settings.get("default_workspace_root", "data")
+    if not isinstance(default_root, str) or default_root not in roots:
+        default_root = "data"
+    return roots, default_root
+
+
+def _run_configured_tool(
+    name: str,
+    args: dict,
+    definition: dict,
+    resolved_data_root: Path,
+    allowed_roots: dict[str, str],
+    default_root: str,
+    output_dir: Path | None,
+) -> Any:
     function = _load_tool_function(definition)
     kwargs = dict(args)
     signature = inspect.signature(function)
     if "data_root" in signature.parameters:
         kwargs["data_root"] = str(resolved_data_root)
+    if "allowed_roots" in signature.parameters:
+        kwargs["allowed_roots"] = allowed_roots
+    if "default_root" in signature.parameters:
+        kwargs["default_root"] = default_root
     if "output_dir" in signature.parameters:
         kwargs["output_dir"] = str(output_dir) if output_dir else None
     return function(**kwargs)
@@ -326,6 +363,12 @@ def execute_tool_calls(
         raise ValueError("tool_calls must be a list")
     data_root_setting = config.get("settings", {}).get("data_root", "../data")
     resolved_data_root = resolve_from_file(data_root_setting, config_path)
+    allowed_roots, default_root = _workspace_root_settings(config, config_path, resolved_data_root)
+    tool_context = {
+        "data_root": str(resolved_data_root),
+        "allowed_roots": allowed_roots,
+        "default_root": default_root,
+    }
     tool_messages = []
     log_records = []
     output_dir = Path(outdir) if outdir else None
@@ -351,7 +394,7 @@ def execute_tool_calls(
                 definition, _ = _tool_with_inferred_schema(config["tools"][name])
                 try:
                     _validate_args(args, definition)
-                    key = _cache_key(name, args)
+                    key = _cache_key(name, args, tool_context)
                     if cache_enabled and name in cacheable_tools and key in cache:
                         cached = cache[key]
                         if isinstance(cached, dict) and isinstance(cached.get("skill_result"), dict):
@@ -366,7 +409,15 @@ def execute_tool_calls(
                         for attempt in range(1, max_attempts + 1):
                             attempts_used = attempt
                             try:
-                                output = _run_configured_tool(name, args, definition, resolved_data_root, output_dir)
+                                output = _run_configured_tool(
+                                    name,
+                                    args,
+                                    definition,
+                                    resolved_data_root,
+                                    allowed_roots,
+                                    default_root,
+                                    output_dir,
+                                )
                                 latency_ms = round((perf_counter() - start) * 1000, 3)
                                 result = make_skill_result(name, "success", args, output, None, latency_ms)
                                 if cache_enabled and name in cacheable_tools:
@@ -400,6 +451,7 @@ def execute_tool_calls(
                 "latency_ms": result["latency_ms"],
                 "attempts": attempts_used,
                 "cache_hit": cache_hit,
+                "allowed_roots": allowed_roots,
             }
         )
     if outdir:
