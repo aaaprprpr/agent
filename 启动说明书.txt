@@ -14,3 +14,5 @@ python code/run_full_demo.py --input data/runtime_input.json --tools_config conf
 
 
 
+启动前端
+在frontend里面 npm run dev

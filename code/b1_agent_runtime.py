@@ -116,27 +116,42 @@ def _fixture_tool_messages(tool_calls: list[dict], preset_messages: dict) -> lis
     return results
 
 
-def run_agent(
-    input_path: str,
+def _runtime_base_file(runtime_base: str | Path | None) -> Path:
+    if runtime_base is None:
+        return (Path(__file__).resolve().parents[1] / "data" / "__runtime_payload__.json").resolve()
+    base = Path(runtime_base).expanduser().resolve()
+    if base.is_dir():
+        return (base / "__runtime_payload__.json").resolve()
+    return base
+
+
+def run(
+    runtime_input: dict,
     tools_config: str | None,
     memory_config: str | None,
     model_config: str | None,
     outdir: str,
     llm_mode: str | None = None,
+    runtime_base: str | Path | None = None,
 ) -> dict:
+    """Run the Agent loop from an in-memory runtime payload.
+
+    runtime_base is only used as the reference file for resolving relative paths
+    inside the payload, such as system_prompt_path and fixture paths.
+    """
     started = perf_counter()
-    input_file = Path(input_path).resolve()
+    base_file = _runtime_base_file(runtime_base)
     output_dir = Path(outdir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    runtime = _validate_runtime_input(read_json(input_file))
+    runtime = _validate_runtime_input(deepcopy(runtime_input))
     print(f"user_input: {runtime['user_input']}")
     execution_mode = runtime["execution_mode"]
-    prompt_path = resolve_from_file(runtime["system_prompt_path"], input_file)
+    prompt_path = resolve_from_file(runtime["system_prompt_path"], base_file)
     system_prompt = read_text(prompt_path).strip()
     fixture_data = None
     tools_file = memory_file = model_file = None
     if execution_mode == "fixture":
-        fixture_data = _load_fixture_inputs(input_file, runtime)
+        fixture_data = _load_fixture_inputs(base_file, runtime)
         selected_memory = fixture_data["selected_memory"]
         tools_schema = fixture_data["tools_schema"]
         mode = "fixture"
@@ -336,6 +351,26 @@ def run_agent(
             output_dir / "runtime_log.jsonl",
         )
     return result
+
+
+def run_agent(
+    input_path: str,
+    tools_config: str | None,
+    memory_config: str | None,
+    model_config: str | None,
+    outdir: str,
+    llm_mode: str | None = None,
+) -> dict:
+    input_file = Path(input_path).resolve()
+    return run(
+        read_json(input_file),
+        tools_config,
+        memory_config,
+        model_config,
+        outdir,
+        llm_mode,
+        input_file,
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
