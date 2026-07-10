@@ -366,7 +366,8 @@ def _call_agent(request: RunRequest) -> RunResponse:
         is_trivial=_is_trivial_conversation(history, raw_user_input),
         trivial_reason="only trivial user messages" if _is_trivial_conversation(history, raw_user_input) else None,
     )
-    runtime_payload = _build_runtime_payload(request, conversation_id, raw_user_input)
+    contextual_input = _contextual_user_input(history, raw_user_input)
+    runtime_payload = _build_runtime_payload(request, conversation_id, contextual_input)
     run_id = _now_stamp()
     user_message_id, assistant_message_id = _start_run_messages(
         conversation_id,

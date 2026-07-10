@@ -170,7 +170,6 @@ def run(
             runtime["use_global_memory"],
             runtime["user_input"],
             str(output_dir),
-            conversation_id=runtime["conversation_id"],
         )
         tools_schema = get_tools_schema(str(tools_file), runtime["toolset"], str(output_dir))
         mode = llm_mode or _default_llm_mode(model_file)

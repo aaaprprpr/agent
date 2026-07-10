@@ -5,8 +5,8 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Any
 
+from common.io_utils import append_jsonl, read_json, read_text, read_yaml, write_json, write_text
 from common.conversation_store import (
     append_message,
     init_store,
@@ -17,52 +17,11 @@ from common.conversation_store import (
     update_message,
     upsert_conversation,
 )
-from common.io_utils import append_jsonl, read_json, read_text, read_yaml, write_json, write_text
 from common.logging_utils import now_iso
 from common.path_utils import resolve_cli_path, resolve_from_file
 
 
-LOW_VALUE_TERMS = {
-    "我",
-    "你",
-    "他",
-    "她",
-    "它",
-    "的",
-    "了",
-    "和",
-    "与",
-    "或",
-    "在",
-    "是",
-    "帮",
-    "请",
-    "如何",
-    "怎么",
-    "一个",
-    "一下",
-    "the",
-    "a",
-    "an",
-    "and",
-    "or",
-    "to",
-    "of",
-    "in",
-    "for",
-    "with",
-}
-
-
-ROLE_LABELS = {
-    "system": "system",
-    "user": "user",
-    "assistant": "assistant",
-    "tool": "tool",
-}
-
-
-def _memory_paths(config_path: str | Path) -> dict[str, Any]:
+def _memory_paths(config_path: str | Path) -> dict[str, Path | int]:
     path = Path(config_path).resolve()
     config = read_yaml(path)
     if not isinstance(config, dict) or not isinstance(config.get("memory"), dict):
@@ -72,6 +31,7 @@ def _memory_paths(config_path: str | Path) -> dict[str, Any]:
     missing = [name for name in required if name not in memory]
     if missing:
         raise ValueError(f"memory.yaml missing: {', '.join(missing)}")
+    root = resolve_from_file(memory["root_dir"], path)
     max_chars = memory["max_memory_chars"]
     if not isinstance(max_chars, int) or isinstance(max_chars, bool) or max_chars <= 0:
         raise ValueError("max_memory_chars must be a positive integer")
@@ -212,38 +172,15 @@ def list_message_tool_steps(config_path: str, assistant_message_id: str) -> list
     return list_tool_steps(_conversation_db_path(config_path), assistant_message_id)
 
 
-def search_conversation_messages(
-    config_path: str,
-    query: str,
-    *,
-    limit: int = 8,
-    conversation_id: str | None = None,
-    exclude_conversation_id: str | None = None,
-    include_trivial: bool = False,
-) -> list[dict]:
-    return search_messages(
-        _conversation_db_path(config_path),
-        query,
-        limit=limit,
-        conversation_id=conversation_id,
-        exclude_conversation_id=exclude_conversation_id,
-        include_trivial=include_trivial,
-    )
-
-
 def load_memory(
     config_path: str,
     selected_memory_ids: list[str],
     use_global_memory: bool,
     query: str | None = None,
     outdir: str | None = None,
-    conversation_id: str | None = None,
 ) -> dict:
     if not isinstance(selected_memory_ids, list) or not all(isinstance(item, str) for item in selected_memory_ids):
         raise ValueError("selected_memory_ids must be a list of strings")
-    if conversation_id is not None:
-        _safe_conversation_id(conversation_id)
-
     paths = _memory_paths(config_path)
     index = _read_index(paths["index"])
     ordered_ids = []
@@ -297,13 +234,12 @@ def load_memory(
         status = "error"
     else:
         status = "success"
-
     result = {
         "status": status,
         "query": query,
         "selected_memory_docs": docs,
         "max_memory_chars": paths["max_chars"],
-        "total_chars": sum(item["included_chars"] for item in selected_docs),
+        "total_chars": sum(item["included_chars"] for item in docs),
         "truncated": any_truncated,
         "errors": errors,
     }
@@ -323,6 +259,12 @@ def load_memory(
     return result
 
 
+def _safe_conversation_id(conversation_id: str) -> str:
+    if not isinstance(conversation_id, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+", conversation_id):
+        raise ValueError("conversation_id may only contain letters, numbers, dot, underscore, and hyphen")
+    return conversation_id
+
+
 def save_memory(
     config_path: str,
     conversation_id: str,
@@ -338,7 +280,7 @@ def save_memory(
     paths = _memory_paths(config_path)
     messages = read_json(messages_path)
     trace = read_json(trace_path)
-    answer = _strip_memory_blocks(read_text(answer_path)).strip()
+    answer = read_text(answer_path).strip()
     if not isinstance(messages, list) or not isinstance(trace, dict):
         raise ValueError("messages must be an array and trace must be an object")
     now = now_iso()
@@ -364,7 +306,7 @@ def save_memory(
     write_text(markdown, target_path)
     index = _read_index(paths["index"])
     existing = index.get(memory_id, {})
-    created_at = existing.get("created_at", now) if isinstance(existing, dict) else now
+    created_at = existing.get("created_at", now)
     index[memory_id] = {
         "memory_id": memory_id,
         "memory_type": save_type,
