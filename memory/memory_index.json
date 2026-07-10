@@ -238,5 +238,35 @@
     "conversation_id": "conv_web_20260710_153307_832",
     "created_at": "2026-07-10T15:33:09+08:00",
     "updated_at": "2026-07-10T15:33:25+08:00"
+  },
+  "mem_conversation_conv_web_20260710_161422_041": {
+    "memory_id": "mem_conversation_conv_web_20260710_161422_041",
+    "memory_type": "conversation",
+    "title": "Conversation conv_web_20260710_161422_041",
+    "summary": "用户输入了一个问号，可能是在测试或表达疑问。请问有什么我可以帮您的吗？",
+    "path": "conversations/conv_web_20260710_161422_041.md",
+    "conversation_id": "conv_web_20260710_161422_041",
+    "created_at": "2026-07-10T16:21:36+08:00",
+    "updated_at": "2026-07-10T16:44:44+08:00"
+  },
+  "mem_conversation_conv_web_20260710_162429_420": {
+    "memory_id": "mem_conversation_conv_web_20260710_162429_420",
+    "memory_type": "conversation",
+    "title": "Conversation conv_web_20260710_162429_420",
+    "summary": "我是Qwen3.5，阿里巴巴最新推出的通义千问大语言模型。我具备以下核心能力： 1. **语言基座**：基于更全面、高质量的知识语料训练，支持全球100多种语言，知识截止时间2026年。 2. **架构效率**：采用混合注意力机制、高稀疏度MoE结构及多token预测技术，推理速度更快。 3. **逻辑推理**：在数学计算、自然科学及逻辑推理领域实现全面强化，支持复杂推理任务。 4. **视觉深度",
+    "path": "conversations/conv_web_20260710_162429_420.md",
+    "conversation_id": "conv_web_20260710_162429_420",
+    "created_at": "2026-07-10T16:24:55+08:00",
+    "updated_at": "2026-07-10T16:24:55+08:00"
+  },
+  "mem_conversation_conv_web_20260710_162715_450": {
+    "memory_id": "mem_conversation_conv_web_20260710_162715_450",
+    "memory_type": "conversation",
+    "title": "Conversation conv_web_20260710_162715_450",
+    "summary": "你好！有什么我可以帮助你的吗？",
+    "path": "conversations/conv_web_20260710_162715_450.md",
+    "conversation_id": "conv_web_20260710_162715_450",
+    "created_at": "2026-07-10T16:27:16+08:00",
+    "updated_at": "2026-07-10T16:29:23+08:00"
   }
 }
