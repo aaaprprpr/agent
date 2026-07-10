@@ -1,0 +1,13 @@
+{
+  "mode": "prompt_json",
+  "backend": "fastapi",
+  "llm_source": "fastapi",
+  "raw_text": "{\"content\":\"你好！有什么我可以帮助你的吗？\",\"tool_calls\":[]}\n",
+  "parsed_candidate": {
+    "content": "你好！有什么我可以帮助你的吗？",
+    "tool_calls": []
+  },
+  "status": "success",
+  "error": null,
+  "generated_at": "2026-07-10T15:00:56+08:00"
+}
