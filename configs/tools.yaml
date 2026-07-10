@@ -2,6 +2,15 @@ default_toolset: basic_tools
 
 settings:
   data_root: ../data
+  default_workspace_root: data
+  workspace_roots:
+    data: ../data
+    outputs: ../outputs
+    memory: ../memory
+    prompts: ../prompts
+    configs: ../configs
+    code: ../code
+    skills: ../skills
   retry:
     max_attempts: 2
     recoverable_errors: [OSError, TimeoutError, ConnectionError]
@@ -35,33 +44,42 @@ tools:
   file_reader:
     module: skills.file_reader
     function: file_reader
-    description: Read a local UTF-8 txt or md file from the data directory.
+    description: Read a local UTF-8 text-like file from allowed workspace roots. Paths default to data root; use aliases such as outputs:full_demo/final_answer.md when needed.
     parameters:
       path:
         type: string
-        description: Path relative to the configured data root.
+        description: Path relative to data root, or alias:path under an allowed workspace root.
       max_chars:
         type: integer
         description: Maximum number of characters to return.
+      start_line:
+        type: integer
+        description: Optional 1-based start line for partial reading.
+      end_line:
+        type: integer
+        description: Optional 1-based end line for partial reading.
     required: [path]
     returns:
       content: {type: string, description: File content.}
       num_chars: {type: integer, description: Returned character count.}
-      source: {type: string, description: Normalized path relative to data root.}
+      source: {type: string, description: Normalized path, including root alias when outside data.}
+      root_alias: {type: string, description: Matched allowed root alias.}
+      line_count: {type: integer, description: Total number of lines in the file.}
       truncated: {type: boolean, description: Whether content was truncated.}
 
   local_file_search:
     module: skills.local_file_search
     function: local_file_search
-    description: Search local txt and md files for query terms.
+    description: Search local text-like files under allowed workspace roots for query terms.
     parameters:
       query: {type: string, description: Search query.}
-      root_dir: {type: string, description: Directory relative to data root.}
+      root_dir: {type: string, description: Directory relative to data root, or alias:path under an allowed workspace root.}
       file_types:
         type: array
         items: {type: string}
         description: File extensions to search.
       top_k: {type: integer, description: Maximum number of matches.}
+      max_file_chars: {type: integer, description: Maximum characters scanned per file.}
     required: [query]
     returns:
       results: {type: array, description: "Ranked paths, snippets, and scores."}
@@ -71,7 +89,7 @@ tools:
     function: table_analyzer
     description: Analyze a local CSV or TSV file.
     parameters:
-      path: {type: string, description: Table path relative to data root.}
+      path: {type: string, description: Table path relative to data root, or alias:path under an allowed workspace root.}
       max_rows_preview: {type: integer, description: Number of preview rows.}
       describe: {type: boolean, description: Whether to calculate numeric statistics.}
     required: [path]
@@ -80,6 +98,7 @@ tools:
       num_columns: {type: integer, description: Column count.}
       columns: {type: array, description: Column names.}
       preview: {type: array, description: First rows.}
+      column_profiles: {type: object, description: Missing value and uniqueness profile by column.}
       describe: {type: object, description: Numeric statistics by column.}
 
   format_converter:
