@@ -17,16 +17,34 @@ type Attachment = {
   size: number
 }
 
-const histories = [
-  { title: '完整演示 / conv_001' },
-  { title: '表格分析任务' },
-  { title: '工具检索测试' },
-  { title: '格式转换样例' },
-]
-
-const seedMessages: ChatMessage[] = []
+type HistoryItem = {
+  id: string
+  title: string
+  messages: ChatMessage[]
+  memoryReady: boolean
+}
 
 const API_BASE = import.meta.env.VITE_AGENT_API_BASE ?? 'http://127.0.0.1:8020'
+
+function pad(value: number, size = 2) {
+  return String(value).padStart(size, '0')
+}
+
+function createConversationId() {
+  const now = new Date()
+  return [
+    'conv_web',
+    `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`,
+    `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`,
+    pad(now.getMilliseconds(), 3),
+  ].join('_')
+}
+
+function titleFromInput(text: string) {
+  const compact = text.replace(/\s+/g, ' ').trim()
+  if (!compact) return '新对话'
+  return compact.length > 18 ? `${compact.slice(0, 18)}...` : compact
+}
 
 function formatSize(size: number) {
   if (size < 1024) return `${size} B`
@@ -48,7 +66,9 @@ function LoadingBubble() {
 
 function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
-  const [messages, setMessages] = useState<ChatMessage[]>(seedMessages)
+  const [histories, setHistories] = useState<HistoryItem[]>([])
+  const [currentConversationId, setCurrentConversationId] = useState<string | null>(null)
+  const [messages, setMessages] = useState<ChatMessage[]>([])
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [draft, setDraft] = useState('')
   const [dragActive, setDragActive] = useState(false)
@@ -57,6 +77,20 @@ function App() {
   const fileRef = useRef<HTMLInputElement | null>(null)
 
   const canSend = draft.trim().length > 0 && !isRunning
+
+  function updateHistoryMessages(conversationId: string, nextMessages: ChatMessage[], memoryReady?: boolean) {
+    setHistories((current) =>
+      current.map((item) =>
+        item.id === conversationId
+          ? {
+              ...item,
+              messages: nextMessages,
+              memoryReady: memoryReady ?? item.memoryReady,
+            }
+          : item,
+      ),
+    )
+  }
 
   function addFiles(files: FileList | File[]) {
     const next = Array.from(files).map((file, index) => ({
@@ -81,10 +115,12 @@ function App() {
   async function handleSend() {
     const text = draft.trim()
     if (!text || isRunning) return
+    const conversationId = currentConversationId ?? createConversationId()
+    const existingHistory = histories.find((item) => item.id === conversationId)
     const now = Date.now()
     const pendingId = now + 1
-    setMessages((current) => [
-      ...current,
+    const optimisticMessages = [
+      ...messages,
       {
         id: now,
         role: 'user',
@@ -96,7 +132,24 @@ function App() {
         body: '...',
         status: 'pending',
       },
-    ])
+    ] satisfies ChatMessage[]
+    setCurrentConversationId(conversationId)
+    setMessages(optimisticMessages)
+    setHistories((current) => {
+      const exists = current.some((item) => item.id === conversationId)
+      if (exists) {
+        return current.map((item) => (item.id === conversationId ? { ...item, messages: optimisticMessages } : item))
+      }
+      return [
+        {
+          id: conversationId,
+          title: titleFromInput(text),
+          messages: optimisticMessages,
+          memoryReady: false,
+        },
+        ...current,
+      ]
+    })
     setDraft('')
     setAttachments([])
     setIsRunning(true)
@@ -107,15 +160,18 @@ function App() {
       const response = await fetch(`${API_BASE}/api/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user_input: text }),
+        body: JSON.stringify({
+          user_input: text,
+          conversation_id: conversationId,
+          selected_memory_ids: existingHistory?.memoryReady ? [`mem_conversation_${conversationId}`] : [],
+        }),
       })
       const payload = await response.json().catch(() => null)
       if (!response.ok) {
         const detail = payload?.detail ?? `HTTP ${response.status}`
         throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
       }
-      setMessages((current) =>
-        current.map((message) =>
+      const finalMessages: ChatMessage[] = optimisticMessages.map((message): ChatMessage =>
           message.id === pendingId
             ? {
                 ...message,
@@ -123,12 +179,13 @@ function App() {
                 status: undefined,
               }
             : message,
-        ),
       )
+      const memorySaved = payload?.trace?.memory_save?.status === 'success'
+      setMessages(finalMessages)
+      updateHistoryMessages(conversationId, finalMessages, memorySaved || existingHistory?.memoryReady)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      setMessages((current) =>
-        current.map((item) =>
+      const failedMessages: ChatMessage[] = optimisticMessages.map((item): ChatMessage =>
           item.id === pendingId
             ? {
                 ...item,
@@ -136,8 +193,9 @@ function App() {
                 status: 'error',
               }
             : item,
-        ),
       )
+      setMessages(failedMessages)
+      updateHistoryMessages(conversationId, failedMessages)
     } finally {
       setIsRunning(false)
     }
@@ -192,18 +250,30 @@ function App() {
           className="new-chat"
           type="button"
           onClick={() => {
-            setMessages(seedMessages)
+            setMessages([])
+            setCurrentConversationId(null)
             setAttachments([])
             setDraft('')
           }}
         >
           <span aria-hidden="true">＋</span>
-          <span>新建任务</span>
+          <span>新对话</span>
         </button>
 
         <div className="history-list" aria-label="对话记录">
-          {histories.map((item, index) => (
-            <button className={`history-item ${index === 0 ? 'active' : ''}`} key={item.title} type="button">
+          {histories.map((item) => (
+            <button
+              className={`history-item ${item.id === currentConversationId ? 'active' : ''}`}
+              key={item.id}
+              type="button"
+              onClick={() => {
+                if (isRunning) return
+                setCurrentConversationId(item.id)
+                setMessages(item.messages)
+                setAttachments([])
+                setDraft('')
+              }}
+            >
               <span className="history-copy">
                 <strong>{item.title}</strong>
               </span>

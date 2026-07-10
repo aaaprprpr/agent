@@ -1,0 +1,46 @@
+{
+  "status": "success",
+  "query": "我刚才让你记住什么",
+  "retrieval": {
+    "mode": "keyword_top_k",
+    "terms": [
+      "我",
+      "刚",
+      "才",
+      "让",
+      "你",
+      "记",
+      "住",
+      "什",
+      "么",
+      "我刚",
+      "刚才",
+      "才让",
+      "让你",
+      "你记",
+      "记住",
+      "住什",
+      "什么"
+    ],
+    "top_k": 5,
+    "per_doc_chars": 1200
+  },
+  "selected_memory_docs": [
+    {
+      "memory_id": "mem_conversation_conv_web_20260710_150056_808",
+      "memory_type": "conversation",
+      "title": "Conversation conv_web_20260710_150056_808",
+      "path": "conversations/conv_web_20260710_150056_808.md",
+      "content": "# Conversation conv_web_20260710_150056_808\n\n- memory_id: `mem_conversation_conv_web_20260710_150056_808`\n- conversation_id: `conv_web_20260710_150056_808`\n- created_or_updated_at: `2026-07-10T15:01:16+08:00`\n\n## Final Answer\n\n你好！我是你的本地工具使用代理助手。有什么我可以帮你的吗？\n\n## Messages\n\n```json\n[\n  {\n    \"role\": \"system\",\n    \"content\": \"You are a local tool-using agent. Use available tools when needed. Do not invent file contents. If the user asks about a local file, use the file reading tool. If tool calls depend on previous tool results, call one tool and wait for its ToolMessage before deciding the next step. If several tool calls are independent and all arguments are already known, you may request multiple tool calls in the same assistant response. If tool results are provided, answer based on the tool results. Follow the user's output requirements.\\n\\n<memory id=\\\"mem_conversation_conv_web_20260710_150056_808\\\" type=\\\"conversation\\\">\\n...versation_conv_web_20260710_150056_808\\\\\\\" type=\\\\\\\"conversation\\\\\\\">\\\\n# Conversation conv_web_20260710_150056_808\\\\n\\\\n- memory_id: `mem_conversation_conv_web_20260710_150056_808`\\\\n- conversation_id: `conv_web_20260710_150056_808`\\\\n- created_or_updated_at...",
+      "original_chars": 3120,
+      "included_chars": 1203,
+      "truncated": true,
+      "retrieval_score": 46,
+      "selection_reason": "explicit_id"
+    }
+  ],
+  "max_memory_chars": 2000,
+  "total_chars": 1203,
+  "truncated": true,
+  "errors": []
+}

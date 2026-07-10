@@ -1,0 +1,13 @@
+{
+  "mode": "prompt_json",
+  "backend": "fastapi",
+  "llm_source": "fastapi",
+  "raw_text": "{\"content\":\"抱歉，我无法回答这个问题。作为本地工具使用代理助手，我没有记忆功能来记住之前的对话内容。每次对话都是独立的，我无法访问之前的对话历史。\"}\n",
+  "parsed_candidate": {
+    "content": "抱歉，我无法回答这个问题。作为本地工具使用代理助手，我没有记忆功能来记住之前的对话内容。每次对话都是独立的，我无法访问之前的对话历史。",
+    "tool_calls": []
+  },
+  "status": "success",
+  "error": null,
+  "generated_at": "2026-07-10T15:01:20+08:00"
+}
