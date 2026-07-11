@@ -9,6 +9,7 @@ from pathlib import Path
 from common.io_utils import append_jsonl, read_json, read_text, read_yaml, write_json, write_text
 from common.conversation_store import (
     append_message,
+    delete_conversation,
     init_store,
     list_conversations,
     list_messages,
@@ -19,6 +20,7 @@ from common.conversation_store import (
 )
 from common.logging_utils import now_iso
 from common.path_utils import resolve_cli_path, resolve_from_file
+from common.schemas import normalize_history_messages
 
 
 def _memory_paths(config_path: str | Path) -> dict[str, Path | int]:
@@ -163,9 +165,30 @@ def list_conversation_records(config_path: str, limit: int = 50) -> list[dict]:
     return list_conversations(_conversation_db_path(config_path), limit)
 
 
+def delete_conversation_record(config_path: str, conversation_id: str) -> dict:
+    _safe_conversation_id(conversation_id)
+    return delete_conversation(_conversation_db_path(config_path), conversation_id)
+
+
 def list_conversation_messages(config_path: str, conversation_id: str) -> list[dict]:
     _safe_conversation_id(conversation_id)
     return list_messages(_conversation_db_path(config_path), conversation_id)
+
+
+def list_conversation_history(config_path: str, conversation_id: str) -> list[dict]:
+    """Expose completed SQLite history using the runtime message protocol."""
+    messages = list_conversation_messages(config_path, conversation_id)
+    history = []
+    for message in messages:
+        if message.get("role") not in {"user", "assistant"}:
+            continue
+        metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
+        if metadata.get("ui_status") in {"pending", "error"}:
+            continue
+        content = message.get("content")
+        if isinstance(content, str) and content.strip():
+            history.append({"role": message["role"], "content": content})
+    return normalize_history_messages(history)
 
 
 def list_message_tool_steps(config_path: str, assistant_message_id: str) -> list[dict]:

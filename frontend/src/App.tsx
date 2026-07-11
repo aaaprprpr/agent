@@ -11,6 +11,13 @@ type ChatMessage = {
   status?: 'pending' | 'error'
   toolDetails?: ToolDetail[]
   toolPanelOpen?: boolean
+  attachments?: MessageAttachment[]
+}
+
+type MessageAttachment = {
+  name: string
+  size: number
+  path?: string
 }
 
 type ToolDetail = {
@@ -52,6 +59,7 @@ type BackendMessage = {
   content: string
   status?: 'pending' | 'error' | null
   tool_steps?: Record<string, unknown>[]
+  attachments?: MessageAttachment[]
 }
 
 type RunStreamEvent =
@@ -143,6 +151,16 @@ function prettyJson(value: unknown) {
   } catch {
     return String(value)
   }
+}
+
+function FileTypeIcon({ name }: { name: string }) {
+  const extension = name.split('.').pop()?.toLowerCase() ?? ''
+  const label = extension ? extension.slice(0, 4).toUpperCase() : 'FILE'
+  return (
+    <span className="file-icon" aria-hidden="true">
+      {label}
+    </span>
+  )
 }
 
 function handleMessageCopy(event: ClipboardEvent<HTMLDivElement>) {
@@ -454,12 +472,38 @@ function App() {
           body: message.content,
           status: message.status ?? undefined,
           toolDetails: toolDetailsFromSteps(message.tool_steps),
+          attachments: message.attachments,
         })) satisfies ChatMessage[]
       if (currentConversationIdRef.current !== conversationId) return
       setMessages(loadedMessages)
       updateHistoryMessages(conversationId, loadedMessages, true)
     } finally {
       setIsLoadingHistory(false)
+    }
+  }
+
+  async function deleteConversation(conversationId: string) {
+    if (runningConversationIdsRef.current.has(conversationId)) return
+    const item = histories.find((history) => history.id === conversationId)
+    const title = item?.title || '当前对话'
+    if (!window.confirm(`删除“${title}”？本对话的上传文件也会一并删除。`)) return
+    try {
+      const response = await fetch(`${API_BASE}/api/conversations/${conversationId}`, { method: 'DELETE' })
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null)
+        const detail = payload?.detail ?? `HTTP ${response.status}`
+        throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
+      }
+      setHistories((current) => current.filter((history) => history.id !== conversationId))
+      if (currentConversationIdRef.current === conversationId) {
+        stickToBottomRef.current = true
+        setActiveConversation(null)
+        setMessages([])
+        setAttachments([])
+        setDraft('')
+      }
+    } catch (error) {
+      window.alert(error instanceof Error ? `删除失败：${error.message}` : '删除失败')
     }
   }
 
@@ -506,12 +550,13 @@ function App() {
     const existingHistory = histories.find((item) => item.id === conversationId)
     const now = Date.now()
     const pendingId = now + 1
-    const optimisticMessages = [
+    const optimisticMessages: ChatMessage[] = [
       ...messages,
       {
         id: now,
         role: 'user',
         body: text,
+        attachments: filesToUpload.map((file) => ({ name: file.name, size: file.size })),
       },
       {
         id: pendingId,
@@ -519,7 +564,7 @@ function App() {
         body: '...',
         status: 'pending',
       },
-    ] satisfies ChatMessage[]
+    ]
     setActiveConversation(conversationId)
     setMessages(optimisticMessages)
     setHistories((current) => {
@@ -802,18 +847,34 @@ function App() {
 
         <div className="history-list" aria-label="对话记录">
           {histories.map((item) => (
-            <button
+            <div
               className={`history-item ${item.id === currentConversationId ? 'active' : ''}`}
               key={item.id}
-              type="button"
-              onClick={() => {
-                void loadConversation(item.id)
-              }}
             >
-              <span className="history-copy">
-                <strong>{item.title}</strong>
-              </span>
-            </button>
+              <button
+                className="history-open"
+                type="button"
+                onClick={() => {
+                  void loadConversation(item.id)
+                }}
+              >
+                <span className="history-copy">
+                  <strong>{item.title}</strong>
+                </span>
+              </button>
+              <button
+                className="history-delete"
+                type="button"
+                aria-label={`删除对话 ${item.title}`}
+                title="删除对话"
+                disabled={runningConversationIds.has(item.id)}
+                onClick={() => {
+                  void deleteConversation(item.id)
+                }}
+              >
+                <span aria-hidden="true">×</span>
+              </button>
+            </div>
           ))}
         </div>
       </aside>
@@ -824,6 +885,19 @@ function App() {
             <article className={`message ${message.role} ${message.status ?? ''}`} key={message.id}>
               <div className="message-body" onCopy={handleMessageCopy}>
                 {message.role === 'assistant' && <ToolTrace message={message} onToggle={toggleToolPanel} />}
+                {message.role === 'user' && message.attachments && message.attachments.length > 0 && (
+                  <div className="message-attachments">
+                    {message.attachments.map((file, index) => (
+                      <div className="message-attachment" key={`${file.path ?? file.name}-${index}`}>
+                        <FileTypeIcon name={file.name} />
+                        <span>
+                          <strong>{file.name}</strong>
+                          <small>{formatSize(file.size)}</small>
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 {message.status === 'pending' && (!message.body || message.body === '...') ? (
                   <LoadingBubble />
                 ) : (
@@ -853,7 +927,7 @@ function App() {
               <div className="attachment-row">
                 {attachments.map((file) => (
                   <div className="attachment-chip" key={file.id}>
-                    <span className="file-icon" aria-hidden="true">▣</span>
+                    <FileTypeIcon name={file.name} />
                     <span>
                       <strong>{file.name}</strong>
                       <small>{formatSize(file.size)}</small>

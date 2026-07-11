@@ -5,6 +5,7 @@ import base64
 import binascii
 import json
 import re
+import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -26,7 +27,9 @@ from b1_agent_runtime import run as run_agent_runtime  # noqa: E402
 from b1_agent_runtime import run_stream as run_agent_runtime_stream  # noqa: E402
 from b5_memory import (  # noqa: E402
     append_conversation_message,
+    delete_conversation_record,
     init_conversation_db,
+    list_conversation_history,
     list_conversation_records,
     list_conversation_messages,
     list_message_tool_steps,
@@ -125,11 +128,19 @@ class ConversationMessage(BaseModel):
     created_at: str
     status: Literal["pending", "error"] | None = None
     tool_steps: list[dict] = Field(default_factory=list)
+    attachments: list[UploadedFileRef] = Field(default_factory=list)
 
 
 class ConversationDetail(BaseModel):
     conversation_id: str
     messages: list[ConversationMessage]
+
+
+class DeleteConversationResponse(BaseModel):
+    conversation_id: str
+    deleted: bool
+    upload_dir_deleted: bool
+    output_dir_deleted: bool
 
 
 app = FastAPI(title="Agent Backend", version="0.1.0")
@@ -146,7 +157,7 @@ def _safe_upload_filename(name: str, fallback: str) -> str:
     original = Path(name.strip()).name
     suffix = Path(original).suffix.lower()
     stem = Path(original).stem
-    safe_stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", stem).strip("._")
+    safe_stem = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "_", stem).strip(" ._")
     safe_suffix = re.sub(r"[^A-Za-z0-9.]+", "", suffix)
     if safe_suffix not in SUPPORTED_UPLOAD_SUFFIXES:
         raise HTTPException(
@@ -210,14 +221,31 @@ def _save_run_uploads(conversation_id: str, files: list[UploadFilePayload]) -> l
     return _save_uploaded_files(UploadRequest(conversation_id=conversation_id, files=files))
 
 
+def _delete_child_directory(root: Path, child_name: str) -> bool:
+    root = root.resolve()
+    target = (root / child_name).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="resolved delete path escaped allowed root") from exc
+    if target == root:
+        raise HTTPException(status_code=400, detail="refusing to delete root directory")
+    if not target.exists():
+        return False
+    if not target.is_dir():
+        raise HTTPException(status_code=409, detail=f"delete target is not a directory: {target.name}")
+    shutil.rmtree(target)
+    return True
+
+
 def _user_input_with_uploaded_files(user_input: str, files: list[UploadedFileRef]) -> str:
     if not files:
         return user_input
     lines = [
-        "本次用户已上传以下文件，均可通过 file_reader 的 path 参数读取：",
+        "本次用户上传了以下文件。调用文件工具时，path 必须原样使用这里给出的规范路径：",
     ]
     for file in files:
-        lines.append(f"- {file.name}: {file.path}")
+        lines.append(f"- path: {file.path}")
     lines.extend(
         [
             "如果当前用户输入中的“这份文档”“这个文件”“附件”“上传文件”等指代不明确，优先使用上述上传文件路径。",
@@ -302,34 +330,6 @@ def _history_title(history: list[dict], current_user_input: str) -> str:
     return _short_title(current_user_input)
 
 
-def _history_context(history: list[dict]) -> str:
-    visible = [message for message in history if message.get("role") in {"user", "assistant", "system"}]
-    if not visible:
-        return ""
-    role_labels = {"system": "系统", "user": "用户", "assistant": "助手"}
-    lines = [
-        "以下是当前对话的完整历史记录，请作为上下文参考。回答时只回复最后的“当前用户输入”。",
-        "<conversation_history>",
-    ]
-    for message in visible:
-        metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
-        if metadata.get("ui_status") == "pending":
-            continue
-        role = role_labels.get(str(message.get("role")), str(message.get("role")))
-        content = str(message.get("content", "")).strip()
-        if content:
-            lines.append(f"{role}: {content}")
-    lines.append("</conversation_history>")
-    return "\n".join(lines)
-
-
-def _contextual_user_input(history: list[dict], user_input: str) -> str:
-    context = _history_context(history)
-    if not context:
-        return user_input
-    return f"{context}\n\n当前用户输入：\n{user_input}"
-
-
 def _extract_tool_steps(trace: dict) -> list[dict]:
     steps = []
     turns = trace.get("turns", [])
@@ -408,15 +408,34 @@ def _message_ui_status(message: dict) -> str | None:
     return status if status in {"pending", "error"} else None
 
 
-def _build_runtime_payload(request: RunRequest, conversation_id: str, user_input: str) -> dict:
-    # Web chat uses SQLite as the primary memory store. Legacy markdown memory
-    # remains available through selected_memory_ids/use_global_memory, but B1
-    # must not save markdown snapshots for normal web turns.
+def _message_attachments(message: dict) -> list[UploadedFileRef]:
+    metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
+    raw_attachments = metadata.get("attachments")
+    if not isinstance(raw_attachments, list):
+        return []
+    attachments = []
+    for item in raw_attachments:
+        try:
+            attachments.append(UploadedFileRef.model_validate(item))
+        except (TypeError, ValueError):
+            continue
+    return attachments
+
+
+def _build_runtime_payload(
+    request: RunRequest,
+    conversation_id: str,
+    user_input: str,
+    history_messages: list[dict],
+) -> dict:
+    # Web chat passes completed SQLite turns through history_messages. Optional
+    # legacy markdown memory still flows through B1 when explicitly selected.
     selected_memory_ids = request.selected_memory_ids
     use_global_memory = request.use_global_memory
     return {
         "conversation_id": conversation_id,
         "user_input": user_input,
+        "history_messages": history_messages,
         "system_prompt_path": SYSTEM_PROMPT_PATH,
         "selected_memory_ids": selected_memory_ids,
         "use_global_memory": use_global_memory,
@@ -453,6 +472,7 @@ def _start_run_messages(
     run_id: str,
     raw_user_input: str,
     history: list[dict],
+    uploaded_files: list[UploadedFileRef],
 ) -> tuple[str, str]:
     user_record = append_conversation_message(
         str(MEMORY_CONFIG),
@@ -461,6 +481,9 @@ def _start_run_messages(
         raw_user_input,
         run_id=run_id,
         is_trivial=_is_trivial_text(raw_user_input),
+        metadata={
+            "attachments": [file.model_dump() for file in uploaded_files],
+        } if uploaded_files else None,
     )
     assistant_record = append_conversation_message(
         str(MEMORY_CONFIG),
@@ -518,6 +541,7 @@ def _call_agent(request: RunRequest) -> RunResponse:
     raw_user_input = request.user_input.strip()
     init_conversation_db(str(MEMORY_CONFIG))
     history = list_conversation_messages(str(MEMORY_CONFIG), conversation_id)
+    history_messages = list_conversation_history(str(MEMORY_CONFIG), conversation_id)
     title = _history_title(history, raw_user_input)
     upsert_conversation_record(
         str(MEMORY_CONFIG),
@@ -531,14 +555,16 @@ def _call_agent(request: RunRequest) -> RunResponse:
         *_save_run_uploads(conversation_id, request.uploaded_file_payloads),
     ]
     agent_user_input = _user_input_with_uploaded_files(raw_user_input, uploaded_refs)
-    contextual_input = _contextual_user_input(history, agent_user_input)
-    runtime_payload = _build_runtime_payload(request, conversation_id, contextual_input)
+    runtime_payload = _build_runtime_payload(
+        request, conversation_id, agent_user_input, history_messages
+    )
     run_id = _now_stamp()
     user_message_id, assistant_message_id = _start_run_messages(
         conversation_id,
         run_id,
         raw_user_input,
         history,
+        uploaded_refs,
     )
     output_dir = OUTPUT_ROOT / conversation_id / run_id
     try:
@@ -588,6 +614,7 @@ def _stream_agent(request: RunRequest) -> Iterator[str]:
     raw_user_input = request.user_input.strip()
     init_conversation_db(str(MEMORY_CONFIG))
     history = list_conversation_messages(str(MEMORY_CONFIG), conversation_id)
+    history_messages = list_conversation_history(str(MEMORY_CONFIG), conversation_id)
     title = _history_title(history, raw_user_input)
     upsert_conversation_record(
         str(MEMORY_CONFIG),
@@ -601,14 +628,16 @@ def _stream_agent(request: RunRequest) -> Iterator[str]:
         *_save_run_uploads(conversation_id, request.uploaded_file_payloads),
     ]
     agent_user_input = _user_input_with_uploaded_files(raw_user_input, uploaded_refs)
-    contextual_input = _contextual_user_input(history, agent_user_input)
-    runtime_payload = _build_runtime_payload(request, conversation_id, contextual_input)
+    runtime_payload = _build_runtime_payload(
+        request, conversation_id, agent_user_input, history_messages
+    )
     run_id = _now_stamp()
     user_message_id, assistant_message_id = _start_run_messages(
         conversation_id,
         run_id,
         raw_user_input,
         history,
+        uploaded_refs,
     )
     output_dir = OUTPUT_ROOT / conversation_id / run_id
     yield _stream_event(
@@ -620,6 +649,7 @@ def _stream_agent(request: RunRequest) -> Iterator[str]:
         }
     )
     streamed_answer = ""
+    candidate_chunks: list[str] = []
     try:
         for event in run_agent_runtime_stream(
             runtime_payload,
@@ -637,22 +667,26 @@ def _stream_agent(request: RunRequest) -> Iterator[str]:
                 delta = str(event.get("text", ""))
                 if not delta:
                     continue
-                streamed_answer += delta
-                update_conversation_message(
-                    str(MEMORY_CONFIG),
-                    assistant_message_id,
-                    content=streamed_answer,
-                    metadata={"ui_status": "pending", "agent_status": "running_stream"},
-                )
-                yield _stream_event(
-                    {
-                        "type": "delta",
-                        "conversation_id": conversation_id,
-                        "assistant_message_id": assistant_message_id,
-                        "text": delta,
-                    }
-                )
+                candidate_chunks.append(delta)
             elif event_type == "state":
+                action = event.get("action")
+                if action == "finish" and candidate_chunks:
+                    streamed_answer = "".join(candidate_chunks)
+                    update_conversation_message(
+                        str(MEMORY_CONFIG),
+                        assistant_message_id,
+                        content=streamed_answer,
+                        metadata={"ui_status": "pending", "agent_status": "running_stream"},
+                    )
+                    yield _stream_event(
+                        {
+                            "type": "delta",
+                            "conversation_id": conversation_id,
+                            "assistant_message_id": assistant_message_id,
+                            "text": streamed_answer,
+                        }
+                    )
+                candidate_chunks = []
                 yield _stream_event(
                     {
                         "type": "state",
@@ -668,6 +702,7 @@ def _stream_agent(request: RunRequest) -> Iterator[str]:
                 )
             elif event_type == "tool_start":
                 streamed_answer = ""
+                candidate_chunks = []
                 update_conversation_message(
                     str(MEMORY_CONFIG),
                     assistant_message_id,
@@ -790,11 +825,29 @@ def get_conversation(conversation_id: str) -> ConversationDetail:
             created_at=message["created_at"],
             status=_message_ui_status(message),
             tool_steps=list_message_tool_steps(str(MEMORY_CONFIG), message["id"]) if message["role"] == "assistant" else [],
+            attachments=_message_attachments(message) if message["role"] == "user" else [],
         )
         for message in messages
         if message["role"] in {"user", "assistant"}
     ]
     return ConversationDetail(conversation_id=conversation_id, messages=visible)
+
+
+@app.delete("/api/conversations/{conversation_id}", response_model=DeleteConversationResponse)
+def delete_conversation(conversation_id: str) -> DeleteConversationResponse:
+    conversation_id = _safe_conversation_id(conversation_id)
+    init_conversation_db(str(MEMORY_CONFIG))
+    record = delete_conversation_record(str(MEMORY_CONFIG), conversation_id)
+    if not record.get("deleted"):
+        raise HTTPException(status_code=404, detail="conversation not found")
+    upload_dir_deleted = _delete_child_directory(UPLOAD_ROOT, conversation_id)
+    output_dir_deleted = _delete_child_directory(OUTPUT_ROOT, conversation_id)
+    return DeleteConversationResponse(
+        conversation_id=conversation_id,
+        deleted=bool(record.get("deleted")),
+        upload_dir_deleted=upload_dir_deleted,
+        output_dir_deleted=output_dir_deleted,
+    )
 
 
 @app.get("/api/messages/{message_id}/tool-steps")

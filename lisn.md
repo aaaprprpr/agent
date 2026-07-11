@@ -2,6 +2,14 @@
 
 lisnny的详细变更。
 
+# -------------------------7.11 上传文件清理------------------------------
+
+- 前端上传文件实际保存在 `data/uploads/<conversation_id>/`；Agent 读取时使用 `uploads/<conversation_id>/<filename>` 这样的 data 相对路径。
+- 新增后端 `DELETE /api/conversations/{conversation_id}`：删除 SQLite 对话记录时，联动删除该对话的上传目录和 `outputs/backend_runs/<conversation_id>/` 运行产物目录。
+- 前端历史对话列表增加单项删除按钮。删除当前对话时同步清空当前消息、草稿和待上传附件；正在运行的对话不允许删除。
+- 删除目录前会把目标路径解析到根目录内，避免误删 `data/uploads` 或 `outputs/backend_runs` 之外的路径。
+- 之后 `日志.md` 只查看不修改；Codex 详细变更统一放在本文件。
+
 # -------------------------7.11------------------------------
 
 tool/skill 第一批增强：

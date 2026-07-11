@@ -10,7 +10,7 @@ from typing import Iterator
 from common.io_utils import append_jsonl, read_json, read_text, read_yaml, write_json, write_text
 from common.logging_utils import now_iso
 from common.path_utils import resolve_cli_path, resolve_from_file
-from common.schemas import validate_ai_message
+from common.schemas import normalize_history_messages, validate_ai_message
 
 
 def _validate_runtime_input(payload: dict) -> dict:
@@ -29,6 +29,7 @@ def _validate_runtime_input(payload: dict) -> dict:
         raise ValueError("user_input must be a non-empty string")
     if payload["save_memory"] not in {"none", "conversation", "global"}:
         raise ValueError("save_memory must be none, conversation, or global")
+    payload["history_messages"] = normalize_history_messages(payload.get("history_messages", []))
     if execution_mode == "fixture":
         fixtures = payload.get("fixtures")
         if not isinstance(fixtures, dict):
@@ -52,16 +53,6 @@ def _validate_runtime_input(payload: dict) -> dict:
         if not isinstance(payload["use_global_memory"], bool):
             raise ValueError("use_global_memory must be boolean")
     return payload
-
-
-def _memory_context(selected_memory: dict) -> str:
-    sections = []
-    for document in selected_memory.get("selected_memory_docs", []):
-        sections.append(
-            f'<memory id="{document["memory_id"]}" type="{document["memory_type"]}">\n'
-            f'{document["content"].strip()}\n</memory>'
-        )
-    return "\n\n".join(sections)
 
 
 def _default_llm_mode(model_config: Path) -> str:
@@ -105,6 +96,16 @@ def _load_fixture_inputs(input_file: Path, runtime: dict) -> dict:
         "ai_messages": ai_messages,
         "tool_messages": tool_messages,
     }
+
+
+def _memory_context(selected_memory: dict) -> str:
+    sections = []
+    for document in selected_memory.get("selected_memory_docs", []):
+        sections.append(
+            f'<memory id="{document["memory_id"]}" type="{document["memory_type"]}">\n'
+            f'{document["content"].strip()}\n</memory>'
+        )
+    return "\n\n".join(sections)
 
 
 def _fixture_tool_messages(tool_calls: list[dict], preset_messages: dict) -> list[dict]:
@@ -184,6 +185,7 @@ def run(
         system_prompt = f"{system_prompt}\n\n{memory_context}"
     messages = [
         {"role": "system", "content": system_prompt},
+        *runtime["history_messages"],
         {"role": "user", "content": runtime["user_input"]},
     ]
     tool_rounds = 0
@@ -417,6 +419,7 @@ def run_stream(
         system_prompt = f"{system_prompt}\n\n{memory_context}"
     messages = [
         {"role": "system", "content": system_prompt},
+        *runtime["history_messages"],
         {"role": "user", "content": runtime["user_input"]},
     ]
     tool_rounds = 0
