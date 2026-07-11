@@ -215,6 +215,44 @@
   background: #f4f4f4;
 }
 
+.message-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-bottom: 10px;
+}
+
+.message-attachment {
+  min-width: 0;
+  max-width: 280px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 10px;
+  border: 1px solid #dedede;
+  border-radius: 9px;
+  background: #fff;
+}
+
+.message-attachment > span {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.message-attachment strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 560;
+}
+
+.message-attachment small {
+  color: #888;
+  font-size: 10px;
+}
+
 .message-body {
   padding: 14px 16px;
   border-radius: 14px;
@@ -495,6 +533,7 @@
 }
 
 .file-icon {
+  flex: 0 0 auto;
   color: #666;
 }
 

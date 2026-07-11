@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { ChangeEvent, ClipboardEvent, DragEvent, KeyboardEvent } from 'react'
+import { File, FileCode2, FileJson, FileSpreadsheet, FileText, Presentation } from 'lucide-react'
 import './App.css'
 
 type Role = 'user' | 'assistant' | 'tool'
@@ -11,6 +12,13 @@ type ChatMessage = {
   status?: 'pending' | 'error'
   toolDetails?: ToolDetail[]
   toolPanelOpen?: boolean
+  attachments?: MessageAttachment[]
+}
+
+type MessageAttachment = {
+  name: string
+  size: number
+  path?: string
 }
 
 type ToolDetail = {
@@ -52,6 +60,7 @@ type BackendMessage = {
   content: string
   status?: 'pending' | 'error' | null
   tool_steps?: Record<string, unknown>[]
+  attachments?: MessageAttachment[]
 }
 
 type RunStreamEvent =
@@ -143,6 +152,19 @@ function prettyJson(value: unknown) {
   } catch {
     return String(value)
   }
+}
+
+function FileTypeIcon({ name }: { name: string }) {
+  const extension = name.split('.').pop()?.toLowerCase() ?? ''
+  const Icon = (() => {
+    if (['csv', 'tsv', 'xls', 'xlsx'].includes(extension)) return FileSpreadsheet
+    if (['ppt', 'pptx'].includes(extension)) return Presentation
+    if (['json', 'jsonl'].includes(extension)) return FileJson
+    if (['py', 'js', 'jsx', 'ts', 'tsx', 'html', 'css', 'yaml', 'yml'].includes(extension)) return FileCode2
+    if (['txt', 'md', 'log', 'doc', 'docx'].includes(extension)) return FileText
+    return File
+  })()
+  return <Icon className="file-icon" size={19} strokeWidth={1.7} aria-hidden="true" />
 }
 
 function handleMessageCopy(event: ClipboardEvent<HTMLDivElement>) {
@@ -454,6 +476,7 @@ function App() {
           body: message.content,
           status: message.status ?? undefined,
           toolDetails: toolDetailsFromSteps(message.tool_steps),
+          attachments: message.attachments,
         })) satisfies ChatMessage[]
       if (currentConversationIdRef.current !== conversationId) return
       setMessages(loadedMessages)
@@ -506,12 +529,13 @@ function App() {
     const existingHistory = histories.find((item) => item.id === conversationId)
     const now = Date.now()
     const pendingId = now + 1
-    const optimisticMessages = [
+    const optimisticMessages: ChatMessage[] = [
       ...messages,
       {
         id: now,
         role: 'user',
         body: text,
+        attachments: filesToUpload.map((file) => ({ name: file.name, size: file.size })),
       },
       {
         id: pendingId,
@@ -519,7 +543,7 @@ function App() {
         body: '...',
         status: 'pending',
       },
-    ] satisfies ChatMessage[]
+    ]
     setActiveConversation(conversationId)
     setMessages(optimisticMessages)
     setHistories((current) => {
@@ -824,6 +848,19 @@ function App() {
             <article className={`message ${message.role} ${message.status ?? ''}`} key={message.id}>
               <div className="message-body" onCopy={handleMessageCopy}>
                 {message.role === 'assistant' && <ToolTrace message={message} onToggle={toggleToolPanel} />}
+                {message.role === 'user' && message.attachments && message.attachments.length > 0 && (
+                  <div className="message-attachments">
+                    {message.attachments.map((file, index) => (
+                      <div className="message-attachment" key={`${file.path ?? file.name}-${index}`}>
+                        <FileTypeIcon name={file.name} />
+                        <span>
+                          <strong>{file.name}</strong>
+                          <small>{formatSize(file.size)}</small>
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 {message.status === 'pending' && (!message.body || message.body === '...') ? (
                   <LoadingBubble />
                 ) : (
@@ -853,7 +890,7 @@ function App() {
               <div className="attachment-row">
                 {attachments.map((file) => (
                   <div className="attachment-chip" key={file.id}>
-                    <span className="file-icon" aria-hidden="true">▣</span>
+                    <FileTypeIcon name={file.name} />
                     <span>
                       <strong>{file.name}</strong>
                       <small>{formatSize(file.size)}</small>

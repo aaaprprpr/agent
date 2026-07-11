@@ -6,6 +6,32 @@ from typing import Any
 VALID_ROLES = {"system", "user", "assistant", "tool"}
 VALID_AGENT_STATES = {"acting", "replanning", "completed", "failed"}
 VALID_AGENT_ACTIONS = {"call_tools", "finish"}
+HISTORY_ROLES = {"user", "assistant"}
+
+
+def normalize_history_messages(messages: Any) -> list[dict]:
+    """Normalize persisted chat history for the Agent runtime.
+
+    Historical tool calls are not reconstructed. Tool and control messages
+    belong to the active run; persisted history carries only completed
+    user/assistant text with explicit roles.
+    """
+    if messages is None:
+        return []
+    if not isinstance(messages, list):
+        raise ValueError("history_messages must be an array")
+    normalized = []
+    for index, message in enumerate(messages):
+        if not isinstance(message, dict):
+            raise ValueError(f"history message {index} must be an object")
+        role = message.get("role")
+        content = message.get("content")
+        if role not in HISTORY_ROLES:
+            raise ValueError(f"history message {index} has invalid role: {role}")
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError(f"history message {index} content must be a non-empty string")
+        normalized.append({"role": role, "content": content})
+    return normalized
 
 
 def make_ai_message(
