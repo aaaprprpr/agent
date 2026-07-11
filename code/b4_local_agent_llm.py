@@ -467,54 +467,48 @@ def _load_model_bundle(
 
 
 def _build_prompt_messages(messages: list[dict], tools_schema: list[dict]) -> list[dict]:
+    """Standalone B4 fallback for prompt_json mode.
+
+    The integrated Agent path builds model-facing prompt messages in B1 and
+    calls B4 with prompt_ready=True. This fallback keeps B4 independently
+    runnable for module demos and tests.
+    """
     prompt_messages = deepcopy(messages)
     format_instruction = (
-        "IMPORTANT OUTPUT FORMAT:\n"
-        "You must return exactly one valid JSON object.\n"
-        "Do not output markdown.\n"
-        "Do not output text outside the JSON object.\n"
-        "Do not output code fences or backticks.\n"
-        'The first output character must be "{" and the last output character must be "}".\n\n'
-        "Successful final-answer example:\n"
-        '{"content":"final answer text","tool_calls":[],"control":'
-        '{"state":"completed","action":"finish","reason":"task completed"}}\n\n'
-        "Failed final-answer example:\n"
-        '{"content":"I need the missing filename before I can continue.","tool_calls":[],"control":'
-        '{"state":"failed","action":"finish","reason":"required filename is missing"}}\n\n'
-        "Tool-call example:\n"
-        '{"content":"I will read the file first.","tool_calls":[{"id":"call_001","name":"file_reader",'
+        "本段是模型输出协议，不是用户任务内容。\n"
+        "你必须只返回一个 JSON 对象，不能输出 JSON 之外的任何文字、Markdown、代码块或反引号。\n"
+        '第一个输出字符必须是 "{"，最后一个输出字符必须是 "}"。\n\n'
+        "JSON 顶层键必须且只能包含：\n"
+        "- content：字符串。写给用户看的自然语言内容；请求工具时可简要说明下一步，但不能包含工具调用 JSON。\n"
+        "- tool_calls：数组。需要调用工具时填写；不调用工具或结束时必须为 []。\n"
+        "- control：对象，且只能包含 state、action、reason。\n\n"
+        "control 取值规则：\n"
+        "- 请求工具：control.action 为 call_tools，control.state 为 acting 或 replanning，tool_calls 不能为空。\n"
+        "- 正常结束：control.action 为 finish，control.state 为 completed，tool_calls 必须为 []。\n"
+        "- 无法继续：control.action 为 finish，control.state 为 failed，tool_calls 必须为 []，reason 必须写明具体原因。\n\n"
+        "工具决策规则：\n"
+        "- 需要运行时、本地、上传文件、外部、搜索、计算等信息时，从本轮可用工具结构中选择匹配工具。\n"
+        "- 工具结构中存在匹配能力时，不要声称该能力不可用。\n"
+        "- 最新消息如果是工具结果，应先判断结果是否足够；足够则完成，不足则继续规划或失败结束。\n"
+        "- 工具结果之后结束时，不要重复之前的工具调用。\n\n"
+        "示例，完成任务：\n"
+        '{"content":"这是最终回答。","tool_calls":[],"control":{"state":"completed","action":"finish","reason":"任务已完成"}}\n\n'
+        "示例，请求工具：\n"
+        '{"content":"我先读取相关文件。","tool_calls":[{"id":"call_001","name":"file_reader",'
         '"args":{"path":"docs/agent_intro.txt","max_chars":2000}}],"control":'
-        '{"state":"acting","action":"call_tools","reason":"need file contents"}}\n\n'
-        "The top-level keys must be exactly:\n"
-        "- content: string\n"
-        "- tool_calls: array\n"
-        "- control: object with exactly state, action, and reason\n\n"
-        "Choose tools from the available schema when the user request requires runtime, local, "
-        "external, or computed information that the model should not invent. This includes current "
-        "time/date, local or uploaded file contents, web search/live information, and calculations.\n"
-        "Do not say a needed capability is unavailable if a matching tool exists in the available schema; "
-        "call the matching tool first and answer after its ToolMessage.\n"
-        "Use action call_tools with non-empty tool_calls and state acting or replanning.\n"
-        "After ToolMessages, analyze progress and either call tools again with state replanning or finish.\n"
-        "Use action finish with empty tool_calls and state completed or failed.\n"
-        "When finishing after a ToolMessage, do not repeat previous tool calls; set tool_calls to [].\n"
-        "A failed state must include a concrete reason.\n"
-        "Never put tool_calls inside content.\n"
-        'Never output {"content":"tool_calls": ...}.'
+        '{"state":"acting","action":"call_tools","reason":"需要读取文件内容"}}\n\n'
+        "示例，无法继续：\n"
+        '{"content":"继续处理前，我需要用户提供具体文件名。","tool_calls":[],"control":'
+        '{"state":"failed","action":"finish","reason":"缺少必要文件名"}}'
     )
     envelope_reminder = (
-        "IMPORTANT OUTPUT FORMAT: Output the JSON object now. "
-        'Your first output character must be "{" and your last output character must be "}". '
-        "Never output a backtick, Markdown, a code block, an explanation, or text outside the JSON. "
-        'Use exactly the top-level keys "content" (string), "tool_calls" (array), and "control" (object). '
-        "Set control.action to call_tools when requesting tools, or finish when ending the loop. "
-        "Set control.state to acting, replanning, completed, or failed. "
-        "When finishing, set tool_calls to [] and do not repeat previous tool calls. "
-        "When finishing after failure, include the reason in control.reason. "
-        'Never put tool_calls inside content. Never output {"content":"tool_calls": ...}.'
+        "只输出符合协议的 JSON 对象。"
+        '顶层键只能是 "content"、"tool_calls"、"control"。'
+        "请求工具时使用 call_tools；结束时使用 finish 且 tool_calls 为 []。"
+        "不要在 JSON 外输出任何文字，不要把工具调用写进 content。"
     )
     system_instruction = (
-        "\n\nAvailable tools JSON schema:\n"
+        "\n\n本轮可用工具结构如下。仅在任务需要工具时使用，工具名和参数必须来自该结构：\n"
         + json.dumps(tools_schema, ensure_ascii=False)
         + "\n"
         + format_instruction
@@ -534,9 +528,8 @@ def _build_prompt_messages(messages: list[dict], tools_schema: list[dict]) -> li
                 "role": "user",
                 "content": (
                     envelope_reminder
-                    + " The latest ToolMessage already contains a tool result. If it provides the requested "
-                    "information, finish with state completed. Otherwise analyze the result and choose another "
-                    "tool call with state replanning, or finish with state failed and a concrete reason."
+                    + " 最新工具消息已经包含工具结果。先判断结果是否足以回答用户；足够则 completed，"
+                    "不足则 replanning 继续调用工具，无法继续则 failed 并说明原因。"
                 ),
             }
         )
@@ -552,7 +545,32 @@ def _build_prompt_messages(messages: list[dict], tools_schema: list[dict]) -> li
     return prompt_messages
 
 
-def _prompt_json_generate(config_path: Path, config: dict, messages: list[dict], tools_schema: list[dict]) -> str:
+def _format_prompt_images(prompt_messages: list[dict]) -> list[dict]:
+    formatted = deepcopy(prompt_messages)
+    for message in formatted:
+        images = message.pop("images", [])
+        if not images:
+            continue
+        text_content = message.get("content", "")
+        message["content"] = [
+            *({"type": "image", "url": image_url} for image_url in images),
+            {"type": "text", "text": text_content},
+        ]
+    return formatted
+
+
+def _prompt_messages_for_model(messages: list[dict], tools_schema: list[dict], prompt_ready: bool) -> list[dict]:
+    prompt_messages = deepcopy(messages) if prompt_ready else _build_prompt_messages(messages, tools_schema)
+    return _format_prompt_images(prompt_messages)
+
+
+def _prompt_json_generate(
+    config_path: Path,
+    config: dict,
+    messages: list[dict],
+    tools_schema: list[dict],
+    prompt_ready: bool = False,
+) -> str:
     try:
         import torch
         import transformers
@@ -581,7 +599,7 @@ def _prompt_json_generate(config_path: Path, config: dict, messages: list[dict],
         model_config.get("max_memory"),
         model_config,
     )
-    prompt_messages = _build_prompt_messages(messages, tools_schema)
+    prompt_messages = _prompt_messages_for_model(messages, tools_schema, prompt_ready)
     inputs = _apply_chat_template(processor, prompt_messages)
     input_length = int(inputs["input_ids"].shape[-1])
     max_input_tokens = _max_input_tokens(config)
@@ -607,10 +625,16 @@ def _prompt_json_generate(config_path: Path, config: dict, messages: list[dict],
     return _decode_new_tokens(processor, new_tokens)
 
 
-def _fastapi_prompt_json_generate(config_path: Path, config: dict, messages: list[dict], tools_schema: list[dict]) -> str:
+def _fastapi_prompt_json_generate(
+    config_path: Path,
+    config: dict,
+    messages: list[dict],
+    tools_schema: list[dict],
+    prompt_ready: bool = False,
+) -> str:
     del config_path
     api_config = _fastapi_config(config)
-    prompt_messages = _build_prompt_messages(messages, tools_schema)
+    prompt_messages = _prompt_messages_for_model(messages, tools_schema, prompt_ready)
     payload = {
         "messages": prompt_messages,
         "generation": _generation_options(config),
@@ -661,10 +685,16 @@ def _iter_fastapi_text_response(request: urllib.request.Request, timeout_seconds
         raise RuntimeError(f"FastAPI LLM stream request failed: {exc}") from exc
 
 
-def _fastapi_prompt_json_stream(config_path: Path, config: dict, messages: list[dict], tools_schema: list[dict]) -> Iterator[str]:
+def _fastapi_prompt_json_stream(
+    config_path: Path,
+    config: dict,
+    messages: list[dict],
+    tools_schema: list[dict],
+    prompt_ready: bool = False,
+) -> Iterator[str]:
     del config_path
     api_config = _fastapi_config(config)
-    prompt_messages = _build_prompt_messages(messages, tools_schema)
+    prompt_messages = _prompt_messages_for_model(messages, tools_schema, prompt_ready)
     payload = {
         "messages": prompt_messages,
         "generation": _generation_options(config),
@@ -734,6 +764,7 @@ def generate_ai_message(
     mode: str = "prompt_json",
     artifact_dir: str | None = None,
     artifact_stem: str | None = None,
+    prompt_ready: bool = False,
 ) -> dict:
     config_path, config = _load_model_config(model_config)
     messages = validate_messages(deepcopy(messages))
@@ -754,11 +785,11 @@ def generate_ai_message(
         status = "success"
         error = None
     elif mode == "prompt_json":
-        prompt_messages = _build_prompt_messages(messages, tools_schema)
+        prompt_messages = _prompt_messages_for_model(messages, tools_schema, prompt_ready)
         if source == "local":
-            raw_text = _prompt_json_generate(config_path, config, messages, tools_schema)
+            raw_text = _prompt_json_generate(config_path, config, messages, tools_schema, prompt_ready)
         else:
-            raw_text = _fastapi_prompt_json_generate(config_path, config, messages, tools_schema)
+            raw_text = _fastapi_prompt_json_generate(config_path, config, messages, tools_schema, prompt_ready)
         try:
             parsed_candidate, ai_message = _parse_model_output(raw_text)
             status = "success"
@@ -800,6 +831,7 @@ def stream_ai_message(
     mode: str = "prompt_json",
     artifact_dir: str | None = None,
     artifact_stem: str | None = None,
+    prompt_ready: bool = False,
 ) -> Iterator[dict]:
     config_path, config = _load_model_config(model_config)
     messages = validate_messages(deepcopy(messages))
@@ -824,11 +856,11 @@ def stream_ai_message(
         if ai_message["content"]:
             yield {"type": "delta", "text": ai_message["content"]}
     elif mode == "prompt_json":
-        prompt_messages = _build_prompt_messages(messages, tools_schema)
+        prompt_messages = _prompt_messages_for_model(messages, tools_schema, prompt_ready)
         if source == "fastapi":
             raw_parts = []
             emitted_chars = 0
-            for chunk in _fastapi_prompt_json_stream(config_path, config, messages, tools_schema):
+            for chunk in _fastapi_prompt_json_stream(config_path, config, messages, tools_schema, prompt_ready):
                 raw_parts.append(chunk)
                 content = _streaming_content_prefix("".join(raw_parts))
                 if len(content) > emitted_chars:
@@ -838,7 +870,7 @@ def stream_ai_message(
                         yield {"type": "delta", "text": delta}
             raw_text = "".join(raw_parts)
         elif source == "local":
-            raw_text = _prompt_json_generate(config_path, config, messages, tools_schema)
+            raw_text = _prompt_json_generate(config_path, config, messages, tools_schema, prompt_ready)
         else:
             raise ValueError("runtime.llm_source must be local or fastapi")
         try:

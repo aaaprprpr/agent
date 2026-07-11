@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from copy import deepcopy
 from pathlib import Path
@@ -63,6 +64,77 @@ def _validate_runtime_input(payload: dict) -> dict:
 def _default_llm_mode(model_config: Path) -> str:
     config = read_yaml(model_config)
     return config.get("runtime", {}).get("default_mode", "mock")
+
+
+def build_llm_prompt_messages(messages: list[dict], tools_schema: list[dict]) -> list[dict]:
+    """Build the complete model-facing prompt for one Agent loop step.
+
+    B1 owns message flow. B4 may keep a standalone fallback, but the integrated
+    Agent path should disclose tools and protocol here before calling B4.
+    """
+    if not isinstance(tools_schema, list):
+        raise ValueError("tools_schema must be an array")
+    prompt_messages = deepcopy(messages)
+    protocol_instruction = (
+        "本段是模型输出协议，不是用户任务内容。\n"
+        "你必须只返回一个 JSON 对象，不能输出 JSON 之外的任何文字、Markdown、代码块或反引号。\n"
+        '第一个输出字符必须是 "{"，最后一个输出字符必须是 "}"。\n\n'
+        "JSON 顶层键必须且只能包含：\n"
+        "- content：字符串。写给用户看的自然语言内容；请求工具时可简要说明下一步，但不能包含工具调用 JSON。\n"
+        "- tool_calls：数组。需要调用工具时填写；不调用工具或结束时必须为 []。\n"
+        "- control：对象，且只能包含 state、action、reason。\n\n"
+        "control 取值规则：\n"
+        "- 请求工具：control.action 为 call_tools，control.state 为 acting 或 replanning，tool_calls 不能为空。\n"
+        "- 正常结束：control.action 为 finish，control.state 为 completed，tool_calls 必须为 []。\n"
+        "- 无法继续：control.action 为 finish，control.state 为 failed，tool_calls 必须为 []，reason 必须写明具体原因。\n\n"
+        "工具决策规则：\n"
+        "- 需要运行时、本地、上传文件、外部、搜索、计算等信息时，从本轮可用工具结构中选择匹配工具。\n"
+        "- 工具结构中存在匹配能力时，不要声称该能力不可用。\n"
+        "- 最新消息如果是工具结果，应先判断结果是否足够；足够则完成，不足则继续规划或失败结束。\n"
+        "- 工具结果之后结束时，不要重复之前的工具调用。\n\n"
+        "示例，完成任务：\n"
+        '{"content":"这是最终回答。","tool_calls":[],"control":{"state":"completed","action":"finish","reason":"任务已完成"}}\n\n'
+        "示例，请求工具：\n"
+        '{"content":"我先读取相关文件。","tool_calls":[{"id":"call_001","name":"file_reader",'
+        '"args":{"path":"docs/agent_intro.txt","max_chars":2000}}],"control":'
+        '{"state":"acting","action":"call_tools","reason":"需要读取文件内容"}}\n\n'
+        "示例，无法继续：\n"
+        '{"content":"继续处理前，我需要用户提供具体文件名。","tool_calls":[],"control":'
+        '{"state":"failed","action":"finish","reason":"缺少必要文件名"}}'
+    )
+    output_reminder = (
+        "只输出符合协议的 JSON 对象。"
+        '顶层键只能是 "content"、"tool_calls"、"control"。'
+        "请求工具时使用 call_tools；结束时使用 finish 且 tool_calls 为 []。"
+        "不要在 JSON 外输出任何文字，不要把工具调用写进 content。"
+    )
+    tool_disclosure = (
+        "\n\n本轮可用工具结构如下。仅在任务需要工具时使用，工具名和参数必须来自该结构：\n"
+        + json.dumps(tools_schema, ensure_ascii=False)
+        + "\n"
+        + protocol_instruction
+    )
+    if prompt_messages and prompt_messages[0].get("role") == "system":
+        prompt_messages[0]["content"] += tool_disclosure
+    else:
+        prompt_messages.insert(0, {"role": "system", "content": tool_disclosure.strip()})
+
+    for message in reversed(prompt_messages):
+        if message.get("role") == "user":
+            message["content"] += "\n\n" + output_reminder
+            break
+    if prompt_messages[-1].get("role") == "tool":
+        prompt_messages.append(
+            {
+                "role": "user",
+                "content": (
+                    output_reminder
+                    + " 最新工具消息已经包含工具结果。先判断结果是否足以回答用户；足够则 completed，"
+                    "不足则 replanning 继续调用工具，无法继续则 failed 并说明原因。"
+                ),
+            }
+        )
+    return prompt_messages
 
 
 def generate_ai_message(*args, **kwargs) -> dict:
@@ -206,13 +278,15 @@ def run(
             llm_error = None
             llm_prompt_messages = None
         else:
+            llm_input_messages = build_llm_prompt_messages(messages, tools_schema)
             llm_result = generate_ai_message(
                 str(model_file),
-                messages,
-                tools_schema,
+                llm_input_messages,
+                [],
                 mode,
                 str(output_dir / "llm_calls"),
                 f"llm_call_{llm_calls:03d}",
+                prompt_ready=True,
             )
             if not isinstance(llm_result, dict) or not isinstance(llm_result.get("ai_message"), dict):
                 raise ValueError("B4 result must contain an ai_message object")
@@ -443,13 +517,15 @@ def run_stream(
             llm_prompt_messages = None
         else:
             llm_result = None
+            llm_input_messages = build_llm_prompt_messages(messages, tools_schema)
             for event in stream_ai_message(
                 str(model_file),
-                messages,
-                tools_schema,
+                llm_input_messages,
+                [],
                 mode,
                 str(output_dir / "llm_calls"),
                 f"llm_call_{llm_calls:03d}",
+                prompt_ready=True,
             ):
                 if not isinstance(event, dict):
                     continue

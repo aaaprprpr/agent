@@ -106,7 +106,7 @@ def _tool_with_inferred_schema(tool: dict) -> tuple[dict, dict]:
             if name not in parameters:
                 schema = {
                     "type": _annotation_to_json_type(parameter.annotation, parameter.default),
-                    "description": "Auto-inferred from Python function signature.",
+                    "description": "根据函数签名自动推断。",
                 }
                 if schema["type"] == "array":
                     schema["items"] = {"type": "string"}
