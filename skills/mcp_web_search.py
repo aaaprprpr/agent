@@ -88,12 +88,12 @@ def _tool_name(server: dict, tools_response: Any) -> str:
     raise ValueError("MCP server did not expose a configured or discoverable search tool")
 
 
-def _tool_arguments(server: dict, query: str, top_k: int) -> dict:
-    query_arg = server.get("query_arg", "query")
-    top_k_arg = server.get("top_k_arg", "count")
+def _tool_arguments(search_config: dict, query: str, top_k: int) -> dict:
+    query_arg = search_config.get("query_arg", "query")
+    top_k_arg = search_config.get("top_k_arg", "count")
     if not isinstance(query_arg, str) or not query_arg:
         raise ValueError("MCP query_arg must be a non-empty string")
-    static_args = server.get("static_args", {})
+    static_args = search_config.get("static_args", {})
     arguments: dict[str, Any] = {}
     if static_args is not None:
         if not isinstance(static_args, dict):
@@ -103,6 +103,25 @@ def _tool_arguments(server: dict, query: str, top_k: int) -> dict:
     if isinstance(top_k_arg, str) and top_k_arg:
         arguments[top_k_arg] = top_k
     return arguments
+
+
+def _search_tool_name(search_config: dict) -> str | None:
+    tool_name = search_config.get("search_tool")
+    if isinstance(tool_name, str):
+        return tool_name.strip() or None
+    if tool_name is None:
+        return None
+    raise ValueError("MCP search_tool must be a string")
+
+
+def _search_attempt_configs(server: dict) -> list[dict]:
+    attempts = [server]
+    fallbacks = server.get("fallbacks", [])
+    if fallbacks is None:
+        return attempts
+    if not isinstance(fallbacks, list) or not all(isinstance(item, dict) for item in fallbacks):
+        raise ValueError("MCP fallbacks must be a list of objects")
+    return attempts + fallbacks
 
 
 def _content_block_to_dict(block: Any) -> dict:
@@ -193,12 +212,7 @@ async def _call_sse(server: dict, tool_name: str | None, arguments: dict) -> dic
     return {"tool_name": selected_tool, "result": _serialize_tool_result(result)}
 
 
-async def _call_mcp(server: dict, arguments: dict) -> dict:
-    tool_name = server.get("search_tool")
-    if isinstance(tool_name, str):
-        tool_name = tool_name.strip() or None
-    else:
-        tool_name = None
+async def _call_mcp(server: dict, tool_name: str | None, arguments: dict) -> dict:
     transport = server.get("transport", "stdio")
     if transport == "stdio":
         return await _call_stdio(server, tool_name, arguments)
@@ -207,6 +221,19 @@ async def _call_mcp(server: dict, arguments: dict) -> dict:
     if transport == "sse":
         return await _call_sse(server, tool_name, arguments)
     raise ValueError("MCP transport must be stdio, streamable_http, or sse")
+
+
+def _result_has_content(result: dict) -> bool:
+    if result.get("is_error"):
+        return False
+    structured = result.get("structured_content")
+    if isinstance(structured, (list, dict)) and bool(structured):
+        return True
+    text = result.get("text")
+    if isinstance(text, str) and text.strip():
+        return True
+    content = result.get("content")
+    return isinstance(content, list) and bool(content)
 
 
 def mcp_web_search(query: str, top_k: int = 5) -> dict:
@@ -219,13 +246,52 @@ def mcp_web_search(query: str, top_k: int = 5) -> dict:
     config_path = _config_path()
     config = _load_yaml(config_path)
     server = _server_config(config)
-    arguments = _tool_arguments(server, query.strip(), top_k)
-    response = asyncio.run(_call_mcp(server, arguments))
-    return {
-        "query": query.strip(),
-        "top_k": top_k,
-        "mcp_config": str(config_path.relative_to(PROJECT_ROOT)),
-        "mcp_tool_name": response["tool_name"],
-        "mcp_arguments": arguments,
-        **response["result"],
-    }
+    normalized_query = query.strip()
+    attempts = []
+    last_output: dict | None = None
+    last_exception: Exception | None = None
+    for index, search_config in enumerate(_search_attempt_configs(server), 1):
+        tool_name = _search_tool_name(search_config)
+        arguments = _tool_arguments(search_config, normalized_query, top_k)
+        attempt_record: dict[str, Any] = {
+            "attempt_index": index,
+            "requested_tool_name": tool_name,
+            "mcp_arguments": arguments,
+        }
+        try:
+            response = asyncio.run(_call_mcp(server, tool_name, arguments))
+        except Exception as exc:
+            last_exception = exc
+            attempt_record["status"] = "exception"
+            attempt_record["error"] = {"type": type(exc).__name__, "message": str(exc)}
+            attempts.append(attempt_record)
+            continue
+
+        result = response["result"]
+        attempt_record.update(
+            {
+                "status": "success",
+                "mcp_tool_name": response["tool_name"],
+                "is_error": result.get("is_error"),
+                "text": result.get("text", ""),
+            }
+        )
+        attempts.append(attempt_record)
+        last_output = {
+            "query": normalized_query,
+            "top_k": top_k,
+            "mcp_config": str(config_path.relative_to(PROJECT_ROOT)),
+            "mcp_tool_name": response["tool_name"],
+            "mcp_arguments": arguments,
+            "mcp_attempt_count": len(attempts),
+            "mcp_attempts": attempts,
+            **result,
+        }
+        if _result_has_content(result):
+            return last_output
+
+    if last_output is not None:
+        return last_output
+    if last_exception is not None:
+        raise last_exception
+    raise RuntimeError("MCP web search did not run any attempts")

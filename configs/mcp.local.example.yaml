@@ -4,14 +4,29 @@ mcp:
     web_search:
       enabled: true
       transport: stdio
-      command: npx
-      command_windows: npx.cmd
+      command: ddgs
+      command_windows: ddgs.exe
       args:
-        - -y
-        - "@modelcontextprotocol/server-brave-search"
-      env:
-        BRAVE_API_KEY: ${BRAVE_API_KEY}
-      search_tool: brave_web_search
+        - mcp
+      env: {}
+      search_tool: search_text
       query_arg: query
-      top_k_arg: count
-      static_args: {}
+      top_k_arg: max_results
+      static_args:
+        backend: auto
+      fallbacks:
+        - search_tool: search_news
+          query_arg: query
+          top_k_arg: max_results
+          static_args:
+            backend: auto
+        - search_tool: search_text
+          query_arg: query
+          top_k_arg: max_results
+          static_args:
+            backend: duckduckgo
+        - search_tool: search_news
+          query_arg: query
+          top_k_arg: max_results
+          static_args:
+            backend: duckduckgo

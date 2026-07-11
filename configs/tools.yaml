@@ -23,6 +23,7 @@ toolsets:
     - calculator
     - current_time
     - file_reader
+    - mcp_web_search
     - local_file_search
     - table_analyzer
     - format_converter
@@ -94,7 +95,7 @@ tools:
   local_file_search:
     module: skills.local_file_search
     function: local_file_search
-    description: Search local text-like files under allowed workspace roots for query terms.
+    description: Search local text-like files under allowed workspace roots for query terms. This is only for local project files; do not use it for web, internet, live news, or current external information.
     parameters:
       query: {type: string, description: Search query.}
       root_dir: {type: string, description: "Directory relative to data root, or alias:path under an allowed workspace root."}
@@ -111,7 +112,7 @@ tools:
   mcp_web_search:
     module: skills.mcp_web_search
     function: mcp_web_search
-    description: Search the web through a configured MCP search server. Requires configs/mcp.yaml to be enabled and connected to a working MCP server.
+    description: Search the web through a configured MCP search server. Use this for internet search, live news, recent events, current external information, or topics not contained in local files.
     parameters:
       query: {type: string, description: Web search query.}
       top_k: {type: integer, description: Maximum number of results requested from the MCP search tool.}
@@ -121,6 +122,9 @@ tools:
       top_k: {type: integer, description: Requested result count.}
       mcp_config: {type: string, description: MCP configuration file used by the bridge.}
       mcp_tool_name: {type: string, description: MCP tool invoked.}
+      mcp_arguments: {type: object, description: Arguments sent to the successful or final MCP tool attempt.}
+      mcp_attempt_count: {type: integer, description: Number of MCP search attempts performed.}
+      mcp_attempts: {type: array, description: MCP search attempts tried, including fallback attempts and error text.}
       structured_content: {type: object, description: Structured content returned by the MCP server when available.}
       text: {type: string, description: Text content returned by the MCP server.}
       is_error: {type: boolean, description: Whether the MCP tool reported an error.}

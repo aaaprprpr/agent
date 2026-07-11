@@ -2,13 +2,31 @@ mcp:
   default_server: web_search
   servers:
     web_search:
-      enabled: false
+      enabled: true
       transport: stdio
-      command: ""
-      args: []
+      command: ddgs
+      command_windows: ddgs.exe
+      args:
+        - mcp
       env: {}
-      search_tool: ""
+      search_tool: search_text
       query_arg: query
-      top_k_arg: count
-      static_args: {}
-
+      top_k_arg: max_results
+      static_args:
+        backend: auto
+      fallbacks:
+        - search_tool: search_news
+          query_arg: query
+          top_k_arg: max_results
+          static_args:
+            backend: auto
+        - search_tool: search_text
+          query_arg: query
+          top_k_arg: max_results
+          static_args:
+            backend: duckduckgo
+        - search_tool: search_news
+          query_arg: query
+          top_k_arg: max_results
+          static_args:
+            backend: duckduckgo

@@ -11,7 +11,7 @@ memory\conversations
 memory\memory_index.json
 outputs\full_demo
 
-# Local MCP credentials/configuration. Do not commit API keys.
+# Local MCP configuration. Keep per-machine settings out of Git.
 configs/mcp.local.yaml
 
 data/uploads/

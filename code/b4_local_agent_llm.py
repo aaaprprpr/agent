@@ -278,13 +278,25 @@ def _candidate_to_message(candidate: dict) -> tuple[dict, dict]:
     unknown_keys = set(candidate) - expected_keys
     if unknown_keys:
         raise ValueError(f"model output JSON contains unknown keys: {', '.join(sorted(unknown_keys))}")
+    content = candidate.get("content", "")
+    tool_calls = candidate.get("tool_calls", [])
+    control = candidate.get("control")
+    if (
+        isinstance(control, dict)
+        and control.get("action") == "finish"
+        and isinstance(content, str)
+        and content.strip()
+        and isinstance(tool_calls, list)
+        and tool_calls
+    ):
+        tool_calls = []
     message = {
         "role": "assistant",
-        "content": candidate.get("content", ""),
-        "tool_calls": candidate.get("tool_calls", []),
+        "content": content,
+        "tool_calls": tool_calls,
     }
-    if "control" in candidate:
-        message["control"] = candidate["control"]
+    if control is not None:
+        message["control"] = control
     validate_ai_message(message)
     parsed_candidate = {
         "content": message["content"],
@@ -492,9 +504,12 @@ def _build_prompt_messages(messages: list[dict], tools_schema: list[dict]) -> li
         "Choose tools from the available schema when the user request requires runtime, local, "
         "external, or computed information that the model should not invent. This includes current "
         "time/date, local or uploaded file contents, web search/live information, and calculations.\n"
+        "Do not say a needed capability is unavailable if a matching tool exists in the available schema; "
+        "call the matching tool first and answer after its ToolMessage.\n"
         "Use action call_tools with non-empty tool_calls and state acting or replanning.\n"
         "After ToolMessages, analyze progress and either call tools again with state replanning or finish.\n"
         "Use action finish with empty tool_calls and state completed or failed.\n"
+        "When finishing after a ToolMessage, do not repeat previous tool calls; set tool_calls to [].\n"
         "A failed state must include a concrete reason.\n"
         "Never put tool_calls inside content.\n"
         'Never output {"content":"tool_calls": ...}.'
@@ -506,6 +521,7 @@ def _build_prompt_messages(messages: list[dict], tools_schema: list[dict]) -> li
         'Use exactly the top-level keys "content" (string), "tool_calls" (array), and "control" (object). '
         "Set control.action to call_tools when requesting tools, or finish when ending the loop. "
         "Set control.state to acting, replanning, completed, or failed. "
+        "When finishing, set tool_calls to [] and do not repeat previous tool calls. "
         "When finishing after failure, include the reason in control.reason. "
         'Never put tool_calls inside content. Never output {"content":"tool_calls": ...}.'
     )
