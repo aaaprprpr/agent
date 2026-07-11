@@ -460,8 +460,6 @@ function App() {
     stickToBottomRef.current = true
     setActiveConversation(conversationId)
     setMessages(cached?.messages ?? [])
-    setAttachments([])
-    setDraft('')
     if (runningConversationIdsRef.current.has(conversationId) && cached) return
     setIsLoadingHistory(true)
     try {
@@ -831,6 +829,8 @@ function App() {
               key={item.id}
               type="button"
               onClick={() => {
+                setAttachments([])
+                setDraft('')
                 void loadConversation(item.id)
               }}
             >

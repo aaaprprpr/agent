@@ -291,7 +291,17 @@ def mcp_web_search(query: str, top_k: int = 5) -> dict:
             return last_output
 
     if last_output is not None:
-        return last_output
+        failure_details = []
+        for attempt in attempts:
+            error = attempt.get("error")
+            if isinstance(error, dict) and error.get("message"):
+                failure_details.append(str(error["message"]))
+                continue
+            text = attempt.get("text")
+            if isinstance(text, str) and text.strip():
+                failure_details.append(text.strip())
+        detail = failure_details[-1] if failure_details else "no usable search results"
+        raise RuntimeError(f"MCP web search failed after {len(attempts)} attempts: {detail}")
     if last_exception is not None:
         raise last_exception
     raise RuntimeError("MCP web search did not run any attempts")

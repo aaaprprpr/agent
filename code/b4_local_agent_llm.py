@@ -278,25 +278,13 @@ def _candidate_to_message(candidate: dict) -> tuple[dict, dict]:
     unknown_keys = set(candidate) - expected_keys
     if unknown_keys:
         raise ValueError(f"model output JSON contains unknown keys: {', '.join(sorted(unknown_keys))}")
-    content = candidate.get("content", "")
-    tool_calls = candidate.get("tool_calls", [])
-    control = candidate.get("control")
-    if (
-        isinstance(control, dict)
-        and control.get("action") == "finish"
-        and isinstance(content, str)
-        and content.strip()
-        and isinstance(tool_calls, list)
-        and tool_calls
-    ):
-        tool_calls = []
     message = {
         "role": "assistant",
-        "content": content,
-        "tool_calls": tool_calls,
+        "content": candidate.get("content", ""),
+        "tool_calls": candidate.get("tool_calls", []),
     }
-    if control is not None:
-        message["control"] = control
+    if "control" in candidate:
+        message["control"] = candidate["control"]
     validate_ai_message(message)
     parsed_candidate = {
         "content": message["content"],
