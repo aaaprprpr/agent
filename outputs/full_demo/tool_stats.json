@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-07-10T11:06:34+08:00",
+  "generated_at": "2026-07-11T14:30:15+08:00",
   "total_calls": 1,
   "success_count": 1,
   "error_count": 0,
@@ -10,7 +10,7 @@
       "success_count": 1,
       "error_count": 0,
       "cache_hit_count": 0,
-      "avg_latency_ms": 1.513,
+      "avg_latency_ms": 1.148,
       "failure_rate": 0.0
     }
   }

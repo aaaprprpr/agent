@@ -114,6 +114,9 @@ def validate_ai_message(message: dict) -> None:
         raise ValueError(f"invalid AIMessage control state: {state}")
     if action not in VALID_AGENT_ACTIONS:
         raise ValueError(f"invalid AIMessage control action: {action}")
+    if reason is None:
+        reason = ""
+        control["reason"] = reason
     if not isinstance(reason, str):
         raise ValueError("AIMessage control reason must be a string")
     if action == "call_tools" and not normalized:

@@ -286,14 +286,11 @@ def _candidate_to_message(candidate: dict) -> tuple[dict, dict]:
     if "control" in candidate:
         message["control"] = candidate["control"]
     validate_ai_message(message)
-    has_content = bool(message["content"].strip())
-    has_tool_calls = bool(message["tool_calls"])
-    if has_content and has_tool_calls:
-        message["content"] = ""
-        has_content = False
-    if has_content == has_tool_calls:
-        raise ValueError("model output must contain either final content or tool calls, but not both")
-    parsed_candidate = {"content": message["content"], "tool_calls": message["tool_calls"]}
+    parsed_candidate = {
+        "content": message["content"],
+        "tool_calls": message["tool_calls"],
+        "control": message["control"],
+    }
     return parsed_candidate, message
 
 
@@ -478,11 +475,16 @@ def _build_prompt_messages(messages: list[dict], tools_schema: list[dict]) -> li
         "Do not output text outside the JSON object.\n"
         "Do not output code fences or backticks.\n"
         'The first output character must be "{" and the last output character must be "}".\n\n'
-        "Valid schema A:\n"
-        '{"content":"final answer text","tool_calls":[]}\n\n'
-        "Valid schema B:\n"
-        '{"content":"","tool_calls":[{"id":"call_001","name":"file_reader",'
-        '"args":{"path":"docs/agent_intro.txt","max_chars":2000}}]}\n\n'
+        "Successful final-answer example:\n"
+        '{"content":"final answer text","tool_calls":[],"control":'
+        '{"state":"completed","action":"finish","reason":"task completed"}}\n\n'
+        "Failed final-answer example:\n"
+        '{"content":"I need the missing filename before I can continue.","tool_calls":[],"control":'
+        '{"state":"failed","action":"finish","reason":"required filename is missing"}}\n\n'
+        "Tool-call example:\n"
+        '{"content":"I will read the file first.","tool_calls":[{"id":"call_001","name":"file_reader",'
+        '"args":{"path":"docs/agent_intro.txt","max_chars":2000}}],"control":'
+        '{"state":"acting","action":"call_tools","reason":"need file contents"}}\n\n'
         "The top-level keys must be exactly:\n"
         "- content: string\n"
         "- tool_calls: array\n"

@@ -5,25 +5,22 @@
 - Message flow: `system → user → assistant → tool → assistant`
 - Tool rounds: `1`
 - LLM calls: `2`
-- Loaded memory documents: `2`
-- Available tools: `5`
+- Loaded memory documents: `0`
+- Available tools: `6`
 
 ## Final Answer
 
 1. Agent 系统由模型、工具、记忆和执行循环四个核心部分组成。
-2. 工具调用使模型能够读取本地文件、执行计算等操作，并将结果用于后续回答。
-3. Memory 为 Agent 提供全局知识和历史对话上下文，支持持续对话。
+2. 工具调用使模型能够读取本地文件、执行计算，并将结果用于后续回答。
+3. Memory 为 Agent 提供全局知识和历史对话上下文。
 
 ## Output Files
 
-- `demo_report.md`
 - `final_answer.md`
 - `llm_calls/llm_call_001_ai_message.json`
 - `llm_calls/llm_call_001_raw_model_output.json`
 - `llm_calls/llm_call_002_ai_message.json`
 - `llm_calls/llm_call_002_raw_model_output.json`
-- `llm_calls/llm_call_003_ai_message.json`
-- `llm_calls/llm_call_003_raw_model_output.json`
 - `llm_calls/llm_run_log.jsonl`
 - `memory_log.jsonl`
 - `messages.json`
