@@ -271,7 +271,27 @@ def _streaming_content_prefix(raw_text: str) -> str:
     return _partial_json_string(raw_text, value_start)
 
 
-def _candidate_to_message(candidate: dict) -> tuple[dict, dict]:
+def _normalize_control_tool_conflict(message: dict, has_tool_messages: bool) -> None:
+    control = message.get("control")
+    tool_calls = message.get("tool_calls")
+    if not isinstance(control, dict) or not isinstance(tool_calls, list) or not tool_calls:
+        return
+    if control.get("action") != "finish":
+        return
+    if has_tool_messages:
+        message["tool_calls"] = []
+        return
+    normalized = dict(control)
+    normalized["action"] = "call_tools"
+    if normalized.get("state") not in {"acting", "replanning"}:
+        normalized["state"] = "acting"
+    reason = normalized.get("reason")
+    if not isinstance(reason, str) or not reason.strip():
+        normalized["reason"] = "tool call requested"
+    message["control"] = normalized
+
+
+def _candidate_to_message(candidate: dict, has_tool_messages: bool = False) -> tuple[dict, dict]:
     if not isinstance(candidate, dict):
         raise ValueError("model output JSON must be an object")
     expected_keys = {"content", "tool_calls", "control"}
@@ -285,6 +305,7 @@ def _candidate_to_message(candidate: dict) -> tuple[dict, dict]:
     }
     if "control" in candidate:
         message["control"] = candidate["control"]
+    _normalize_control_tool_conflict(message, has_tool_messages)
     validate_ai_message(message)
     parsed_candidate = {
         "content": message["content"],
@@ -294,7 +315,7 @@ def _candidate_to_message(candidate: dict) -> tuple[dict, dict]:
     return parsed_candidate, message
 
 
-def _parse_model_output(raw_text: str) -> tuple[dict, dict]:
+def _parse_model_output(raw_text: str, has_tool_messages: bool = False) -> tuple[dict, dict]:
     try:
         candidate = json.loads(raw_text.strip())
     except json.JSONDecodeError as exc:
@@ -305,7 +326,7 @@ def _parse_model_output(raw_text: str) -> tuple[dict, dict]:
                 candidate = _parse_tool_calls_fragment(raw_text, exc)
             except Exception:
                 candidate = _parse_content_fragment(raw_text, exc)
-    return _candidate_to_message(candidate)
+    return _candidate_to_message(candidate, has_tool_messages)
 
 
 def _dtype_value(torch_module: Any, configured: str) -> Any:
@@ -791,7 +812,10 @@ def generate_ai_message(
         else:
             raw_text = _fastapi_prompt_json_generate(config_path, config, messages, tools_schema, prompt_ready)
         try:
-            parsed_candidate, ai_message = _parse_model_output(raw_text)
+            parsed_candidate, ai_message = _parse_model_output(
+                raw_text,
+                any(message.get("role") == "tool" for message in messages),
+            )
             status = "success"
             error = None
         except Exception as exc:
@@ -874,7 +898,10 @@ def stream_ai_message(
         else:
             raise ValueError("runtime.llm_source must be local or fastapi")
         try:
-            parsed_candidate, ai_message = _parse_model_output(raw_text)
+            parsed_candidate, ai_message = _parse_model_output(
+                raw_text,
+                any(message.get("role") == "tool" for message in messages),
+            )
             if source == "local" and ai_message["content"]:
                 yield {"type": "delta", "text": ai_message["content"]}
         except Exception as exc:

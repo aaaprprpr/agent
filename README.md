@@ -100,7 +100,7 @@ B2 和 B3 使用以下 JSON 对象记录一次 Skill 执行：
 
 | 参数 | 说明 |
 |---|---|
-| `--skill` | Skill 名称：`calculator`、`current_time`、`file_reader`、`local_file_search`、`mcp_web_search`、`table_analyzer` 或 `format_converter`。 |
+| `--skill` | Skill 名称：`calculator`、`current_time`、`file_reader`、`file_writer`、`local_file_search`、`mcp_web_search`、`table_analyzer` 或 `format_converter`。 |
 | `--input` | 对应 Skill 的 JSON 输入文件。顶层必须是 JSON 对象。 |
 | `--outdir` | B2 输出目录。 |
 | `--data_root` | 可选的数据根目录；未提供时使用项目的 `data/`。 |
@@ -112,12 +112,13 @@ B2 和 B3 使用以下 JSON 对象记录一次 Skill 执行：
 | calculator | `data/tool_inputs/tool_input_calculator.json` | `expression`：数学表达式字符串。 | `tool_input_calculator_error.json` |
 | current_time | `data/tool_inputs/tool_input_current_time.json` | `timezone`：可选，支持 `local`、`UTC`、`Asia/Shanghai`、`+08:00` 等。 | 无 |
 | file_reader | `data/tool_inputs/tool_input_file_reader.json` | `path`：相对 `data/` 的文本或 Office Open XML 路径；`max_chars`：最大返回字符数。 | `tool_input_file_reader_error.json` |
+| file_writer | `data/tool_inputs/tool_input_file_writer_md.json` | `filename`、`file_type`、`content`；支持 txt、markdown、docx、基础代码文件。 | `tool_input_file_writer_error_path.json`、`tool_input_file_writer_error_suffix.json` |
 | local_file_search | `data/tool_inputs/tool_input_file_search.json` | `query`、`root_dir`、`file_types`、`top_k`。 | `tool_input_file_search_error.json` |
 | mcp_web_search | `data/tool_inputs/tool_input_mcp_web_search.json` | `query`、`top_k`；需要先安装 `ddgs[mcp]`。 | 未配置时返回结构化 error SkillResult |
 | table_analyzer | `data/tool_inputs/tool_input_table_analyzer.json` | `path`：CSV/TSV 路径；`max_rows_preview`；`describe`。 | `tool_input_table_analyzer_error.json` |
 | format_converter | `data/tool_inputs/tool_input_format_converter.json` | `text`；`target_format`：`markdown` 或 `json`；可选 `output_filename`。 | `tool_input_format_converter_error.json` |
 
-文件类 Skill 的相对路径以 `data/` 为根。例如 `docs/agent_intro.txt` 实际对应 `data/docs/agent_intro.txt`。`file_reader` 支持 txt、md、json、jsonl、csv、tsv、yaml、py、log、docx、pptx；旧版二进制 doc/ppt 需要先转换为 docx/pptx。
+文件类 Skill 的相对路径以 `data/` 为根。例如 `docs/agent_intro.txt` 实际对应 `data/docs/agent_intro.txt`。`file_reader` 支持 txt、md、json、jsonl、csv、tsv、yaml、py、log、docx、pptx；旧版二进制 doc/ppt 需要先转换为 docx/pptx。`file_writer` 只写入当前运行输出目录下的 `generated_files/`，禁止绝对路径、`..` 和覆盖已有文件；Word 文件按 `.docx` 生成。
 
 ### 3.3 演示命令
 
@@ -127,6 +128,12 @@ python b2_run_skill.py --skill current_time --input ../data/tool_inputs/tool_inp
 python b2_run_skill.py --skill file_reader --input ../data/tool_inputs/tool_input_file_reader.json --outdir ../outputs/B2_skills
 python b2_run_skill.py --skill file_reader --input ../data/tool_inputs/tool_input_file_reader_docx.json --outdir ../outputs/B2_skills
 python b2_run_skill.py --skill file_reader --input ../data/tool_inputs/tool_input_file_reader_pptx.json --outdir ../outputs/B2_skills
+python b2_run_skill.py --skill file_writer --input ../data/tool_inputs/tool_input_file_writer_txt.json --outdir ../outputs/B2_skills
+python b2_run_skill.py --skill file_writer --input ../data/tool_inputs/tool_input_file_writer_md.json --outdir ../outputs/B2_skills
+python b2_run_skill.py --skill file_writer --input ../data/tool_inputs/tool_input_file_writer_docx.json --outdir ../outputs/B2_skills
+python b2_run_skill.py --skill file_writer --input ../data/tool_inputs/tool_input_file_writer_code.json --outdir ../outputs/B2_skills
+python b2_run_skill.py --skill file_writer --input ../data/tool_inputs/tool_input_file_writer_error_path.json --outdir ../outputs/B2_skills/file_writer_error_path
+python b2_run_skill.py --skill file_writer --input ../data/tool_inputs/tool_input_file_writer_error_suffix.json --outdir ../outputs/B2_skills/file_writer_error_suffix
 python b2_run_skill.py --skill local_file_search --input ../data/tool_inputs/tool_input_file_search.json --outdir ../outputs/B2_skills
 python b2_run_skill.py --skill mcp_web_search --input ../data/tool_inputs/tool_input_mcp_web_search.json --outdir ../outputs/B2_skills
 python b2_run_skill.py --skill table_analyzer --input ../data/tool_inputs/tool_input_table_analyzer.json --outdir ../outputs/B2_skills
@@ -144,6 +151,7 @@ python b2_run_skill.py --skill format_converter --input ../data/tool_inputs/tool
 | `outputs/B2_skills/calculator_result.json` | JSON 对象（SkillResult） | calculator 最近一次运行的输入、结果或错误、耗时。 |
 | `outputs/B2_skills/current_time_result.json` | JSON 对象（SkillResult） | current_time 最近一次运行的本地/UTC/目标时区时间。 |
 | `outputs/B2_skills/file_reader_result.json` | JSON 对象（SkillResult） | file_reader 最近一次运行结果；业务输出包含内容、字符数、来源和截断标志。 |
+| `outputs/B2_skills/file_writer_result.json` | JSON 对象（SkillResult） | file_writer 最近一次写文件结果；业务输出包含生成文件路径、类型、字节数和覆盖状态。 |
 | `outputs/B2_skills/local_file_search_result.json` | JSON 对象（SkillResult） | 文件搜索结果；每项包含路径、匹配分数和命中片段。 |
 | `outputs/B2_skills/mcp_web_search_result.json` | JSON 对象（SkillResult） | MCP 搜索桥接结果；未配置 MCP server 时为 error。 |
 | `outputs/B2_skills/table_analyzer_result.json` | JSON 对象（SkillResult） | 表格行列数、列名、预览和数值列统计。 |
@@ -166,12 +174,15 @@ python b2_run_skill.py --skill format_converter --input ../data/tool_inputs/tool
 | `data/messages/b3_tool_call_current_time.json` | 正常 current_time 调用样例。 |
 | `data/messages/b3_tool_call_file_reader_docx.json` | 正常 docx 读取样例。 |
 | `data/messages/b3_tool_call_file_reader_pptx.json` | 正常 pptx 读取样例。 |
+| `data/messages/b3_tool_call_file_writer_valid.json` | 正常 file_writer 调用样例，验证 B3 注入 `output_dir` 并写入 `generated_files/`。 |
+| `data/messages/b3_tool_call_file_writer_invalid_path.json` | file_writer 非法路径错误样例，验证 `..` 被拒绝。 |
+| `data/messages/b3_tool_call_file_writer_suffix_mismatch.json` | file_writer 格式和后缀不匹配错误样例。 |
 | `data/messages/b3_tool_call_mcp_web_search.json` | MCP 搜索调用样例；当前共享配置使用 DDGS，配置缺失或依赖未安装时用于验证清晰错误。 |
 | `data/messages/b3_tool_call_format_converter_valid.json` | 正常 format_converter 调用样例，验证 B3 注入 `output_dir` 并生成文件。 |
 | `data/messages/b3_tool_call_unknown_tool.json` | 未知工具错误样例。 |
 | `data/messages/b3_tool_call_missing_required.json` | 缺少必填参数错误样例。 |
 
-B3 会根据 Skill 函数签名自动注入 data_root 和 output_dir；前者用于读取文件类Skill定位输入文件夹data/，后者用于format_converter输出生成文件。
+B3 会根据 Skill 函数签名自动注入 data_root 和 output_dir；前者用于读取文件类Skill定位输入文件夹data/，后者用于 format_converter 和 file_writer 输出生成文件。
 
 ### 4.2 演示命令
 
@@ -187,6 +198,9 @@ python b3_tool_layer.py --tools_config ../configs/tools.yaml --toolset basic_too
 基础样例:
 ```bash
 python b3_tool_layer.py --tools_config ../configs/tools.yaml --toolset basic_tools --tool_calls ../data/messages/b3_tool_call_format_converter_valid.json --execute --outdir ../outputs/B3_tools/format_converter_valid
+python b3_tool_layer.py --tools_config ../configs/tools.yaml --toolset basic_tools --tool_calls ../data/messages/b3_tool_call_file_writer_valid.json --execute --outdir ../outputs/B3_tools/file_writer_valid
+python b3_tool_layer.py --tools_config ../configs/tools.yaml --toolset basic_tools --tool_calls ../data/messages/b3_tool_call_file_writer_invalid_path.json --execute --outdir ../outputs/B3_tools/file_writer_invalid_path
+python b3_tool_layer.py --tools_config ../configs/tools.yaml --toolset basic_tools --tool_calls ../data/messages/b3_tool_call_file_writer_suffix_mismatch.json --execute --outdir ../outputs/B3_tools/file_writer_suffix_mismatch
 python b3_tool_layer.py --tools_config ../configs/tools.yaml --toolset basic_tools --tool_calls ../data/messages/b3_tool_call_current_time.json --execute --outdir ../outputs/B3_tools/current_time
 python b3_tool_layer.py --tools_config ../configs/tools.yaml --toolset basic_tools --tool_calls ../data/messages/b3_tool_call_file_reader_docx.json --execute --outdir ../outputs/B3_tools/file_reader_docx
 python b3_tool_layer.py --tools_config ../configs/tools.yaml --toolset basic_tools --tool_calls ../data/messages/b3_tool_call_file_reader_pptx.json --execute --outdir ../outputs/B3_tools/file_reader_pptx
@@ -467,6 +481,8 @@ system → user → assistant(tool_calls) → tool → assistant(final)
 | `calculator_result.json` | `b2_run_skill.py` | calculator 最近一次 SkillResult。 | JSON 对象 |
 | `current_time_result.json` | `b2_run_skill.py` | current_time 最近一次 SkillResult。 | JSON 对象 |
 | `file_reader_result.json` | `b2_run_skill.py` | file_reader 最近一次 SkillResult。 | JSON 对象 |
+| `file_writer_result.json` | `b2_run_skill.py` | file_writer 最近一次 SkillResult，包含 `generated_file_path` 和 `relative_output_path`。 | JSON 对象 |
+| `generated_files/*` | `skills/file_writer.py` | file_writer 生成的 txt、md、docx 或基础代码文件。 | 文件 |
 | `local_file_search_result.json` | `b2_run_skill.py` | local_file_search 最近一次 SkillResult。 | JSON 对象 |
 | `mcp_web_search_result.json` | `b2_run_skill.py` | mcp_web_search 最近一次 SkillResult。 | JSON 对象 |
 | `table_analyzer_result.json` | `b2_run_skill.py` | table_analyzer 最近一次 SkillResult。 | JSON 对象 |
