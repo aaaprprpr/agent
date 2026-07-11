@@ -9,3 +9,4 @@ outputs
 memory
 memory\conversations
 memory\memory_index.json
+outputs\full_demo

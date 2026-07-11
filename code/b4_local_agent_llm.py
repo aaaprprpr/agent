@@ -253,7 +253,7 @@ def _streaming_content_prefix(raw_text: str) -> str:
 def _candidate_to_message(candidate: dict) -> tuple[dict, dict]:
     if not isinstance(candidate, dict):
         raise ValueError("model output JSON must be an object")
-    expected_keys = {"content", "tool_calls"}
+    expected_keys = {"content", "tool_calls", "control"}
     unknown_keys = set(candidate) - expected_keys
     if unknown_keys:
         raise ValueError(f"model output JSON contains unknown keys: {', '.join(sorted(unknown_keys))}")
@@ -262,12 +262,14 @@ def _candidate_to_message(candidate: dict) -> tuple[dict, dict]:
         "content": candidate.get("content", ""),
         "tool_calls": candidate.get("tool_calls", []),
     }
+    if "control" in candidate:
+        message["control"] = candidate["control"]
     validate_ai_message(message)
-    has_content = bool(message["content"].strip())
-    has_tool_calls = bool(message["tool_calls"])
-    if has_content == has_tool_calls:
-        raise ValueError("model output must contain either final content or tool calls, but not both")
-    parsed_candidate = {"content": message["content"], "tool_calls": message["tool_calls"]}
+    parsed_candidate = {
+        "content": message["content"],
+        "tool_calls": message["tool_calls"],
+        "control": message["control"],
+    }
     return parsed_candidate, message
 
 
@@ -449,17 +451,27 @@ def _build_prompt_messages(messages: list[dict], tools_schema: list[dict]) -> li
         "IMPORTANT OUTPUT FORMAT:\n"
         "You must return exactly one valid JSON object.\n"
         "Do not output markdown.\n"
-        "Do not output explanations.\n"
+        "Do not output text outside the JSON object.\n"
         "Do not output code fences or backticks.\n"
         'The first output character must be "{" and the last output character must be "}".\n\n'
-        "Valid schema A:\n"
-        '{"content":"final answer text","tool_calls":[]}\n\n'
-        "Valid schema B:\n"
-        '{"content":"","tool_calls":[{"id":"call_001","name":"file_reader",'
-        '"args":{"path":"docs/agent_intro.txt","max_chars":2000}}]}\n\n'
+        "Successful final-answer example:\n"
+        '{"content":"final answer text","tool_calls":[],"control":'
+        '{"state":"completed","action":"finish","reason":"task completed"}}\n\n'
+        "Failed final-answer example:\n"
+        '{"content":"I need the missing filename before I can continue.","tool_calls":[],"control":'
+        '{"state":"failed","action":"finish","reason":"required filename is missing"}}\n\n'
+        "Tool-call example:\n"
+        '{"content":"I will read the file first.","tool_calls":[{"id":"call_001","name":"file_reader",'
+        '"args":{"path":"docs/agent_intro.txt","max_chars":2000}}],"control":'
+        '{"state":"acting","action":"call_tools","reason":"need file contents"}}\n\n'
         "The top-level keys must be exactly:\n"
         "- content: string\n"
-        "- tool_calls: array\n\n"
+        "- tool_calls: array\n"
+        "- control: object with exactly state, action, and reason\n\n"
+        "Use action call_tools with non-empty tool_calls and state acting or replanning.\n"
+        "After ToolMessages, analyze progress and either call tools again with state replanning or finish.\n"
+        "Use action finish with empty tool_calls and state completed or failed.\n"
+        "A failed state must include a concrete reason.\n"
         "Never put tool_calls inside content.\n"
         'Never output {"content":"tool_calls": ...}.'
     )
@@ -467,8 +479,10 @@ def _build_prompt_messages(messages: list[dict], tools_schema: list[dict]) -> li
         "IMPORTANT OUTPUT FORMAT: Output the JSON object now. "
         'Your first output character must be "{" and your last output character must be "}". '
         "Never output a backtick, Markdown, a code block, an explanation, or text outside the JSON. "
-        'Use exactly the top-level keys "content" (string) and "tool_calls" (array). '
-        "Choose exactly one schema: final content with an empty tool_calls array, or empty content with tool calls. "
+        'Use exactly the top-level keys "content" (string), "tool_calls" (array), and "control" (object). '
+        "Set control.action to call_tools when requesting tools, or finish when ending the loop. "
+        "Set control.state to acting, replanning, completed, or failed. "
+        "When finishing after failure, include the reason in control.reason. "
         'Never put tool_calls inside content. Never output {"content":"tool_calls": ...}.'
     )
     system_instruction = (
@@ -493,8 +507,8 @@ def _build_prompt_messages(messages: list[dict], tools_schema: list[dict]) -> li
                 "content": (
                     envelope_reminder
                     + " The latest ToolMessage already contains a tool result. If it provides the requested "
-                    'information, answer with schema A now and set "tool_calls" to exactly []. Do not repeat the '
-                    "completed tool call."
+                    "information, finish with state completed. Otherwise analyze the result and choose another "
+                    "tool call with state replanning, or finish with state failed and a concrete reason."
                 ),
             }
         )
@@ -694,8 +708,12 @@ def generate_ai_message(
     prompt_messages = None
     if mode == "mock":
         ai_message = _mock_generate(messages)
-        raw_text = json.dumps({"content": ai_message["content"], "tool_calls": ai_message["tool_calls"]}, ensure_ascii=False)
-        parsed_candidate = {"content": ai_message["content"], "tool_calls": ai_message["tool_calls"]}
+        parsed_candidate = {
+            "content": ai_message["content"],
+            "tool_calls": ai_message["tool_calls"],
+            "control": ai_message["control"],
+        }
+        raw_text = json.dumps(parsed_candidate, ensure_ascii=False)
         status = "success"
         error = None
     elif mode == "prompt_json":
@@ -760,8 +778,12 @@ def stream_ai_message(
 
     if mode == "mock":
         ai_message = _mock_generate(messages)
-        raw_text = json.dumps({"content": ai_message["content"], "tool_calls": ai_message["tool_calls"]}, ensure_ascii=False)
-        parsed_candidate = {"content": ai_message["content"], "tool_calls": ai_message["tool_calls"]}
+        parsed_candidate = {
+            "content": ai_message["content"],
+            "tool_calls": ai_message["tool_calls"],
+            "control": ai_message["control"],
+        }
+        raw_text = json.dumps(parsed_candidate, ensure_ascii=False)
         if ai_message["content"]:
             yield {"type": "delta", "text": ai_message["content"]}
     elif mode == "prompt_json":

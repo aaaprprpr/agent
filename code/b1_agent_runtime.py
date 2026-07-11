@@ -19,7 +19,7 @@ def _validate_runtime_input(payload: dict) -> dict:
     execution_mode = payload.setdefault("execution_mode", "integrated")
     if execution_mode not in {"integrated", "fixture"}:
         raise ValueError("execution_mode must be integrated or fixture")
-    required = ["conversation_id", "user_input", "system_prompt_path", "toolset", "max_turns", "save_memory"]
+    required = ["conversation_id", "user_input", "system_prompt_path", "toolset", "save_memory"]
     missing = [field for field in required if field not in payload]
     if missing:
         raise ValueError(f"runtime input missing: {', '.join(missing)}")
@@ -27,8 +27,6 @@ def _validate_runtime_input(payload: dict) -> dict:
         raise ValueError("conversation_id must be a non-empty string")
     if not isinstance(payload["user_input"], str) or not payload["user_input"].strip():
         raise ValueError("user_input must be a non-empty string")
-    if not isinstance(payload["max_turns"], int) or isinstance(payload["max_turns"], bool) or payload["max_turns"] < 1:
-        raise ValueError("max_turns must be a positive integer")
     if payload["save_memory"] not in {"none", "conversation", "global"}:
         raise ValueError("save_memory must be none, conversation, or global")
     if execution_mode == "fixture":
@@ -196,6 +194,7 @@ def run(
     status = "success"
     terminal_error = None
     warnings = []
+    final_control = None
     if selected_memory.get("status") in {"partial", "error"}:
         warnings.append("memory selection completed with errors")
 
@@ -232,6 +231,7 @@ def run(
             "llm_status": llm_status,
             "llm_error": llm_error,
             "tool_messages": [],
+            "control": ai_message.get("control"),
             "latency_ms": None,
         }
         if llm_status != "success":
@@ -243,28 +243,27 @@ def run(
                 "llm_call_index": llm_calls,
                 "cause": llm_error,
             }
+            final_control = {
+                "state": "failed",
+                "action": "finish",
+                "reason": "LLM output could not be parsed",
+            }
             turn["latency_ms"] = round((perf_counter() - turn_start) * 1000, 3)
             turns.append(turn)
             break
+        control = ai_message["control"]
         tool_calls = ai_message.get("tool_calls", [])
-        if not tool_calls:
+        if control["action"] == "finish":
+            final_control = control
             final_answer = ai_message["content"]
             print(f"content: {final_answer}")
-            turn["latency_ms"] = round((perf_counter() - turn_start) * 1000, 3)
-            turns.append(turn)
-            break
-        if tool_rounds >= runtime["max_turns"]:
-            requested = ", ".join(call.get("name", "unknown") for call in tool_calls)
-            final_answer = (
-                "任务因超过最大工具调用轮次而终止，"
-                f"最后一次模型仍请求调用工具：{requested}。"
-            )
-            status = "max_turns_exceeded"
-            terminal_error = {
-                "type": "MaxTurnsExceeded",
-                "message": final_answer,
-                "unexecuted_tool_calls": tool_calls,
-            }
+            if control["state"] == "failed":
+                status = "agent_failed"
+                terminal_error = {
+                    "type": "AgentDeclaredFailure",
+                    "message": control["reason"],
+                    "llm_call_index": llm_calls,
+                }
             turn["latency_ms"] = round((perf_counter() - turn_start) * 1000, 3)
             turns.append(turn)
             break
@@ -299,9 +298,10 @@ def run(
         "execution_mode": execution_mode,
         "status": status,
         "toolset": runtime["toolset"],
-        "max_turns": runtime["max_turns"],
         "tool_rounds_used": tool_rounds,
         "llm_call_count": llm_calls,
+        "final_state": final_control["state"] if final_control else "failed",
+        "finish_reason": final_control["reason"] if final_control else "",
         "turns": turns,
         "final_answer_path": "final_answer.md",
         "memory_save": memory_save,
@@ -427,6 +427,7 @@ def run_stream(
     status = "success"
     terminal_error = None
     warnings = []
+    final_control = None
     if selected_memory.get("status") in {"partial", "error"}:
         warnings.append("memory selection completed with errors")
 
@@ -476,6 +477,7 @@ def run_stream(
             "llm_status": llm_status,
             "llm_error": llm_error,
             "tool_messages": [],
+            "control": ai_message.get("control"),
             "latency_ms": None,
         }
         if llm_status != "success":
@@ -487,31 +489,37 @@ def run_stream(
                 "llm_call_index": llm_calls,
                 "cause": llm_error,
             }
-            turn["latency_ms"] = round((perf_counter() - turn_start) * 1000, 3)
-            turns.append(turn)
-            break
-        tool_calls = ai_message.get("tool_calls", [])
-        if not tool_calls:
-            final_answer = ai_message["content"]
-            turn["latency_ms"] = round((perf_counter() - turn_start) * 1000, 3)
-            turns.append(turn)
-            break
-        if tool_rounds >= runtime["max_turns"]:
-            requested = ", ".join(call.get("name", "unknown") for call in tool_calls)
-            final_answer = (
-                "任务因超过最大工具调用轮次而终止，"
-                f"最后一次模型仍请求调用工具：{requested}。"
-            )
-            status = "max_turns_exceeded"
-            terminal_error = {
-                "type": "MaxTurnsExceeded",
-                "message": final_answer,
-                "unexecuted_tool_calls": tool_calls,
+            final_control = {
+                "state": "failed",
+                "action": "finish",
+                "reason": "LLM output could not be parsed",
             }
             turn["latency_ms"] = round((perf_counter() - turn_start) * 1000, 3)
             turns.append(turn)
+            yield {"type": "state", **final_control, "llm_call_index": llm_calls}
             break
-        yield {"type": "tool_start", "tool_calls": tool_calls, "llm_call_index": llm_calls}
+        control = ai_message["control"]
+        yield {"type": "state", **control, "llm_call_index": llm_calls}
+        tool_calls = ai_message.get("tool_calls", [])
+        if control["action"] == "finish":
+            final_control = control
+            final_answer = ai_message["content"]
+            if control["state"] == "failed":
+                status = "agent_failed"
+                terminal_error = {
+                    "type": "AgentDeclaredFailure",
+                    "message": control["reason"],
+                    "llm_call_index": llm_calls,
+                }
+            turn["latency_ms"] = round((perf_counter() - turn_start) * 1000, 3)
+            turns.append(turn)
+            break
+        yield {
+            "type": "tool_start",
+            "tool_calls": tool_calls,
+            "assistant_content": ai_message.get("content", ""),
+            "llm_call_index": llm_calls,
+        }
         if execution_mode == "fixture":
             tool_messages = _fixture_tool_messages(
                 tool_calls,
@@ -528,9 +536,9 @@ def run_stream(
         messages.extend(tool_messages)
         all_tool_messages.extend(tool_messages)
         turn["tool_messages"] = tool_messages
+        yield {"type": "tool_done", "tool_messages": tool_messages, "llm_call_index": llm_calls}
         turn["latency_ms"] = round((perf_counter() - turn_start) * 1000, 3)
         turns.append(turn)
-        yield {"type": "tool_done", "tool_messages": tool_messages, "llm_call_index": llm_calls}
 
     write_json(messages, output_dir / "messages.json")
     if execution_mode == "integrated":
@@ -544,9 +552,10 @@ def run_stream(
         "execution_mode": execution_mode,
         "status": status,
         "toolset": runtime["toolset"],
-        "max_turns": runtime["max_turns"],
         "tool_rounds_used": tool_rounds,
         "llm_call_count": llm_calls,
+        "final_state": final_control["state"] if final_control else "failed",
+        "finish_reason": final_control["reason"] if final_control else "",
         "turns": turns,
         "final_answer_path": "final_answer.md",
         "memory_save": memory_save,

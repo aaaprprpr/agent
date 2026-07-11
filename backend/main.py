@@ -50,7 +50,6 @@ class RunRequest(BaseModel):
     selected_memory_ids: list[str] = Field(default_factory=list)
     use_global_memory: bool = False
     toolset: str = "basic_tools"
-    max_turns: int = Field(default=3, ge=1, le=20)
     save_memory: Literal["none", "conversation", "global"] = "conversation"
     llm_mode: Literal["mock", "prompt_json"] | None = None
 
@@ -120,6 +119,8 @@ def _read_trace(trace_path: str) -> dict:
     return {
         "tool_rounds_used": trace.get("tool_rounds_used"),
         "llm_call_count": trace.get("llm_call_count"),
+        "final_state": trace.get("final_state"),
+        "finish_reason": trace.get("finish_reason"),
         "memory_save": trace.get("memory_save"),
         "warnings": trace.get("warnings", []),
         "error": trace.get("error"),
@@ -204,19 +205,17 @@ def _extract_tool_steps(trace: dict) -> list[dict]:
     turns = trace.get("turns", [])
     if not isinstance(turns, list):
         return steps
-    for turn_index, turn in enumerate(turns):
+    for turn in turns:
         if not isinstance(turn, dict):
             continue
         ai_message = turn.get("ai_message") if isinstance(turn.get("ai_message"), dict) else {}
+        assistant_content = ai_message.get("content") if isinstance(ai_message.get("content"), str) else ""
         raw_tool_calls = ai_message.get("tool_calls") if isinstance(ai_message, dict) else []
         tool_calls_by_id = {
             call.get("id"): call
             for call in raw_tool_calls
             if isinstance(call, dict) and isinstance(call.get("id"), str)
         } if isinstance(raw_tool_calls, list) else {}
-        next_prompt_messages = None
-        if turn_index + 1 < len(turns) and isinstance(turns[turn_index + 1], dict):
-            next_prompt_messages = turns[turn_index + 1].get("llm_prompt_messages")
         for tool_message in turn.get("tool_messages", []):
             if not isinstance(tool_message, dict):
                 continue
@@ -230,16 +229,11 @@ def _extract_tool_steps(trace: dict) -> list[dict]:
             input_data = parsed.get("input")
             if tool_call is not None:
                 input_data = {
+                    "assistant_content_before_tool": assistant_content,
                     "tool_call": tool_call,
                     "skill_input": input_data,
                 }
             output_data = parsed.get("output")
-            if next_prompt_messages:
-                output_data = {
-                    "skill_output": output_data,
-                    "tool_message": tool_message,
-                    "next_llm_prompt_messages": next_prompt_messages,
-                }
             steps.append(
                 {
                     "tool_call_id": tool_call_id,
@@ -272,6 +266,8 @@ def _assistant_metadata(result: dict, trace: dict) -> dict:
         "output_dir": str(Path(result.get("trace_path", "")).parent) if result.get("trace_path") else None,
         "llm_call_count": trace.get("llm_call_count"),
         "tool_rounds_used": trace.get("tool_rounds_used"),
+        "final_state": trace.get("final_state"),
+        "finish_reason": trace.get("finish_reason"),
         "memory_save": trace.get("memory_save"),
     }
 
@@ -295,7 +291,6 @@ def _build_runtime_payload(request: RunRequest, conversation_id: str, user_input
         "selected_memory_ids": selected_memory_ids,
         "use_global_memory": use_global_memory,
         "toolset": request.toolset,
-        "max_turns": request.max_turns,
         "save_memory": "none",
     }
 
@@ -517,13 +512,35 @@ def _stream_agent(request: RunRequest) -> Iterator[str]:
                         "text": delta,
                     }
                 )
+            elif event_type == "state":
+                yield _stream_event(
+                    {
+                        "type": "state",
+                        "conversation_id": conversation_id,
+                        "assistant_message_id": assistant_message_id,
+                        "state": event.get("state"),
+                        "action": event.get("action"),
+                        "reason": event.get("reason"),
+                        "llm_call_index": event.get("llm_call_index"),
+                        "tool_round_index": event.get("tool_round_index"),
+                        "detail": event.get("detail"),
+                    }
+                )
             elif event_type == "tool_start":
+                streamed_answer = ""
+                update_conversation_message(
+                    str(MEMORY_CONFIG),
+                    assistant_message_id,
+                    content="...",
+                    metadata={"ui_status": "pending", "agent_status": "running_tool"},
+                )
                 yield _stream_event(
                     {
                         "type": "tool_start",
                         "conversation_id": conversation_id,
                         "assistant_message_id": assistant_message_id,
                         "tool_calls": event.get("tool_calls", []),
+                        "assistant_content": event.get("assistant_content", ""),
                     }
                 )
             elif event_type == "tool_done":

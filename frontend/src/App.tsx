@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import type { ChangeEvent, DragEvent, KeyboardEvent } from 'react'
+import type { ChangeEvent, ClipboardEvent, DragEvent, KeyboardEvent } from 'react'
 import './App.css'
 
 type Role = 'user' | 'assistant' | 'tool'
@@ -17,6 +17,7 @@ type ToolDetail = {
   label: string
   body: string
   status?: string
+  kind?: 'note' | 'tool'
 }
 
 type Attachment = {
@@ -59,9 +60,21 @@ type RunStreamEvent =
       assistant_message_id?: string
     }
   | {
+      type: 'state'
+      state: string
+      action?: string
+      reason?: string
+      conversation_id?: string
+      assistant_message_id?: string
+      llm_call_index?: number
+      tool_round_index?: number
+      detail?: Record<string, unknown>
+    }
+  | {
       type: 'tool_start' | 'tool_done'
       conversation_id?: string
       assistant_message_id?: string
+      assistant_content?: string
       tool_calls?: unknown[]
       tool_messages?: unknown[]
     }
@@ -72,7 +85,11 @@ type RunStreamEvent =
       assistant_message_id?: string
       status: string
       final_answer: string
-      trace?: { memory_save?: { status?: string } }
+      trace?: {
+        final_state?: string
+        finish_reason?: string
+        memory_save?: { status?: string }
+      }
       tool_steps?: Record<string, unknown>[]
     }
   | {
@@ -120,11 +137,57 @@ function prettyJson(value: unknown) {
   }
 }
 
+function handleMessageCopy(event: ClipboardEvent<HTMLDivElement>) {
+  const selectedText = window.getSelection()?.toString()
+  if (!selectedText) return
+  const normalized = selectedText.replace(/^(?:\r?\n)+|(?:\r?\n)+$/g, '')
+  event.clipboardData.setData('text/plain', normalized)
+  event.preventDefault()
+}
+
 function toolNameFromRecord(value: unknown, fallback: string) {
   if (!value || typeof value !== 'object') return fallback
   const record = value as Record<string, unknown>
   const name = record.name ?? record.tool_name
   return typeof name === 'string' && name.trim() ? name : fallback
+}
+
+function progressTextFromStep(step: Record<string, unknown>) {
+  const input = step.input
+  if (!input || typeof input !== 'object') return ''
+  const value = (input as Record<string, unknown>).assistant_content_before_tool
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function compactToolStepInput(value: unknown) {
+  if (!value || typeof value !== 'object') return value
+  const input = value as Record<string, unknown>
+  if (input.skill_input !== undefined) return input.skill_input
+  const toolCall = input.tool_call
+  if (toolCall && typeof toolCall === 'object') {
+    const args = (toolCall as Record<string, unknown>).args
+    if (args !== undefined) return args
+  }
+  return value
+}
+
+function compactToolStepOutput(value: unknown) {
+  if (!value || typeof value !== 'object') return value
+  const output = value as Record<string, unknown>
+  return output.skill_output !== undefined ? output.skill_output : value
+}
+
+function toolDetailsFromProgress(content?: string) {
+  const body = content?.trim()
+  if (!body) return []
+  return [
+    {
+      label: '工具前说明',
+      body,
+      status: 'info',
+      kind: 'note' as const,
+    },
+  ]
 }
 
 function toolDetailsFromCalls(calls?: unknown[]) {
@@ -133,24 +196,33 @@ function toolDetailsFromCalls(calls?: unknown[]) {
     label: `调用 ${toolNameFromRecord(call, `tool_${index + 1}`)}`,
     body: prettyJson(call),
     status: 'pending',
+    kind: 'tool' as const,
   }))
 }
 
 function toolDetailsFromSteps(steps?: Record<string, unknown>[]) {
   if (!Array.isArray(steps) || steps.length === 0) return []
-  return steps.map((step, index) => ({
-    label: `${index + 1}. ${toolNameFromRecord(step, 'tool')}`,
-    body: prettyJson({
-      tool_name: step.tool_name,
-      tool_call_id: step.tool_call_id,
-      input: step.input ?? step.input_json,
-      output: step.output ?? step.output_json,
-      error: step.error ?? step.error_json,
-      latency_ms: step.latency_ms,
-      created_at: step.created_at,
-    }),
-    status: typeof step.status === 'string' ? step.status : undefined,
-  }))
+  const details: ToolDetail[] = []
+  const seenProgress = new Set<string>()
+  steps.forEach((step, index) => {
+    const progress = progressTextFromStep(step)
+    if (progress && !seenProgress.has(progress)) {
+      seenProgress.add(progress)
+      details.push(...toolDetailsFromProgress(progress))
+    }
+    details.push({
+      label: `${index + 1}. ${toolNameFromRecord(step, 'tool')}`,
+      body: prettyJson({
+        input: compactToolStepInput(step.input ?? step.input_json),
+        output: compactToolStepOutput(step.output ?? step.output_json),
+        error: step.error ?? step.error_json,
+        latency_ms: step.latency_ms,
+      }),
+      status: typeof step.status === 'string' ? step.status : undefined,
+      kind: 'tool',
+    })
+  })
+  return details
 }
 
 function toolDetailsFromMessages(messages?: unknown[]) {
@@ -162,6 +234,7 @@ function toolDetailsFromMessages(messages?: unknown[]) {
       message && typeof message === 'object' && typeof (message as Record<string, unknown>).status === 'string'
         ? String((message as Record<string, unknown>).status)
         : undefined,
+    kind: 'tool' as const,
   }))
 }
 
@@ -196,12 +269,13 @@ function ToolTrace({
   if (details.length === 0) return null
   const open = Boolean(message.toolPanelOpen)
   const active = message.status === 'pending'
+  const toolCount = details.filter((detail) => detail.kind !== 'note').length || details.length
   return (
     <div className={`tool-trace ${open ? 'open' : ''}`}>
       <button className="tool-trace-toggle" type="button" onClick={() => onToggle(message.id)}>
         <ChevronDownIcon />
         <span>{active ? '处理中' : '工具调用'}</span>
-        <small>{details.length} 项</small>
+        <small>{toolCount} 项</small>
       </button>
       {open && (
         <div className="tool-trace-panel">
@@ -489,14 +563,20 @@ function App() {
         replaceAssistant(streamedAnswer, 'pending')
         return
       }
+      if (event.type === 'state') return
       if (event.type === 'tool_start') {
-        const toolDetails = toolDetailsFromCalls(event.tool_calls)
+        streamedAnswer = ''
+        const toolDetails = [
+          ...toolDetailsFromProgress(event.assistant_content),
+          ...toolDetailsFromCalls(event.tool_calls),
+        ]
         if (toolDetails.length === 0) return
         applyMessageState(
           currentMessages.map((message): ChatMessage =>
             message.id === activeAssistantId
               ? {
                   ...message,
+                  body: '...',
                   toolDetails: [...(message.toolDetails ?? []), ...toolDetails],
                   toolPanelOpen: true,
                 }
@@ -707,7 +787,7 @@ function App() {
         <section className="conversation" aria-label="消息列表" ref={conversationRef} onScroll={updateScrollButton}>
           {messages.map((message) => (
             <article className={`message ${message.role} ${message.status ?? ''}`} key={message.id}>
-              <div className="message-body">
+              <div className="message-body" onCopy={handleMessageCopy}>
                 {message.role === 'assistant' && <ToolTrace message={message} onToggle={toggleToolPanel} />}
                 {message.status === 'pending' && (!message.body || message.body === '...') ? (
                   <LoadingBubble />

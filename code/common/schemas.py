@@ -4,14 +4,22 @@ from typing import Any
 
 
 VALID_ROLES = {"system", "user", "assistant", "tool"}
+VALID_AGENT_STATES = {"acting", "replanning", "completed", "failed"}
+VALID_AGENT_ACTIONS = {"call_tools", "finish"}
 
 
-def make_ai_message(content: str = "", tool_calls: list[dict] | None = None) -> dict:
+def make_ai_message(
+    content: str = "",
+    tool_calls: list[dict] | None = None,
+    control: dict | None = None,
+) -> dict:
     message = {
         "role": "assistant",
         "content": content,
         "tool_calls": tool_calls or [],
     }
+    if control is not None:
+        message["control"] = control
     validate_ai_message(message)
     return message
 
@@ -89,6 +97,35 @@ def validate_ai_message(message: dict) -> None:
     message["tool_calls"] = normalized
     if not message["content"] and not normalized:
         raise ValueError("AIMessage must contain content or tool_calls")
+    default_control = {
+        "state": "acting" if normalized else "completed",
+        "action": "call_tools" if normalized else "finish",
+        "reason": "",
+    }
+    control = message.setdefault("control", default_control)
+    if not isinstance(control, dict):
+        raise ValueError("AIMessage control must be an object")
+    if set(control) != {"state", "action", "reason"}:
+        raise ValueError("AIMessage control must contain exactly state, action, and reason")
+    state = control.get("state")
+    action = control.get("action")
+    reason = control.get("reason")
+    if state not in VALID_AGENT_STATES:
+        raise ValueError(f"invalid AIMessage control state: {state}")
+    if action not in VALID_AGENT_ACTIONS:
+        raise ValueError(f"invalid AIMessage control action: {action}")
+    if not isinstance(reason, str):
+        raise ValueError("AIMessage control reason must be a string")
+    if action == "call_tools" and not normalized:
+        raise ValueError("AIMessage call_tools action requires tool_calls")
+    if action == "finish" and normalized:
+        raise ValueError("AIMessage finish action requires an empty tool_calls array")
+    if action == "call_tools" and state not in {"acting", "replanning"}:
+        raise ValueError("AIMessage call_tools action requires acting or replanning state")
+    if action == "finish" and state not in {"completed", "failed"}:
+        raise ValueError("AIMessage finish action requires completed or failed state")
+    if state == "failed" and not reason.strip():
+        raise ValueError("AIMessage failed state requires a reason")
 
 
 def validate_messages(messages: Any) -> list[dict]:
