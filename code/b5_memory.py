@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
 from pathlib import Path
 
@@ -19,6 +18,7 @@ from common.conversation_store import (
     upsert_conversation,
 )
 from common.logging_utils import now_iso
+from common.identifiers import validate_conversation_id
 from common.path_utils import resolve_cli_path, resolve_from_file
 from common.schemas import normalize_history_messages
 
@@ -283,9 +283,7 @@ def load_memory(
 
 
 def _safe_conversation_id(conversation_id: str) -> str:
-    if not isinstance(conversation_id, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+", conversation_id):
-        raise ValueError("conversation_id may only contain letters, numbers, dot, underscore, and hyphen")
-    return conversation_id
+    return validate_conversation_id(conversation_id)
 
 
 def save_memory(

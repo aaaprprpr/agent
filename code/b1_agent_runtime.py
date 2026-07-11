@@ -103,16 +103,6 @@ def _load_fixture_inputs(input_file: Path, runtime: dict) -> dict:
     }
 
 
-def _memory_context(selected_memory: dict) -> str:
-    sections = []
-    for document in selected_memory.get("selected_memory_docs", []):
-        sections.append(
-            f'<memory id="{document["memory_id"]}" type="{document["memory_type"]}">\n'
-            f'{document["content"].strip()}\n</memory>'
-        )
-    return "\n\n".join(sections)
-
-
 def _fixture_tool_messages(tool_calls: list[dict], preset_messages: dict) -> list[dict]:
     results = []
     for call in tool_calls:

@@ -1,120 +1,12 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import type { ChangeEvent, ClipboardEvent, DragEvent, KeyboardEvent } from 'react'
-import { File, FileCode2, FileJson, FileSpreadsheet, FileText, Image, Presentation } from 'lucide-react'
+import type { ChangeEvent, DragEvent, KeyboardEvent } from 'react'
+import { Trash2 } from 'lucide-react'
+import { ChatMessageList } from './ChatMessageList'
+import { Composer } from './Composer'
+import { arrayBufferToBase64 } from './fileUtils'
+import { toolDetailsFromCalls, toolDetailsFromMessages, toolDetailsFromProgress, toolDetailsFromSteps } from './ToolTrace'
+import type { Attachment, BackendConversation, BackendMessage, ChatMessage, HistoryItem, RunStreamEvent, UploadedFilePayload } from './types'
 import './App.css'
-
-type Role = 'user' | 'assistant' | 'tool'
-
-type ChatMessage = {
-  id: number | string
-  role: Role
-  body: string
-  status?: 'pending' | 'error'
-  toolDetails?: ToolDetail[]
-  toolPanelOpen?: boolean
-  attachments?: MessageAttachment[]
-}
-
-type MessageAttachment = {
-  name: string
-  size: number
-  path?: string
-}
-
-type ToolDetail = {
-  label: string
-  body: string
-  status?: string
-  kind?: 'note' | 'tool'
-}
-
-type Attachment = {
-  id: number
-  name: string
-  size: number
-  file: File
-}
-
-type UploadedFilePayload = {
-  name: string
-  size: number
-  mime_type?: string
-  content_base64: string
-}
-
-type HistoryItem = {
-  id: string
-  title: string
-  messages: ChatMessage[]
-  memoryReady: boolean
-}
-
-type BackendConversation = {
-  id: string
-  title: string
-}
-
-type BackendMessage = {
-  id: string
-  role: Role
-  content: string
-  status?: 'pending' | 'error' | null
-  tool_steps?: Record<string, unknown>[]
-  attachments?: MessageAttachment[]
-}
-
-type RunStreamEvent =
-  | {
-      type: 'start'
-      conversation_id: string
-      user_message_id?: string
-      assistant_message_id?: string
-    }
-  | {
-      type: 'delta'
-      text: string
-      conversation_id?: string
-      assistant_message_id?: string
-    }
-  | {
-      type: 'state'
-      state: string
-      action?: string
-      reason?: string
-      conversation_id?: string
-      assistant_message_id?: string
-      llm_call_index?: number
-      tool_round_index?: number
-      detail?: Record<string, unknown>
-    }
-  | {
-      type: 'tool_start' | 'tool_done'
-      conversation_id?: string
-      assistant_message_id?: string
-      assistant_content?: string
-      tool_calls?: unknown[]
-      tool_messages?: unknown[]
-    }
-  | {
-      type: 'done'
-      conversation_id: string
-      user_message_id?: string
-      assistant_message_id?: string
-      status: string
-      final_answer: string
-      trace?: {
-        final_state?: string
-        finish_reason?: string
-        memory_save?: { status?: string }
-      }
-      tool_steps?: Record<string, unknown>[]
-    }
-  | {
-      type: 'error'
-      conversation_id?: string
-      assistant_message_id?: string
-      message: string
-    }
 
 const API_BASE = import.meta.env.VITE_AGENT_API_BASE ?? 'http://127.0.0.1:8020'
 const ACTIVE_CONVERSATION_KEY = 'agent.activeConversationId'
@@ -137,203 +29,6 @@ function titleFromInput(text: string) {
   const compact = text.replace(/\s+/g, ' ').trim()
   if (!compact) return '新对话'
   return compact.length > 18 ? `${compact.slice(0, 18)}...` : compact
-}
-
-function formatSize(size: number) {
-  if (size < 1024) return `${size} B`
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
-  return `${(size / 1024 / 1024).toFixed(1)} MB`
-}
-
-function prettyJson(value: unknown) {
-  if (typeof value === 'string') return value
-  try {
-    return JSON.stringify(value, null, 2)
-  } catch {
-    return String(value)
-  }
-}
-
-function FileTypeIcon({ name }: { name: string }) {
-  const extension = name.split('.').pop()?.toLowerCase() ?? ''
-  const Icon = (() => {
-    if (['png', 'jpg', 'jpeg', 'webp', 'gif'].includes(extension)) return Image
-    if (['csv', 'tsv', 'xls', 'xlsx'].includes(extension)) return FileSpreadsheet
-    if (['ppt', 'pptx'].includes(extension)) return Presentation
-    if (['json', 'jsonl'].includes(extension)) return FileJson
-    if (['py', 'js', 'jsx', 'ts', 'tsx', 'html', 'css', 'yaml', 'yml'].includes(extension)) return FileCode2
-    if (['txt', 'md', 'log', 'doc', 'docx'].includes(extension)) return FileText
-    return File
-  })()
-  return <Icon className="file-icon" size={19} strokeWidth={1.7} aria-hidden="true" />
-}
-
-function handleMessageCopy(event: ClipboardEvent<HTMLDivElement>) {
-  const selectedText = window.getSelection()?.toString()
-  if (!selectedText) return
-  const normalized = selectedText.replace(/^(?:\r?\n)+|(?:\r?\n)+$/g, '')
-  event.clipboardData.setData('text/plain', normalized)
-  event.preventDefault()
-}
-
-function arrayBufferToBase64(buffer: ArrayBuffer) {
-  const bytes = new Uint8Array(buffer)
-  const chunkSize = 0x8000
-  let binary = ''
-  for (let index = 0; index < bytes.length; index += chunkSize) {
-    const chunk = bytes.subarray(index, index + chunkSize)
-    binary += String.fromCharCode(...chunk)
-  }
-  return window.btoa(binary)
-}
-
-function toolNameFromRecord(value: unknown, fallback: string) {
-  if (!value || typeof value !== 'object') return fallback
-  const record = value as Record<string, unknown>
-  const name = record.name ?? record.tool_name
-  return typeof name === 'string' && name.trim() ? name : fallback
-}
-
-function progressTextFromStep(step: Record<string, unknown>) {
-  const input = step.input
-  if (!input || typeof input !== 'object') return ''
-  const value = (input as Record<string, unknown>).assistant_content_before_tool
-  return typeof value === 'string' ? value.trim() : ''
-}
-
-function compactToolStepInput(value: unknown) {
-  if (!value || typeof value !== 'object') return value
-  const input = value as Record<string, unknown>
-  if (input.skill_input !== undefined) return input.skill_input
-  const toolCall = input.tool_call
-  if (toolCall && typeof toolCall === 'object') {
-    const args = (toolCall as Record<string, unknown>).args
-    if (args !== undefined) return args
-  }
-  return value
-}
-
-function compactToolStepOutput(value: unknown) {
-  if (!value || typeof value !== 'object') return value
-  const output = value as Record<string, unknown>
-  return output.skill_output !== undefined ? output.skill_output : value
-}
-
-function toolDetailsFromProgress(content?: string) {
-  const body = content?.trim()
-  if (!body) return []
-  return [
-    {
-      label: '工具前说明',
-      body,
-      status: 'info',
-      kind: 'note' as const,
-    },
-  ]
-}
-
-function toolDetailsFromCalls(calls?: unknown[]) {
-  if (!Array.isArray(calls) || calls.length === 0) return []
-  return calls.map((call, index) => ({
-    label: `调用 ${toolNameFromRecord(call, `tool_${index + 1}`)}`,
-    body: prettyJson(call),
-    status: 'pending',
-    kind: 'tool' as const,
-  }))
-}
-
-function toolDetailsFromSteps(steps?: Record<string, unknown>[]) {
-  if (!Array.isArray(steps) || steps.length === 0) return []
-  const details: ToolDetail[] = []
-  const seenProgress = new Set<string>()
-  steps.forEach((step, index) => {
-    const progress = progressTextFromStep(step)
-    if (progress && !seenProgress.has(progress)) {
-      seenProgress.add(progress)
-      details.push(...toolDetailsFromProgress(progress))
-    }
-    details.push({
-      label: `${index + 1}. ${toolNameFromRecord(step, 'tool')}`,
-      body: prettyJson({
-        input: compactToolStepInput(step.input ?? step.input_json),
-        output: compactToolStepOutput(step.output ?? step.output_json),
-        error: step.error ?? step.error_json,
-        latency_ms: step.latency_ms,
-      }),
-      status: typeof step.status === 'string' ? step.status : undefined,
-      kind: 'tool',
-    })
-  })
-  return details
-}
-
-function toolDetailsFromMessages(messages?: unknown[]) {
-  if (!Array.isArray(messages) || messages.length === 0) return []
-  return messages.map((message, index) => ({
-    label: `结果 ${toolNameFromRecord(message, `tool_${index + 1}`)}`,
-    body: prettyJson(message),
-    status:
-      message && typeof message === 'object' && typeof (message as Record<string, unknown>).status === 'string'
-        ? String((message as Record<string, unknown>).status)
-        : undefined,
-    kind: 'tool' as const,
-  }))
-}
-
-function LoadingBubble() {
-  return (
-    <span className="loading-bubble" aria-label="等待回复">
-      <span className="loading-dots" aria-hidden="true">
-        <span />
-        <span />
-        <span />
-      </span>
-    </span>
-  )
-}
-
-function ChevronDownIcon() {
-  return (
-    <svg className="tool-trace-icon" viewBox="0 0 16 16" aria-hidden="true">
-      <path d="M4.25 6.25L8 10l3.75-3.75" />
-    </svg>
-  )
-}
-
-function ToolTrace({
-  message,
-  onToggle,
-}: {
-  message: ChatMessage
-  onToggle: (messageId: number | string) => void
-}) {
-  const details = message.toolDetails ?? []
-  if (details.length === 0) return null
-  const open = Boolean(message.toolPanelOpen)
-  const active = message.status === 'pending'
-  const toolCount = details.filter((detail) => detail.kind !== 'note').length || details.length
-  return (
-    <div className={`tool-trace ${open ? 'open' : ''}`}>
-      <button className="tool-trace-toggle" type="button" onClick={() => onToggle(message.id)}>
-        <ChevronDownIcon />
-        <span>{active ? '处理中' : '工具调用'}</span>
-        <small>{toolCount} 项</small>
-      </button>
-      {open && (
-        <div className="tool-trace-panel">
-          {details.map((detail, index) => (
-            <section className="tool-trace-item" key={`${detail.label}-${index}`}>
-              <div className="tool-trace-title">
-                <span>{detail.label}</span>
-                {detail.status && <em>{detail.status}</em>}
-              </div>
-              <pre>{detail.body}</pre>
-            </section>
-          ))}
-        </div>
-      )}
-    </div>
-  )
 }
 
 function App() {
@@ -859,6 +554,8 @@ function App() {
                 className="history-open"
                 type="button"
                 onClick={() => {
+                  setAttachments([])
+                  setDraft('')
                   void loadConversation(item.id)
                 }}
               >
@@ -876,7 +573,7 @@ function App() {
                   void deleteConversation(item.id)
                 }}
               >
-                <span aria-hidden="true">×</span>
+                <Trash2 size={15} strokeWidth={1.8} aria-hidden="true" />
               </button>
             </div>
           ))}
@@ -884,33 +581,12 @@ function App() {
       </aside>
 
       <section className="workspace">
-        <section className="conversation" aria-label="消息列表" ref={conversationRef} onScroll={updateScrollButton}>
-          {messages.map((message) => (
-            <article className={`message ${message.role} ${message.status ?? ''}`} key={message.id}>
-              <div className="message-body" onCopy={handleMessageCopy}>
-                {message.role === 'assistant' && <ToolTrace message={message} onToggle={toggleToolPanel} />}
-                {message.role === 'user' && message.attachments && message.attachments.length > 0 && (
-                  <div className="message-attachments">
-                    {message.attachments.map((file, index) => (
-                      <div className="message-attachment" key={`${file.path ?? file.name}-${index}`}>
-                        <FileTypeIcon name={file.name} />
-                        <span>
-                          <strong>{file.name}</strong>
-                          <small>{formatSize(file.size)}</small>
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                {message.status === 'pending' && (!message.body || message.body === '...') ? (
-                  <LoadingBubble />
-                ) : (
-                  <p>{message.body}</p>
-                )}
-              </div>
-            </article>
-          ))}
-        </section>
+        <ChatMessageList
+          messages={messages}
+          conversationRef={conversationRef}
+          onScroll={updateScrollButton}
+          onToggleTool={toggleToolPanel}
+        />
 
         {showScrollBottom && (
           <button
@@ -923,54 +599,19 @@ function App() {
           </button>
         )}
 
-        <section className="composer-wrap">
-          {dragActive && <div className="drop-hint">释放文件</div>}
-
-          <div className="composer">
-            {attachments.length > 0 && (
-              <div className="attachment-row">
-                {attachments.map((file) => (
-                  <div className="attachment-chip" key={file.id}>
-                    <FileTypeIcon name={file.name} />
-                    <span>
-                      <strong>{file.name}</strong>
-                      <small>{formatSize(file.size)}</small>
-                    </span>
-                    <button
-                      type="button"
-                      aria-label={`移除 ${file.name}`}
-                      onClick={() => setAttachments((current) => current.filter((item) => item.id !== file.id))}
-                    >
-                      ×
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            <div className="composer-main">
-              <button className="tool-button" type="button" aria-label="添加文件" onClick={() => fileRef.current?.click()}>
-                <span aria-hidden="true">＋</span>
-              </button>
-              <textarea
-                ref={inputRef}
-                value={draft}
-                rows={1}
-                autoComplete="off"
-                spellCheck={false}
-                placeholder="输入任务..."
-                onChange={(event) => {
-                  setDraft(event.target.value)
-                }}
-                onKeyDown={handleKeyDown}
-              />
-              <button className="send-button" type="button" disabled={!canSend} aria-label="发送" onClick={handleSend}>
-                <span aria-hidden="true">↑</span>
-              </button>
-              <input ref={fileRef} type="file" multiple hidden onChange={handleFileChange} />
-            </div>
-          </div>
-        </section>
+        <Composer
+          attachments={attachments}
+          dragActive={dragActive}
+          draft={draft}
+          canSend={canSend}
+          inputRef={inputRef}
+          fileRef={fileRef}
+          onDraftChange={setDraft}
+          onKeyDown={handleKeyDown}
+          onFileChange={handleFileChange}
+          onRemoveAttachment={(id) => setAttachments((current) => current.filter((item) => item.id !== id))}
+          onSend={handleSend}
+        />
       </section>
     </main>
   )
