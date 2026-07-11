@@ -87,7 +87,7 @@
     "type": "function",
     "function": {
       "name": "file_writer",
-      "description": "Write a new real file into this run's generated_files output directory. Use this when the user asks to create, generate, or write a file/document with a concrete type or suffix, including txt/.txt, md/.md/markdown, docx/.docx/Word, or supported code files such as .py, .js, .ts, .tsx, .html, .css, .java, .cpp, .c, .h, .cs, .go, .rs, .sql, .sh, or .ps1. Language-named code file requests such as Python, JavaScript, C, C++, Java, Go, Rust, SQL, Shell, or PowerShell code files also use this tool. Never use it to modify existing project files, and do not answer with only inline file content when a real file is requested.",
+      "description": "Write a new real file into this run's generated_files output directory. Use this when the user asks to create, generate, or write a file/document with a concrete type or suffix, including txt/.txt, md/.md/markdown, docx/.docx/Word, or supported code files such as .py, .js, .ts, .tsx, .html, .css, .java, .cpp, .c, .h, .cs, .go, .rs, .sql, .sh, or .ps1. Language-named code file requests such as Python, JavaScript, C, C++, Java, Go, Rust, SQL, Shell, or PowerShell code files also use this tool. Do not use this tool for ordinary requests to remember, record, organize, summarize, plan, or discuss content unless the user explicitly asks for a real output file, a filename, a suffix, or saving/writing to a file. Never use it to modify existing project files, and do not answer with only inline file content when a real file is requested.",
       "parameters": {
         "type": "object",
         "properties": {

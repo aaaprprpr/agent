@@ -9,7 +9,7 @@ from typing import Any
 from common.logging_utils import now_iso
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def _connect(db_path: str | Path) -> sqlite3.Connection:
@@ -39,6 +39,22 @@ def _json_loads(value: str | None) -> Any:
 
 def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex}"
+
+
+def _score(value: Any, default: float = 0.0) -> float:
+    if isinstance(value, bool):
+        return default
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    return max(0.0, min(1.0, number))
+
+
+def _flag(value: Any, default: bool = False) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    return int(default)
 
 
 def init_store(db_path: str | Path) -> dict:
@@ -104,6 +120,135 @@ def init_store(db_path: str | Path) -> dict:
                 ON tool_steps(assistant_message_id, step_index);
             CREATE INDEX IF NOT EXISTS idx_tool_steps_conversation
                 ON tool_steps(conversation_id, step_index);
+
+            CREATE TABLE IF NOT EXISTS conversation_turns (
+                id TEXT PRIMARY KEY,
+                conversation_id TEXT NOT NULL,
+                run_id TEXT NOT NULL,
+                user_message_id TEXT NOT NULL,
+                assistant_message_id TEXT NOT NULL,
+                turn_index INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                started_at TEXT,
+                completed_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
+                FOREIGN KEY (user_message_id) REFERENCES conversation_messages(id) ON DELETE CASCADE,
+                FOREIGN KEY (assistant_message_id) REFERENCES conversation_messages(id) ON DELETE CASCADE,
+                UNIQUE (conversation_id, run_id),
+                UNIQUE (conversation_id, user_message_id),
+                UNIQUE (conversation_id, assistant_message_id),
+                UNIQUE (conversation_id, turn_index)
+            );
+
+            CREATE TABLE IF NOT EXISTS turn_memory_tags (
+                turn_id TEXT PRIMARY KEY,
+                current_task_relevance REAL NOT NULL,
+                long_term_value REAL NOT NULL,
+                has_explicit_fact INTEGER NOT NULL,
+                has_decision INTEGER NOT NULL,
+                has_user_correction INTEGER NOT NULL,
+                allow_compress INTEGER NOT NULL,
+                allow_drop INTEGER NOT NULL,
+                noise_score REAL NOT NULL,
+                labels_json TEXT,
+                source TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (turn_id) REFERENCES conversation_turns(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS turn_summaries (
+                turn_id TEXT PRIMARY KEY,
+                summary TEXT NOT NULL,
+                keywords_json TEXT,
+                facts_json TEXT,
+                decisions_json TEXT,
+                corrections_json TEXT,
+                tool_refs_json TEXT,
+                artifact_refs_json TEXT,
+                source_message_ids_json TEXT NOT NULL,
+                source_tool_step_ids_json TEXT,
+                source TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (turn_id) REFERENCES conversation_turns(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS memory_blocks (
+                id TEXT PRIMARY KEY,
+                conversation_id TEXT NOT NULL,
+                task_id TEXT,
+                title TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                status TEXT NOT NULL,
+                start_turn_index INTEGER NOT NULL,
+                end_turn_index INTEGER NOT NULL,
+                keywords_json TEXT,
+                source TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
+                UNIQUE (conversation_id, start_turn_index, end_turn_index)
+            );
+
+            CREATE TABLE IF NOT EXISTS memory_block_turns (
+                block_id TEXT NOT NULL,
+                turn_id TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (block_id, turn_id),
+                FOREIGN KEY (block_id) REFERENCES memory_blocks(id) ON DELETE CASCADE,
+                FOREIGN KEY (turn_id) REFERENCES conversation_turns(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS task_memories (
+                id TEXT PRIMARY KEY,
+                conversation_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                title TEXT NOT NULL,
+                objective TEXT,
+                phase TEXT,
+                completed_items_json TEXT,
+                pending_items_json TEXT,
+                constraints_json TEXT,
+                key_results_json TEXT,
+                active_files_json TEXT,
+                blocked_items_json TEXT,
+                next_actions_json TEXT,
+                source_turn_ids_json TEXT,
+                confidence REAL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS memory_retrieval_log (
+                id TEXT PRIMARY KEY,
+                conversation_id TEXT NOT NULL,
+                query_text TEXT NOT NULL,
+                query_context_json TEXT,
+                candidate_blocks_json TEXT,
+                selected_turns_json TEXT,
+                loaded_message_ids_json TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_conversation_turns_conversation_order
+                ON conversation_turns(conversation_id, turn_index);
+            CREATE INDEX IF NOT EXISTS idx_turn_memory_tags_value
+                ON turn_memory_tags(long_term_value, current_task_relevance);
+            CREATE INDEX IF NOT EXISTS idx_memory_blocks_conversation_status
+                ON memory_blocks(conversation_id, status, start_turn_index);
+            CREATE INDEX IF NOT EXISTS idx_memory_block_turns_turn
+                ON memory_block_turns(turn_id);
+            CREATE INDEX IF NOT EXISTS idx_task_memories_conversation_status
+                ON task_memories(conversation_id, status);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_task_memories_one_foreground
+                ON task_memories(conversation_id)
+                WHERE status = 'foreground';
             """
         )
         connection.execute(
@@ -328,6 +473,522 @@ def record_tool_step(
         "step_index": step_index,
         "created_at": now,
     }
+
+
+def upsert_conversation_turn(
+    db_path: str | Path,
+    conversation_id: str,
+    run_id: str,
+    user_message_id: str,
+    assistant_message_id: str,
+    *,
+    turn_id: str | None = None,
+    status: str = "success",
+) -> dict:
+    if not isinstance(run_id, str) or not run_id:
+        raise ValueError("run_id must be a non-empty string")
+    if not isinstance(status, str) or not status:
+        raise ValueError("status must be a non-empty string")
+    init_store(db_path)
+    now = now_iso()
+    with _connect(db_path) as connection:
+        existing = connection.execute(
+            """
+            SELECT id, turn_index, created_at
+            FROM conversation_turns
+            WHERE conversation_id = ? AND run_id = ?
+            """,
+            (conversation_id, run_id),
+        ).fetchone()
+        if existing:
+            turn_id = existing["id"]
+            turn_index = int(existing["turn_index"])
+            created_at = existing["created_at"]
+        else:
+            turn_id = turn_id or _new_id("turn")
+            row = connection.execute(
+                "SELECT COALESCE(MAX(turn_index), 0) + 1 AS next_turn FROM conversation_turns WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone()
+            turn_index = int(row["next_turn"])
+            created_at = now
+        user_row = connection.execute(
+            "SELECT created_at FROM conversation_messages WHERE id = ? AND conversation_id = ?",
+            (user_message_id, conversation_id),
+        ).fetchone()
+        assistant_row = connection.execute(
+            "SELECT created_at FROM conversation_messages WHERE id = ? AND conversation_id = ?",
+            (assistant_message_id, conversation_id),
+        ).fetchone()
+        if user_row is None or assistant_row is None:
+            raise ValueError("turn message ids must exist in the same conversation")
+        connection.execute(
+            """
+            INSERT INTO conversation_turns(
+                id, conversation_id, run_id, user_message_id, assistant_message_id,
+                turn_index, status, started_at, completed_at, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(conversation_id, run_id) DO UPDATE SET
+                user_message_id = excluded.user_message_id,
+                assistant_message_id = excluded.assistant_message_id,
+                status = excluded.status,
+                started_at = excluded.started_at,
+                completed_at = excluded.completed_at,
+                updated_at = excluded.updated_at
+            """,
+            (
+                turn_id,
+                conversation_id,
+                run_id,
+                user_message_id,
+                assistant_message_id,
+                turn_index,
+                status,
+                user_row["created_at"],
+                assistant_row["created_at"],
+                created_at,
+                now,
+            ),
+        )
+    return {
+        "status": "success",
+        "turn_id": turn_id,
+        "conversation_id": conversation_id,
+        "run_id": run_id,
+        "turn_index": turn_index,
+        "updated_at": now,
+    }
+
+
+def upsert_turn_memory_tags(
+    db_path: str | Path,
+    turn_id: str,
+    tags: dict,
+    *,
+    source: str = "heuristic",
+) -> dict:
+    if not isinstance(tags, dict):
+        raise ValueError("tags must be an object")
+    init_store(db_path)
+    now = now_iso()
+    labels = tags.get("labels")
+    with _connect(db_path) as connection:
+        row = connection.execute(
+            "SELECT created_at FROM turn_memory_tags WHERE turn_id = ?",
+            (turn_id,),
+        ).fetchone()
+        created_at = row["created_at"] if row else now
+        connection.execute(
+            """
+            INSERT INTO turn_memory_tags(
+                turn_id, current_task_relevance, long_term_value, has_explicit_fact,
+                has_decision, has_user_correction, allow_compress, allow_drop,
+                noise_score, labels_json, source, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(turn_id) DO UPDATE SET
+                current_task_relevance = excluded.current_task_relevance,
+                long_term_value = excluded.long_term_value,
+                has_explicit_fact = excluded.has_explicit_fact,
+                has_decision = excluded.has_decision,
+                has_user_correction = excluded.has_user_correction,
+                allow_compress = excluded.allow_compress,
+                allow_drop = excluded.allow_drop,
+                noise_score = excluded.noise_score,
+                labels_json = excluded.labels_json,
+                source = excluded.source,
+                updated_at = excluded.updated_at
+            """,
+            (
+                turn_id,
+                _score(tags.get("current_task_relevance")),
+                _score(tags.get("long_term_value")),
+                _flag(tags.get("has_explicit_fact")),
+                _flag(tags.get("has_decision")),
+                _flag(tags.get("has_user_correction")),
+                _flag(tags.get("allow_compress"), True),
+                _flag(tags.get("allow_drop")),
+                _score(tags.get("noise_score")),
+                _json_dumps(labels if isinstance(labels, list) else []),
+                source,
+                created_at,
+                now,
+            ),
+        )
+    return {"status": "success", "turn_id": turn_id, "updated_at": now}
+
+
+def upsert_turn_summary(
+    db_path: str | Path,
+    turn_id: str,
+    summary: dict,
+    *,
+    source: str = "heuristic",
+) -> dict:
+    if not isinstance(summary, dict):
+        raise ValueError("summary must be an object")
+    text = summary.get("summary")
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError("summary.summary must be a non-empty string")
+    init_store(db_path)
+    now = now_iso()
+    with _connect(db_path) as connection:
+        row = connection.execute(
+            "SELECT created_at FROM turn_summaries WHERE turn_id = ?",
+            (turn_id,),
+        ).fetchone()
+        created_at = row["created_at"] if row else now
+        connection.execute(
+            """
+            INSERT INTO turn_summaries(
+                turn_id, summary, keywords_json, facts_json, decisions_json,
+                corrections_json, tool_refs_json, artifact_refs_json,
+                source_message_ids_json, source_tool_step_ids_json,
+                source, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(turn_id) DO UPDATE SET
+                summary = excluded.summary,
+                keywords_json = excluded.keywords_json,
+                facts_json = excluded.facts_json,
+                decisions_json = excluded.decisions_json,
+                corrections_json = excluded.corrections_json,
+                tool_refs_json = excluded.tool_refs_json,
+                artifact_refs_json = excluded.artifact_refs_json,
+                source_message_ids_json = excluded.source_message_ids_json,
+                source_tool_step_ids_json = excluded.source_tool_step_ids_json,
+                source = excluded.source,
+                updated_at = excluded.updated_at
+            """,
+            (
+                turn_id,
+                text.strip(),
+                _json_dumps(summary.get("keywords") if isinstance(summary.get("keywords"), list) else []),
+                _json_dumps(summary.get("facts") if isinstance(summary.get("facts"), list) else []),
+                _json_dumps(summary.get("decisions") if isinstance(summary.get("decisions"), list) else []),
+                _json_dumps(summary.get("corrections") if isinstance(summary.get("corrections"), list) else []),
+                _json_dumps(summary.get("tool_refs") if isinstance(summary.get("tool_refs"), list) else []),
+                _json_dumps(summary.get("artifact_refs") if isinstance(summary.get("artifact_refs"), list) else []),
+                _json_dumps(summary.get("source_message_ids") if isinstance(summary.get("source_message_ids"), list) else []),
+                _json_dumps(summary.get("source_tool_step_ids") if isinstance(summary.get("source_tool_step_ids"), list) else []),
+                source,
+                created_at,
+                now,
+            ),
+        )
+    return {"status": "success", "turn_id": turn_id, "updated_at": now}
+
+
+def upsert_task_memory(
+    db_path: str | Path,
+    conversation_id: str,
+    task: dict,
+    *,
+    task_id: str | None = None,
+) -> dict:
+    if not isinstance(task, dict):
+        raise ValueError("task must be an object")
+    status = task.get("status", "foreground")
+    if status not in {"foreground", "paused", "completed", "abandoned"}:
+        raise ValueError("task status must be foreground, paused, completed, or abandoned")
+    title = task.get("title")
+    if not isinstance(title, str) or not title.strip():
+        raise ValueError("task.title must be a non-empty string")
+    init_store(db_path)
+    now = now_iso()
+    with _connect(db_path) as connection:
+        if not task_id and status == "foreground":
+            row = connection.execute(
+                """
+                SELECT id FROM task_memories
+                WHERE conversation_id = ? AND status = 'foreground'
+                ORDER BY updated_at DESC LIMIT 1
+                """,
+                (conversation_id,),
+            ).fetchone()
+            task_id = row["id"] if row else None
+        candidate_task_id = task.get("task_id")
+        if task_id is None and isinstance(candidate_task_id, str) and candidate_task_id:
+            task_id = candidate_task_id
+        task_id = task_id or _new_id("task")
+        row = connection.execute(
+            "SELECT created_at FROM task_memories WHERE id = ? AND conversation_id = ?",
+            (task_id, conversation_id),
+        ).fetchone()
+        created_at = row["created_at"] if row else now
+        if status == "foreground":
+            connection.execute(
+                """
+                UPDATE task_memories
+                SET status = 'paused', updated_at = ?
+                WHERE conversation_id = ? AND status = 'foreground' AND id <> ?
+                """,
+                (now, conversation_id, task_id),
+            )
+        connection.execute(
+            """
+            INSERT INTO task_memories(
+                id, conversation_id, status, title, objective, phase,
+                completed_items_json, pending_items_json, constraints_json,
+                key_results_json, active_files_json, blocked_items_json,
+                next_actions_json, source_turn_ids_json, confidence,
+                created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                status = excluded.status,
+                title = excluded.title,
+                objective = excluded.objective,
+                phase = excluded.phase,
+                completed_items_json = excluded.completed_items_json,
+                pending_items_json = excluded.pending_items_json,
+                constraints_json = excluded.constraints_json,
+                key_results_json = excluded.key_results_json,
+                active_files_json = excluded.active_files_json,
+                blocked_items_json = excluded.blocked_items_json,
+                next_actions_json = excluded.next_actions_json,
+                source_turn_ids_json = excluded.source_turn_ids_json,
+                confidence = excluded.confidence,
+                updated_at = excluded.updated_at
+            """,
+            (
+                task_id,
+                conversation_id,
+                status,
+                title.strip(),
+                task.get("objective") if isinstance(task.get("objective"), str) else None,
+                task.get("phase") if isinstance(task.get("phase"), str) else None,
+                _json_dumps(task.get("completed_items") if isinstance(task.get("completed_items"), list) else []),
+                _json_dumps(task.get("pending_items") if isinstance(task.get("pending_items"), list) else []),
+                _json_dumps(task.get("constraints") if isinstance(task.get("constraints"), list) else []),
+                _json_dumps(task.get("key_results") if isinstance(task.get("key_results"), list) else []),
+                _json_dumps(task.get("active_files") if isinstance(task.get("active_files"), list) else []),
+                _json_dumps(task.get("blocked_items") if isinstance(task.get("blocked_items"), list) else []),
+                _json_dumps(task.get("next_actions") if isinstance(task.get("next_actions"), list) else []),
+                _json_dumps(task.get("source_turn_ids") if isinstance(task.get("source_turn_ids"), list) else []),
+                _score(task.get("confidence"), 0.5),
+                created_at,
+                now,
+            ),
+        )
+    return {"status": "success", "task_id": task_id, "conversation_id": conversation_id, "updated_at": now}
+
+
+def record_memory_retrieval(
+    db_path: str | Path,
+    conversation_id: str,
+    query_text: str,
+    *,
+    query_context: Any = None,
+    candidate_blocks: Any = None,
+    selected_turns: Any = None,
+    loaded_message_ids: Any = None,
+) -> dict:
+    if not isinstance(query_text, str) or not query_text.strip():
+        raise ValueError("query_text must be a non-empty string")
+    init_store(db_path)
+    now = now_iso()
+    log_id = _new_id("memory_retrieval")
+    with _connect(db_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO memory_retrieval_log(
+                id, conversation_id, query_text, query_context_json,
+                candidate_blocks_json, selected_turns_json, loaded_message_ids_json,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                log_id,
+                conversation_id,
+                query_text.strip(),
+                _json_dumps(query_context),
+                _json_dumps(candidate_blocks),
+                _json_dumps(selected_turns),
+                _json_dumps(loaded_message_ids),
+                now,
+            ),
+        )
+    return {"status": "success", "retrieval_log_id": log_id, "created_at": now}
+
+
+def upsert_memory_block(
+    db_path: str | Path,
+    conversation_id: str,
+    block: dict,
+    turn_ids: list[str],
+    *,
+    block_id: str | None = None,
+) -> dict:
+    if not isinstance(block, dict):
+        raise ValueError("block must be an object")
+    if not isinstance(turn_ids, list) or not all(isinstance(item, str) and item for item in turn_ids):
+        raise ValueError("turn_ids must be a non-empty array of strings")
+    if not turn_ids:
+        raise ValueError("turn_ids must not be empty")
+    title = block.get("title")
+    summary = block.get("summary")
+    if not isinstance(title, str) or not title.strip():
+        raise ValueError("block.title must be a non-empty string")
+    if not isinstance(summary, str) or not summary.strip():
+        raise ValueError("block.summary must be a non-empty string")
+    status = block.get("status", "active")
+    if status not in {"active", "sealed"}:
+        raise ValueError("block.status must be active or sealed")
+    init_store(db_path)
+    now = now_iso()
+    with _connect(db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT id, turn_index
+            FROM conversation_turns
+            WHERE conversation_id = ? AND id IN (%s)
+            ORDER BY turn_index ASC
+            """ % ",".join("?" for _ in turn_ids),
+            [conversation_id, *turn_ids],
+        ).fetchall()
+        if len(rows) != len(set(turn_ids)):
+            raise ValueError("all block turn_ids must exist in the same conversation")
+        ordered_turn_ids = [row["id"] for row in rows]
+        start_turn_index = int(rows[0]["turn_index"])
+        end_turn_index = int(rows[-1]["turn_index"])
+        if block_id is None:
+            row = connection.execute(
+                """
+                SELECT id FROM memory_blocks
+                WHERE conversation_id = ? AND start_turn_index = ? AND end_turn_index = ?
+                """,
+                (conversation_id, start_turn_index, end_turn_index),
+            ).fetchone()
+            block_id = row["id"] if row else _new_id("memory_block")
+        existing = connection.execute(
+            "SELECT created_at FROM memory_blocks WHERE id = ?",
+            (block_id,),
+        ).fetchone()
+        created_at = existing["created_at"] if existing else now
+        connection.execute(
+            """
+            INSERT INTO memory_blocks(
+                id, conversation_id, task_id, title, summary, status,
+                start_turn_index, end_turn_index, keywords_json, source,
+                created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(conversation_id, start_turn_index, end_turn_index) DO UPDATE SET
+                task_id = excluded.task_id,
+                title = excluded.title,
+                summary = excluded.summary,
+                status = excluded.status,
+                keywords_json = excluded.keywords_json,
+                source = excluded.source,
+                updated_at = excluded.updated_at
+            """,
+            (
+                block_id,
+                conversation_id,
+                block.get("task_id") if isinstance(block.get("task_id"), str) else None,
+                title.strip(),
+                summary.strip(),
+                status,
+                start_turn_index,
+                end_turn_index,
+                _json_dumps(block.get("keywords") if isinstance(block.get("keywords"), list) else []),
+                block.get("source") if isinstance(block.get("source"), str) else "heuristic",
+                created_at,
+                now,
+            ),
+        )
+        connection.execute("DELETE FROM memory_block_turns WHERE block_id = ?", (block_id,))
+        for position, turn_id in enumerate(ordered_turn_ids, 1):
+            connection.execute(
+                """
+                INSERT INTO memory_block_turns(block_id, turn_id, position, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (block_id, turn_id, position, now),
+            )
+    return {
+        "status": "success",
+        "block_id": block_id,
+        "conversation_id": conversation_id,
+        "turn_count": len(turn_ids),
+        "updated_at": now,
+    }
+
+
+def list_conversation_turns(db_path: str | Path, conversation_id: str, limit: int | None = None) -> list[dict]:
+    init_store(db_path)
+    sql = """
+        SELECT id, conversation_id, run_id, user_message_id, assistant_message_id,
+               turn_index, status, started_at, completed_at, created_at, updated_at
+        FROM conversation_turns
+        WHERE conversation_id = ?
+        ORDER BY turn_index ASC
+    """
+    params: list[Any] = [conversation_id]
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(max(1, int(limit)))
+    with _connect(db_path) as connection:
+        rows = connection.execute(sql, params).fetchall()
+    return [dict(row) for row in rows]
+
+
+def list_unblocked_conversation_turns(db_path: str | Path, conversation_id: str, limit: int | None = None) -> list[dict]:
+    init_store(db_path)
+    sql = """
+        SELECT t.id, t.conversation_id, t.run_id, t.user_message_id, t.assistant_message_id,
+               t.turn_index, t.status, t.started_at, t.completed_at, t.created_at, t.updated_at
+        FROM conversation_turns AS t
+        LEFT JOIN memory_block_turns AS bt ON bt.turn_id = t.id
+        WHERE t.conversation_id = ? AND bt.turn_id IS NULL
+        ORDER BY t.turn_index ASC
+    """
+    params: list[Any] = [conversation_id]
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(max(1, int(limit)))
+    with _connect(db_path) as connection:
+        rows = connection.execute(sql, params).fetchall()
+    return [dict(row) for row in rows]
+
+
+def list_task_memories(db_path: str | Path, conversation_id: str, status: str | None = None) -> list[dict]:
+    init_store(db_path)
+    sql = """
+        SELECT id, conversation_id, status, title, objective, phase,
+               completed_items_json, pending_items_json, constraints_json,
+               key_results_json, active_files_json, blocked_items_json,
+               next_actions_json, source_turn_ids_json, confidence,
+               created_at, updated_at
+        FROM task_memories
+        WHERE conversation_id = ?
+    """
+    params: list[Any] = [conversation_id]
+    if status is not None:
+        sql += " AND status = ?"
+        params.append(status)
+    sql += " ORDER BY CASE status WHEN 'foreground' THEN 0 WHEN 'paused' THEN 1 ELSE 2 END, updated_at DESC"
+    with _connect(db_path) as connection:
+        rows = connection.execute(sql, params).fetchall()
+    result = []
+    for row in rows:
+        item = dict(row)
+        for key in (
+            "completed_items_json",
+            "pending_items_json",
+            "constraints_json",
+            "key_results_json",
+            "active_files_json",
+            "blocked_items_json",
+            "next_actions_json",
+            "source_turn_ids_json",
+        ):
+            item[key[:-5]] = _json_loads(item.get(key)) or []
+        result.append(item)
+    return result
 
 
 def list_conversations(db_path: str | Path, limit: int = 50) -> list[dict]:
