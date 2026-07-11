@@ -1,3 +1,4 @@
 fastapi
 uvicorn
 paramiko
+mcp>=1.27,<2

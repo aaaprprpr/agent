@@ -20,3 +20,4 @@ requests==2.34.2
 tqdm==4.68.3
 fastapi
 uvicorn
+mcp>=1.27,<2

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
 import re
 import sys
@@ -37,16 +39,57 @@ from b5_memory import (  # noqa: E402
 HOST = "127.0.0.1"
 PORT = 8020
 OUTPUT_ROOT = PROJECT_ROOT / "outputs" / "backend_runs"
+UPLOAD_ROOT = PROJECT_ROOT / "data" / "uploads"
 TOOLS_CONFIG = PROJECT_ROOT / "configs" / "tools.yaml"
 MEMORY_CONFIG = PROJECT_ROOT / "configs" / "memory.yaml"
 MODEL_CONFIG = PROJECT_ROOT / "configs" / "model.yaml"
 RUNTIME_BASE = PROJECT_ROOT / "data" / "__frontend_runtime__.json"
 SYSTEM_PROMPT_PATH = "../prompts/local_tool_agent.txt"
+MAX_UPLOAD_FILES = 5
+MAX_UPLOAD_BYTES = 5 * 1024 * 1024
+SUPPORTED_UPLOAD_SUFFIXES = {
+    ".txt",
+    ".md",
+    ".json",
+    ".jsonl",
+    ".csv",
+    ".tsv",
+    ".yaml",
+    ".yml",
+    ".py",
+    ".log",
+    ".docx",
+    ".pptx",
+}
+
+
+class UploadedFileRef(BaseModel):
+    name: str
+    path: str
+    size: int
+
+
+class UploadFilePayload(BaseModel):
+    name: str = Field(..., min_length=1)
+    content_base64: str = Field(..., min_length=1)
+    size: int | None = None
+    mime_type: str | None = None
+
+
+class UploadRequest(BaseModel):
+    conversation_id: str | None = None
+    files: list[UploadFilePayload] = Field(default_factory=list)
+
+
+class UploadResponse(BaseModel):
+    files: list[UploadedFileRef]
 
 
 class RunRequest(BaseModel):
     user_input: str = Field(..., min_length=1)
     conversation_id: str | None = None
+    uploaded_files: list[UploadedFileRef] = Field(default_factory=list)
+    uploaded_file_payloads: list[UploadFilePayload] = Field(default_factory=list)
     selected_memory_ids: list[str] = Field(default_factory=list)
     use_global_memory: bool = False
     toolset: str = "basic_tools"
@@ -98,6 +141,93 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def _safe_upload_filename(name: str, fallback: str) -> str:
+    original = Path(name.strip()).name
+    suffix = Path(original).suffix.lower()
+    stem = Path(original).stem
+    safe_stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", stem).strip("._")
+    safe_suffix = re.sub(r"[^A-Za-z0-9.]+", "", suffix)
+    if safe_suffix not in SUPPORTED_UPLOAD_SUFFIXES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unsupported upload file type: {suffix or '(none)'}",
+        )
+    return f"{safe_stem or fallback}{safe_suffix}"
+
+
+def _unique_child_path(directory: Path, filename: str) -> Path:
+    candidate = directory / filename
+    if not candidate.exists():
+        return candidate
+    path = Path(filename)
+    for index in range(1, 1000):
+        candidate = directory / f"{path.stem}_{index}{path.suffix}"
+        if not candidate.exists():
+            return candidate
+    raise HTTPException(status_code=409, detail="too many uploaded files with the same name")
+
+
+def _decode_upload_file(payload: UploadFilePayload) -> bytes:
+    try:
+        data = base64.b64decode(payload.content_base64, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=f"invalid base64 content for {payload.name}") from exc
+    if payload.size is not None and payload.size != len(data):
+        raise HTTPException(status_code=400, detail=f"upload size mismatch for {payload.name}")
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=f"uploaded file is too large: {payload.name}")
+    return data
+
+
+def _save_uploaded_files(request: UploadRequest) -> list[UploadedFileRef]:
+    if not request.files:
+        raise HTTPException(status_code=400, detail="files are required")
+    if len(request.files) > MAX_UPLOAD_FILES:
+        raise HTTPException(status_code=400, detail=f"at most {MAX_UPLOAD_FILES} files can be uploaded at once")
+    conversation_id = _safe_conversation_id(request.conversation_id)
+    target_dir = UPLOAD_ROOT / conversation_id
+    target_dir.mkdir(parents=True, exist_ok=True)
+    saved: list[UploadedFileRef] = []
+    for index, file_payload in enumerate(request.files, 1):
+        filename = _safe_upload_filename(file_payload.name, f"uploaded_{index}")
+        data = _decode_upload_file(file_payload)
+        target = _unique_child_path(target_dir, filename)
+        target.write_bytes(data)
+        saved.append(
+            UploadedFileRef(
+                name=file_payload.name,
+                path=f"uploads/{conversation_id}/{target.name}",
+                size=len(data),
+            )
+        )
+    return saved
+
+
+def _save_run_uploads(conversation_id: str, files: list[UploadFilePayload]) -> list[UploadedFileRef]:
+    if not files:
+        return []
+    return _save_uploaded_files(UploadRequest(conversation_id=conversation_id, files=files))
+
+
+def _user_input_with_uploaded_files(user_input: str, files: list[UploadedFileRef]) -> str:
+    if not files:
+        return user_input
+    lines = [
+        "本次用户已上传以下文件，均可通过 file_reader 的 path 参数读取：",
+    ]
+    for file in files:
+        lines.append(f"- {file.name}: {file.path}")
+    lines.extend(
+        [
+            "如果当前用户输入中的“这份文档”“这个文件”“附件”“上传文件”等指代不明确，优先使用上述上传文件路径。",
+            "",
+            "当前用户输入：",
+            user_input,
+        ]
+    )
+    return "\n".join(lines)
 
 
 def _now_stamp() -> str:
@@ -214,9 +344,6 @@ def _extract_tool_steps(trace: dict) -> list[dict]:
             for call in raw_tool_calls
             if isinstance(call, dict) and isinstance(call.get("id"), str)
         } if isinstance(raw_tool_calls, list) else {}
-        next_prompt_messages = None
-        if turn_index + 1 < len(turns) and isinstance(turns[turn_index + 1], dict):
-            next_prompt_messages = turns[turn_index + 1].get("llm_prompt_messages")
         for tool_message in turn.get("tool_messages", []):
             if not isinstance(tool_message, dict):
                 continue
@@ -234,12 +361,6 @@ def _extract_tool_steps(trace: dict) -> list[dict]:
                     "skill_input": input_data,
                 }
             output_data = parsed.get("output")
-            if next_prompt_messages:
-                output_data = {
-                    "skill_output": output_data,
-                    "tool_message": tool_message,
-                    "next_llm_prompt_messages": next_prompt_messages,
-                }
             steps.append(
                 {
                     "tool_call_id": tool_call_id,
@@ -401,7 +522,12 @@ def _call_agent(request: RunRequest) -> RunResponse:
         is_trivial=_is_trivial_conversation(history, raw_user_input),
         trivial_reason="only trivial user messages" if _is_trivial_conversation(history, raw_user_input) else None,
     )
-    contextual_input = _contextual_user_input(history, raw_user_input)
+    uploaded_refs = [
+        *request.uploaded_files,
+        *_save_run_uploads(conversation_id, request.uploaded_file_payloads),
+    ]
+    agent_user_input = _user_input_with_uploaded_files(raw_user_input, uploaded_refs)
+    contextual_input = _contextual_user_input(history, agent_user_input)
     runtime_payload = _build_runtime_payload(request, conversation_id, contextual_input)
     run_id = _now_stamp()
     user_message_id, assistant_message_id = _start_run_messages(
@@ -466,7 +592,12 @@ def _stream_agent(request: RunRequest) -> Iterator[str]:
         is_trivial=_is_trivial_conversation(history, raw_user_input),
         trivial_reason="only trivial user messages" if _is_trivial_conversation(history, raw_user_input) else None,
     )
-    contextual_input = _contextual_user_input(history, raw_user_input)
+    uploaded_refs = [
+        *request.uploaded_files,
+        *_save_run_uploads(conversation_id, request.uploaded_file_payloads),
+    ]
+    agent_user_input = _user_input_with_uploaded_files(raw_user_input, uploaded_refs)
+    contextual_input = _contextual_user_input(history, agent_user_input)
     runtime_payload = _build_runtime_payload(request, conversation_id, contextual_input)
     run_id = _now_stamp()
     user_message_id, assistant_message_id = _start_run_messages(
@@ -590,7 +721,16 @@ def health() -> dict:
         "status": "ok",
         "agent_runtime": "b1",
         "model_config": str(MODEL_CONFIG),
+        "features": {
+            "upload_in_run": True,
+            "current_time_tool": True,
+        },
     }
+
+
+@app.post("/api/uploads", response_model=UploadResponse)
+async def upload_files(request: UploadRequest) -> UploadResponse:
+    return UploadResponse(files=await asyncio.to_thread(_save_uploaded_files, request))
 
 
 @app.get("/api/conversations", response_model=list[ConversationSummary])

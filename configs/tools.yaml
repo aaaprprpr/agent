@@ -21,8 +21,10 @@ settings:
 toolsets:
   basic_tools:
     - calculator
+    - current_time
     - file_reader
     - local_file_search
+    - mcp_web_search
     - table_analyzer
     - format_converter
 
@@ -41,10 +43,28 @@ tools:
         type: number
         description: Calculated value.
 
+  current_time:
+    module: skills.current_time
+    function: current_time
+    description: Get the current local, UTC, or requested timezone time. Use this when the user asks for the current date or time.
+    parameters:
+      timezone:
+        type: string
+        description: Optional timezone name such as local, UTC, Asia/Shanghai, or a fixed offset like +08:00.
+    required: []
+    returns:
+      timezone: {type: string, description: Resolved timezone label.}
+      iso: {type: string, description: Current time in ISO 8601 format.}
+      date: {type: string, description: Current date.}
+      time: {type: string, description: Current wall-clock time.}
+      weekday: {type: string, description: Weekday name.}
+      utc_offset: {type: string, description: UTC offset in +/-HH:MM format.}
+      utc_time: {type: string, description: Current UTC time.}
+
   file_reader:
     module: skills.file_reader
     function: file_reader
-    description: Read a local UTF-8 text-like file from allowed workspace roots. Paths default to data root; use aliases such as outputs:full_demo/final_answer.md when needed.
+    description: Read a local text-like file or Office Open XML document from allowed workspace roots. Supports txt, md, json, jsonl, csv, tsv, yaml, yml, py, log, docx, and pptx. Paths default to data root; use aliases such as outputs:full_demo/final_answer.md when needed.
     parameters:
       path:
         type: string
@@ -62,9 +82,12 @@ tools:
     returns:
       content: {type: string, description: File content.}
       num_chars: {type: integer, description: Returned character count.}
-      source: {type: string, description: Normalized path, including root alias when outside data.}
+      source: {type: string, description: "Normalized path, including root alias when outside data."}
       root_alias: {type: string, description: Matched allowed root alias.}
       line_count: {type: integer, description: Total number of lines in the file.}
+      parser: {type: string, description: "Parser used, such as utf-8-text or office-openxml."}
+      document_type: {type: string, description: "text, docx, or pptx."}
+      slide_count: {type: integer, description: "Number of slides for pptx files, when applicable."}
       truncated: {type: boolean, description: Whether content was truncated.}
 
   local_file_search:
@@ -73,7 +96,7 @@ tools:
     description: Search local text-like files under allowed workspace roots for query terms.
     parameters:
       query: {type: string, description: Search query.}
-      root_dir: {type: string, description: Directory relative to data root, or alias:path under an allowed workspace root.}
+      root_dir: {type: string, description: "Directory relative to data root, or alias:path under an allowed workspace root."}
       file_types:
         type: array
         items: {type: string}
@@ -84,12 +107,28 @@ tools:
     returns:
       results: {type: array, description: "Ranked paths, snippets, and scores."}
 
+  mcp_web_search:
+    module: skills.mcp_web_search
+    function: mcp_web_search
+    description: Search the web through a configured MCP search server. Requires configs/mcp.yaml to be enabled and connected to a working MCP server.
+    parameters:
+      query: {type: string, description: Web search query.}
+      top_k: {type: integer, description: Maximum number of results requested from the MCP search tool.}
+    required: [query]
+    returns:
+      query: {type: string, description: Original search query.}
+      top_k: {type: integer, description: Requested result count.}
+      mcp_tool_name: {type: string, description: MCP tool invoked.}
+      structured_content: {type: object, description: Structured content returned by the MCP server when available.}
+      text: {type: string, description: Text content returned by the MCP server.}
+      is_error: {type: boolean, description: Whether the MCP tool reported an error.}
+
   table_analyzer:
     module: skills.table_analyzer
     function: table_analyzer
     description: Analyze a local CSV or TSV file.
     parameters:
-      path: {type: string, description: Table path relative to data root, or alias:path under an allowed workspace root.}
+      path: {type: string, description: "Table path relative to data root, or alias:path under an allowed workspace root."}
       max_rows_preview: {type: integer, description: Number of preview rows.}
       describe: {type: boolean, description: Whether to calculate numeric statistics.}
     required: [path]

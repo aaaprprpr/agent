@@ -18,7 +18,9 @@ bootstrap_project_root()
 
 SKILL_MODULES = {
     "calculator": "skills.calculator",
+    "current_time": "skills.current_time",
     "file_reader": "skills.file_reader",
+    "mcp_web_search": "skills.mcp_web_search",
     "local_file_search": "skills.local_file_search",
     "table_analyzer": "skills.table_analyzer",
     "format_converter": "skills.format_converter",

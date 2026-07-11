@@ -1,0 +1,14 @@
+mcp:
+  default_server: web_search
+  servers:
+    web_search:
+      enabled: false
+      transport: stdio
+      command: ""
+      args: []
+      env: {}
+      search_tool: ""
+      query_arg: query
+      top_k_arg: count
+      static_args: {}
+

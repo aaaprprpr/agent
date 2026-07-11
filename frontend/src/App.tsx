@@ -23,6 +23,14 @@ type Attachment = {
   id: number
   name: string
   size: number
+  file: File
+}
+
+type UploadedFilePayload = {
+  name: string
+  size: number
+  mime_type?: string
+  content_base64: string
 }
 
 type HistoryItem = {
@@ -118,6 +126,17 @@ function prettyJson(value: unknown) {
   } catch {
     return String(value)
   }
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer) {
+  const bytes = new Uint8Array(buffer)
+  const chunkSize = 0x8000
+  let binary = ''
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    const chunk = bytes.subarray(index, index + chunkSize)
+    binary += String.fromCharCode(...chunk)
+  }
+  return window.btoa(binary)
 }
 
 function toolNameFromRecord(value: unknown, fallback: string) {
@@ -375,6 +394,7 @@ function App() {
       id: Date.now() + index,
       name: file.name,
       size: file.size,
+      file,
     }))
     setAttachments((current) => [...current, ...next])
   }
@@ -390,12 +410,25 @@ function App() {
     if (event.dataTransfer.files.length) addFiles(event.dataTransfer.files)
   }
 
+  async function buildUploadPayloads(files: Attachment[]): Promise<UploadedFilePayload[]> {
+    if (files.length === 0) return []
+    return Promise.all(
+      files.map(async (item) => ({
+        name: item.name,
+        size: item.size,
+        mime_type: item.file.type || undefined,
+        content_base64: arrayBufferToBase64(await item.file.arrayBuffer()),
+      })),
+    )
+  }
+
   async function handleSend() {
     const text = draft.trim()
     if (!text) return
     stickToBottomRef.current = isConversationAtBottom()
     const conversationId = currentConversationId ?? createConversationId()
     if (runningConversationIdsRef.current.has(conversationId)) return
+    const filesToUpload = attachments
     const existingHistory = histories.find((item) => item.id === conversationId)
     const now = Date.now()
     const pendingId = now + 1
@@ -555,12 +588,14 @@ function App() {
     }
 
     try {
+      const uploadPayloads = await buildUploadPayloads(filesToUpload)
       const response = await fetch(`${API_BASE}/api/run/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           user_input: text,
           conversation_id: conversationId,
+          uploaded_file_payloads: uploadPayloads,
         }),
       })
       if (!response.ok) {
