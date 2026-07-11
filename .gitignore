@@ -10,3 +10,6 @@ memory
 memory\conversations
 memory\memory_index.json
 outputs\full_demo
+
+# Local MCP credentials/configuration. Do not commit API keys.
+configs/mcp.local.yaml

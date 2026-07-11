@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import codecs
 import json
-import re
 import sys
 import urllib.error
 import urllib.request
@@ -19,22 +18,6 @@ from common.schemas import make_ai_message, validate_ai_message, validate_messag
 
 PARSE_ERROR_CONTENT = "模型输出解析失败，无法生成有效工具调用或最终回答。"
 _MODEL_CACHE: dict[tuple[str, ...], tuple[Any, Any]] = {}
-_CURRENT_TIME_PATTERNS = [
-    "现在几点",
-    "当前时间",
-    "现在时间",
-    "本地时间",
-    "北京时间",
-    "上海时间",
-    "utc时间",
-    "utctime",
-    "今天星期几",
-    "今天几号",
-    "今天是几号",
-    "今天日期",
-    "当前日期",
-    "现在日期",
-]
 
 
 def _load_model_config(model_config: str | Path) -> tuple[Path, dict]:
@@ -132,7 +115,20 @@ def _extract_tool_result(message: dict) -> dict:
 
 
 def _three_points(text: str) -> list[str]:
-    parts = [part.strip(" \t\r\n。") for part in re.split(r"\n+|(?<=[。！？!?])", text) if part.strip()]
+    parts = []
+    current = []
+    strip_chars = " \t\r\n。！？!?"
+    for char in text:
+        current.append(char)
+        if char in "\r\n。！？!?":
+            part = "".join(current).strip(strip_chars)
+            if part:
+                parts.append(part)
+            current = []
+    tail = "".join(current).strip(strip_chars)
+    if tail:
+        parts.append(tail)
+
     points = []
     for part in parts:
         if part not in points:
@@ -221,37 +217,29 @@ def _decode_partial_json_string(fragment: str) -> str:
     return fragment
 
 
-def _parse_content_fragment(raw_text: str, original_error: json.JSONDecodeError) -> dict:
-    match = re.search(r'"content"\s*:\s*"', raw_text)
-    if not match:
-        raise original_error
-    chars = []
-    escaped = False
-    for char in raw_text[match.end() :]:
-        if escaped:
-            chars.append(char)
-            escaped = False
-            continue
-        if char == "\\":
-            chars.append(char)
-            escaped = True
-            continue
-        if char == '"':
-            break
-        chars.append(char)
-    content = _decode_partial_json_string("".join(chars)).strip()
-    if not content:
-        raise original_error
-    return {"content": content, "tool_calls": []}
+def _json_string_value_start(raw_text: str, key: str) -> int:
+    key_token = json.dumps(key, ensure_ascii=False)
+    search_from = 0
+    while True:
+        key_index = raw_text.find(key_token, search_from)
+        if key_index == -1:
+            return -1
+        cursor = key_index + len(key_token)
+        while cursor < len(raw_text) and raw_text[cursor].isspace():
+            cursor += 1
+        if cursor < len(raw_text) and raw_text[cursor] == ":":
+            cursor += 1
+            while cursor < len(raw_text) and raw_text[cursor].isspace():
+                cursor += 1
+            if cursor < len(raw_text) and raw_text[cursor] == '"':
+                return cursor + 1
+        search_from = key_index + 1
 
 
-def _streaming_content_prefix(raw_text: str) -> str:
-    match = re.search(r'"content"\s*:\s*"', raw_text)
-    if not match:
-        return ""
+def _partial_json_string(raw_text: str, start_index: int) -> str:
     chars = []
     escaped = False
-    for char in raw_text[match.end() :]:
+    for char in raw_text[start_index:]:
         if escaped:
             chars.append(char)
             escaped = False
@@ -264,6 +252,23 @@ def _streaming_content_prefix(raw_text: str) -> str:
             break
         chars.append(char)
     return _decode_partial_json_string("".join(chars))
+
+
+def _parse_content_fragment(raw_text: str, original_error: json.JSONDecodeError) -> dict:
+    value_start = _json_string_value_start(raw_text, "content")
+    if value_start == -1:
+        raise original_error
+    content = _partial_json_string(raw_text, value_start).strip()
+    if not content:
+        raise original_error
+    return {"content": content, "tool_calls": []}
+
+
+def _streaming_content_prefix(raw_text: str) -> str:
+    value_start = _json_string_value_start(raw_text, "content")
+    if value_start == -1:
+        return ""
+    return _partial_json_string(raw_text, value_start)
 
 
 def _candidate_to_message(candidate: dict) -> tuple[dict, dict]:
@@ -304,61 +309,6 @@ def _parse_model_output(raw_text: str) -> tuple[dict, dict]:
             except Exception:
                 candidate = _parse_content_fragment(raw_text, exc)
     return _candidate_to_message(candidate)
-
-
-def _current_user_input_text(messages: list[dict]) -> str:
-    for message in reversed(messages):
-        if message.get("role") != "user":
-            continue
-        content = str(message.get("content", ""))
-        if "当前用户输入：" in content:
-            content = content.rsplit("当前用户输入：", 1)[-1]
-        return content.split("IMPORTANT OUTPUT FORMAT:", 1)[0].strip()
-    return ""
-
-
-def _has_tool_schema(tools_schema: list[dict], tool_name: str) -> bool:
-    for item in tools_schema:
-        function = item.get("function") if isinstance(item, dict) else None
-        if isinstance(function, dict) and function.get("name") == tool_name:
-            return True
-    return False
-
-
-def _is_current_time_request(text: str) -> bool:
-    compact = re.sub(r"\s+", "", text).lower()
-    if any(pattern in compact for pattern in _CURRENT_TIME_PATTERNS):
-        return True
-    return bool(re.search(r"(现在|当前|此刻).{0,8}(几点|时间|日期|星期)", compact))
-
-
-def _current_time_timezone(text: str) -> str:
-    compact = re.sub(r"\s+", "", text).lower()
-    if any(token in compact for token in ("上海", "北京", "北京时间", "中国时间", "asia/shanghai")):
-        return "Asia/Shanghai"
-    if "utc" in compact and not any(token in compact for token in ("本地", "local", "当地")):
-        return "UTC"
-    return "local"
-
-
-def _forced_current_time_message(messages: list[dict], tools_schema: list[dict]) -> dict | None:
-    if any(message.get("role") == "tool" for message in messages):
-        return None
-    if not _has_tool_schema(tools_schema, "current_time"):
-        return None
-    text = _current_user_input_text(messages)
-    if not _is_current_time_request(text):
-        return None
-    return make_ai_message(
-        "",
-        [
-            {
-                "id": "call_time_001",
-                "name": "current_time",
-                "args": {"timezone": _current_time_timezone(text)},
-            }
-        ],
-    )
 
 
 def _dtype_value(torch_module: Any, configured: str) -> Any:
@@ -537,6 +487,9 @@ def _build_prompt_messages(messages: list[dict], tools_schema: list[dict]) -> li
         "- content: string\n"
         "- tool_calls: array\n"
         "- control: object with exactly state, action, and reason\n\n"
+        "Choose tools from the available schema when the user request requires runtime, local, "
+        "external, or computed information that the model should not invent. This includes current "
+        "time/date, local or uploaded file contents, web search/live information, and calculations.\n"
         "Use action call_tools with non-empty tool_calls and state acting or replanning.\n"
         "After ToolMessages, analyze progress and either call tools again with state replanning or finish.\n"
         "Use action finish with empty tool_calls and state completed or failed.\n"
@@ -793,10 +746,6 @@ def generate_ai_message(
             raw_text = _fastapi_prompt_json_generate(config_path, config, messages, tools_schema)
         try:
             parsed_candidate, ai_message = _parse_model_output(raw_text)
-            forced_message = _forced_current_time_message(messages, tools_schema)
-            if forced_message is not None and not ai_message["tool_calls"]:
-                ai_message = forced_message
-                parsed_candidate = {"content": "", "tool_calls": ai_message["tool_calls"]}
             status = "success"
             error = None
         except Exception as exc:
@@ -861,19 +810,17 @@ def stream_ai_message(
             yield {"type": "delta", "text": ai_message["content"]}
     elif mode == "prompt_json":
         prompt_messages = _build_prompt_messages(messages, tools_schema)
-        suppress_content_stream = _forced_current_time_message(messages, tools_schema) is not None
         if source == "fastapi":
             raw_parts = []
             emitted_chars = 0
             for chunk in _fastapi_prompt_json_stream(config_path, config, messages, tools_schema):
                 raw_parts.append(chunk)
-                if not suppress_content_stream:
-                    content = _streaming_content_prefix("".join(raw_parts))
-                    if len(content) > emitted_chars:
-                        delta = content[emitted_chars:]
-                        emitted_chars = len(content)
-                        if delta:
-                            yield {"type": "delta", "text": delta}
+                content = _streaming_content_prefix("".join(raw_parts))
+                if len(content) > emitted_chars:
+                    delta = content[emitted_chars:]
+                    emitted_chars = len(content)
+                    if delta:
+                        yield {"type": "delta", "text": delta}
             raw_text = "".join(raw_parts)
         elif source == "local":
             raw_text = _prompt_json_generate(config_path, config, messages, tools_schema)
@@ -881,11 +828,7 @@ def stream_ai_message(
             raise ValueError("runtime.llm_source must be local or fastapi")
         try:
             parsed_candidate, ai_message = _parse_model_output(raw_text)
-            forced_message = _forced_current_time_message(messages, tools_schema)
-            if forced_message is not None and not ai_message["tool_calls"]:
-                ai_message = forced_message
-                parsed_candidate = {"content": "", "tool_calls": ai_message["tool_calls"]}
-            if (source == "local" or suppress_content_stream) and ai_message["content"]:
+            if source == "local" and ai_message["content"]:
                 yield {"type": "delta", "text": ai_message["content"]}
         except Exception as exc:
             ai_message = make_ai_message(PARSE_ERROR_CONTENT, [])

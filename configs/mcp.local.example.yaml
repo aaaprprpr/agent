@@ -1,0 +1,17 @@
+mcp:
+  default_server: web_search
+  servers:
+    web_search:
+      enabled: true
+      transport: stdio
+      command: npx
+      command_windows: npx.cmd
+      args:
+        - -y
+        - "@modelcontextprotocol/server-brave-search"
+      env:
+        BRAVE_API_KEY: ${BRAVE_API_KEY}
+      search_tool: brave_web_search
+      query_arg: query
+      top_k_arg: count
+      static_args: {}

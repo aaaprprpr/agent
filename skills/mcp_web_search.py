@@ -8,6 +8,7 @@ from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "configs" / "mcp.yaml"
+LOCAL_CONFIG_PATH = PROJECT_ROOT / "configs" / "mcp.local.yaml"
 MAX_TOP_K = 10
 
 
@@ -23,6 +24,12 @@ def _load_yaml(path: Path) -> dict:
     if not isinstance(payload, dict):
         raise ValueError("configs/mcp.yaml must contain an object")
     return payload
+
+
+def _config_path() -> Path:
+    if LOCAL_CONFIG_PATH.is_file():
+        return LOCAL_CONFIG_PATH
+    return DEFAULT_CONFIG_PATH
 
 
 def _resolve_env(raw_env: Any) -> dict[str, str]:
@@ -133,7 +140,7 @@ async def _call_stdio(server: dict, tool_name: str | None, arguments: dict) -> d
         from mcp.client.stdio import stdio_client
     except ImportError as exc:
         raise RuntimeError('Install MCP SDK first: pip install "mcp>=1.27,<2"') from exc
-    command = server.get("command")
+    command = server.get("command_windows") if os.name == "nt" and server.get("command_windows") else server.get("command")
     if not isinstance(command, str) or not command.strip():
         raise ValueError("stdio MCP server requires command")
     args = server.get("args", [])
@@ -209,13 +216,15 @@ def mcp_web_search(query: str, top_k: int = 5) -> dict:
         raise ValueError("top_k must be a positive integer")
     if top_k > MAX_TOP_K:
         raise ValueError(f"top_k must not exceed {MAX_TOP_K}")
-    config = _load_yaml(DEFAULT_CONFIG_PATH)
+    config_path = _config_path()
+    config = _load_yaml(config_path)
     server = _server_config(config)
     arguments = _tool_arguments(server, query.strip(), top_k)
     response = asyncio.run(_call_mcp(server, arguments))
     return {
         "query": query.strip(),
         "top_k": top_k,
+        "mcp_config": str(config_path.relative_to(PROJECT_ROOT)),
         "mcp_tool_name": response["tool_name"],
         "mcp_arguments": arguments,
         **response["result"],

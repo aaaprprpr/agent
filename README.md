@@ -28,6 +28,7 @@ pip install -r requirements.txt
 其中"export PYTHONNOUSERSITE=1"的作用是：让Python启动时禁止加载用户级site-packages目录，保证只用当前环境自己的包
 
 MCP 联网搜索桥接依赖 `mcp>=1.27,<2`。`configs/mcp.yaml` 默认关闭 MCP server，需要接入具体 MCP 搜索服务后再启用。
+个人联调时不要把 API Key 写入仓库；复制 `configs/mcp.local.example.yaml` 为被 git 忽略的 `configs/mcp.local.yaml`，并在启动后端的终端设置 `BRAVE_API_KEY`。`mcp_web_search` 会优先读取本地覆盖文件，没有本地覆盖时才读取共享的 `configs/mcp.yaml`。
 
 模型使用Qwen3.5-4B
 统一配置文件为 `configs/model.yaml`，实际使用时需要把model_name_or_path和tokenizer_name_or_path改为模型所在的文件路径。

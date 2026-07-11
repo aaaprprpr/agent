@@ -102,6 +102,7 @@
         "properties": {
           "query": {"type": "string", "description": "Original search query."},
           "top_k": {"type": "integer", "description": "Requested result count."},
+          "mcp_config": {"type": "string", "description": "MCP configuration file used by the bridge."},
           "mcp_tool_name": {"type": "string", "description": "MCP tool invoked."},
           "structured_content": {"type": "object", "description": "Structured content returned by the MCP server when available."},
           "text": {"type": "string", "description": "Text content returned by the MCP server."},
