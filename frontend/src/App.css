@@ -112,13 +112,12 @@
   width: 100%;
   display: flex;
   align-items: center;
-  padding: 0 12px;
+  padding: 0 6px 0 12px;
   border: 0;
   border-radius: 12px;
   background: transparent;
   color: #555;
   text-align: left;
-  cursor: pointer;
   transition: background 0.16s ease, color 0.16s ease;
 }
 
@@ -126,6 +125,20 @@
 .history-item.active {
   background: #eaeaea;
   color: #222;
+}
+
+.history-open {
+  min-width: 0;
+  flex: 1;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
 }
 
 .history-copy {
@@ -140,6 +153,41 @@
   color: inherit;
   font-size: 14px;
   font-weight: 560;
+}
+
+.history-delete {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #777;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.14s ease, background 0.16s ease, color 0.16s ease;
+}
+
+.history-item:hover .history-delete,
+.history-item.active .history-delete,
+.history-delete:focus-visible {
+  opacity: 1;
+}
+
+.history-delete:hover {
+  background: #dedede;
+  color: #111;
+}
+
+.history-delete:disabled {
+  cursor: not-allowed;
+  opacity: 0.28;
+}
+
+.sidebar.collapsed .history-delete {
+  display: none;
 }
 
 .workspace {
@@ -534,7 +582,19 @@
 
 .file-icon {
   flex: 0 0 auto;
+  min-width: 31px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 5px;
+  border: 1px solid #d7d7d7;
+  border-radius: 6px;
+  background: #f8f8f8;
   color: #666;
+  font-size: 9px;
+  font-weight: 650;
+  line-height: 1;
 }
 
 .attachment-chip button {

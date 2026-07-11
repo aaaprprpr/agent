@@ -5,6 +5,7 @@ import base64
 import binascii
 import json
 import re
+import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -26,6 +27,7 @@ from b1_agent_runtime import run as run_agent_runtime  # noqa: E402
 from b1_agent_runtime import run_stream as run_agent_runtime_stream  # noqa: E402
 from b5_memory import (  # noqa: E402
     append_conversation_message,
+    delete_conversation_record,
     init_conversation_db,
     list_conversation_history,
     list_conversation_records,
@@ -146,6 +148,13 @@ class ConversationDetail(BaseModel):
     messages: list[ConversationMessage]
 
 
+class DeleteConversationResponse(BaseModel):
+    conversation_id: str
+    deleted: bool
+    upload_dir_deleted: bool
+    output_dir_deleted: bool
+
+
 app = FastAPI(title="Agent Backend", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
@@ -222,6 +231,23 @@ def _save_run_uploads(conversation_id: str, files: list[UploadFilePayload]) -> l
     if not files:
         return []
     return _save_uploaded_files(UploadRequest(conversation_id=conversation_id, files=files))
+
+
+def _delete_child_directory(root: Path, child_name: str) -> bool:
+    root = root.resolve()
+    target = (root / child_name).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="resolved delete path escaped allowed root") from exc
+    if target == root:
+        raise HTTPException(status_code=400, detail="refusing to delete root directory")
+    if not target.exists():
+        return False
+    if not target.is_dir():
+        raise HTTPException(status_code=409, detail=f"delete target is not a directory: {target.name}")
+    shutil.rmtree(target)
+    return True
 
 
 def _user_input_with_uploaded_files(user_input: str, files: list[UploadedFileRef]) -> str:
@@ -436,9 +462,8 @@ def _build_runtime_payload(
     history_messages: list[dict],
     input_images: list[str],
 ) -> dict:
-    # Web chat uses SQLite as the primary memory store. Legacy markdown memory
-    # remains independently testable, but its documents are not injected into
-    # the live chat context.
+    # Web chat passes completed SQLite turns through history_messages. Optional
+    # legacy markdown memory still flows through B1 when explicitly selected.
     selected_memory_ids = request.selected_memory_ids
     use_global_memory = request.use_global_memory
     return {
@@ -856,6 +881,23 @@ def get_conversation(conversation_id: str) -> ConversationDetail:
         if message["role"] in {"user", "assistant"}
     ]
     return ConversationDetail(conversation_id=conversation_id, messages=visible)
+
+
+@app.delete("/api/conversations/{conversation_id}", response_model=DeleteConversationResponse)
+def delete_conversation(conversation_id: str) -> DeleteConversationResponse:
+    conversation_id = _safe_conversation_id(conversation_id)
+    init_conversation_db(str(MEMORY_CONFIG))
+    record = delete_conversation_record(str(MEMORY_CONFIG), conversation_id)
+    if not record.get("deleted"):
+        raise HTTPException(status_code=404, detail="conversation not found")
+    upload_dir_deleted = _delete_child_directory(UPLOAD_ROOT, conversation_id)
+    output_dir_deleted = _delete_child_directory(OUTPUT_ROOT, conversation_id)
+    return DeleteConversationResponse(
+        conversation_id=conversation_id,
+        deleted=bool(record.get("deleted")),
+        upload_dir_deleted=upload_dir_deleted,
+        output_dir_deleted=output_dir_deleted,
+    )
 
 
 @app.get("/api/messages/{message_id}/tool-steps")

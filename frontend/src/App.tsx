@@ -485,6 +485,31 @@ function App() {
     }
   }
 
+  async function deleteConversation(conversationId: string) {
+    if (runningConversationIdsRef.current.has(conversationId)) return
+    const item = histories.find((history) => history.id === conversationId)
+    const title = item?.title || '当前对话'
+    if (!window.confirm(`删除“${title}”？本对话的上传文件也会一并删除。`)) return
+    try {
+      const response = await fetch(`${API_BASE}/api/conversations/${conversationId}`, { method: 'DELETE' })
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null)
+        const detail = payload?.detail ?? `HTTP ${response.status}`
+        throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
+      }
+      setHistories((current) => current.filter((history) => history.id !== conversationId))
+      if (currentConversationIdRef.current === conversationId) {
+        stickToBottomRef.current = true
+        setActiveConversation(null)
+        setMessages([])
+        setAttachments([])
+        setDraft('')
+      }
+    } catch (error) {
+      window.alert(error instanceof Error ? `删除失败：${error.message}` : '删除失败')
+    }
+  }
+
   function addFiles(files: FileList | File[]) {
     const next = Array.from(files).map((file, index) => ({
       id: Date.now() + index,
@@ -826,20 +851,34 @@ function App() {
 
         <div className="history-list" aria-label="对话记录">
           {histories.map((item) => (
-            <button
+            <div
               className={`history-item ${item.id === currentConversationId ? 'active' : ''}`}
               key={item.id}
-              type="button"
-              onClick={() => {
-                setAttachments([])
-                setDraft('')
-                void loadConversation(item.id)
-              }}
             >
-              <span className="history-copy">
-                <strong>{item.title}</strong>
-              </span>
-            </button>
+              <button
+                className="history-open"
+                type="button"
+                onClick={() => {
+                  void loadConversation(item.id)
+                }}
+              >
+                <span className="history-copy">
+                  <strong>{item.title}</strong>
+                </span>
+              </button>
+              <button
+                className="history-delete"
+                type="button"
+                aria-label={`删除对话 ${item.title}`}
+                title="删除对话"
+                disabled={runningConversationIds.has(item.id)}
+                onClick={() => {
+                  void deleteConversation(item.id)
+                }}
+              >
+                <span aria-hidden="true">×</span>
+              </button>
+            </div>
           ))}
         </div>
       </aside>

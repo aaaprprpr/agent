@@ -9,6 +9,7 @@ from pathlib import Path
 from common.io_utils import append_jsonl, read_json, read_text, read_yaml, write_json, write_text
 from common.conversation_store import (
     append_message,
+    delete_conversation,
     init_store,
     list_conversations,
     list_messages,
@@ -162,6 +163,11 @@ def record_conversation_tool_step(
 
 def list_conversation_records(config_path: str, limit: int = 50) -> list[dict]:
     return list_conversations(_conversation_db_path(config_path), limit)
+
+
+def delete_conversation_record(config_path: str, conversation_id: str) -> dict:
+    _safe_conversation_id(conversation_id)
+    return delete_conversation(_conversation_db_path(config_path), conversation_id)
 
 
 def list_conversation_messages(config_path: str, conversation_id: str) -> list[dict]:

@@ -20,5 +20,6 @@ requests==2.34.2
 tqdm==4.68.3
 fastapi
 uvicorn
+paramiko
 mcp>=1.27,<2
 ddgs[mcp]>=9.14,<10

@@ -346,6 +346,21 @@ def list_conversations(db_path: str | Path, limit: int = 50) -> list[dict]:
     return [dict(row) for row in rows]
 
 
+def delete_conversation(db_path: str | Path, conversation_id: str) -> dict:
+    if not isinstance(conversation_id, str) or not conversation_id:
+        raise ValueError("conversation_id must be a non-empty string")
+    init_store(db_path)
+    with _connect(db_path) as connection:
+        row = connection.execute(
+            "SELECT id FROM conversations WHERE id = ?",
+            (conversation_id,),
+        ).fetchone()
+        if row is None:
+            return {"status": "not_found", "conversation_id": conversation_id, "deleted": False}
+        connection.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
+    return {"status": "success", "conversation_id": conversation_id, "deleted": True}
+
+
 def list_messages(db_path: str | Path, conversation_id: str) -> list[dict]:
     init_store(db_path)
     with _connect(db_path) as connection:
