@@ -145,6 +145,14 @@ function prettyJson(value: unknown) {
   }
 }
 
+function handleMessageCopy(event: ClipboardEvent<HTMLDivElement>) {
+  const selectedText = window.getSelection()?.toString()
+  if (!selectedText) return
+  const normalized = selectedText.replace(/^(?:\r?\n)+|(?:\r?\n)+$/g, '')
+  event.clipboardData.setData('text/plain', normalized)
+  event.preventDefault()
+}
+
 function arrayBufferToBase64(buffer: ArrayBuffer) {
   const bytes = new Uint8Array(buffer)
   const chunkSize = 0x8000

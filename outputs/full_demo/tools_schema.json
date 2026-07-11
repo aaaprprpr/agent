@@ -31,18 +31,77 @@
   {
     "type": "function",
     "function": {
+      "name": "current_time",
+      "description": "Get the current local, UTC, or requested timezone time. Use this when the user asks for the current date or time.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "timezone": {
+            "type": "string",
+            "description": "Optional timezone name such as local, UTC, Asia/Shanghai, or a fixed offset like +08:00."
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "x-returns": {
+        "type": "object",
+        "properties": {
+          "timezone": {
+            "type": "string",
+            "description": "Resolved timezone label."
+          },
+          "iso": {
+            "type": "string",
+            "description": "Current time in ISO 8601 format."
+          },
+          "date": {
+            "type": "string",
+            "description": "Current date."
+          },
+          "time": {
+            "type": "string",
+            "description": "Current wall-clock time."
+          },
+          "weekday": {
+            "type": "string",
+            "description": "Weekday name."
+          },
+          "utc_offset": {
+            "type": "string",
+            "description": "UTC offset in +/-HH:MM format."
+          },
+          "utc_time": {
+            "type": "string",
+            "description": "Current UTC time."
+          }
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
       "name": "file_reader",
-      "description": "Read a local UTF-8 txt or md file from the data directory.",
+      "description": "Read a local text-like file or Office Open XML document from allowed workspace roots. Supports txt, md, json, jsonl, csv, tsv, yaml, yml, py, log, docx, and pptx. Paths default to data root; use aliases such as outputs:full_demo/final_answer.md when needed.",
       "parameters": {
         "type": "object",
         "properties": {
           "path": {
             "type": "string",
-            "description": "Path relative to the configured data root."
+            "description": "Path relative to data root, or alias:path under an allowed workspace root."
           },
           "max_chars": {
             "type": "integer",
             "description": "Maximum number of characters to return."
+          },
+          "start_line": {
+            "type": "integer",
+            "description": "Optional 1-based start line for partial reading."
+          },
+          "end_line": {
+            "type": "integer",
+            "description": "Optional 1-based end line for partial reading."
           }
         },
         "required": [
@@ -63,7 +122,27 @@
           },
           "source": {
             "type": "string",
-            "description": "Normalized path relative to data root."
+            "description": "Normalized path, including root alias when outside data."
+          },
+          "root_alias": {
+            "type": "string",
+            "description": "Matched allowed root alias."
+          },
+          "line_count": {
+            "type": "integer",
+            "description": "Total number of lines in the file."
+          },
+          "parser": {
+            "type": "string",
+            "description": "Parser used, such as utf-8-text or office-openxml."
+          },
+          "document_type": {
+            "type": "string",
+            "description": "text, docx, or pptx."
+          },
+          "slide_count": {
+            "type": "integer",
+            "description": "Number of slides for pptx files, when applicable."
           },
           "truncated": {
             "type": "boolean",
@@ -77,7 +156,7 @@
     "type": "function",
     "function": {
       "name": "local_file_search",
-      "description": "Search local txt and md files for query terms.",
+      "description": "Search local text-like files under allowed workspace roots for query terms.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -87,7 +166,7 @@
           },
           "root_dir": {
             "type": "string",
-            "description": "Directory relative to data root."
+            "description": "Directory relative to data root, or alias:path under an allowed workspace root."
           },
           "file_types": {
             "type": "array",
@@ -99,6 +178,10 @@
           "top_k": {
             "type": "integer",
             "description": "Maximum number of matches."
+          },
+          "max_file_chars": {
+            "type": "integer",
+            "description": "Maximum characters scanned per file."
           }
         },
         "required": [
@@ -127,7 +210,7 @@
         "properties": {
           "path": {
             "type": "string",
-            "description": "Table path relative to data root."
+            "description": "Table path relative to data root, or alias:path under an allowed workspace root."
           },
           "max_rows_preview": {
             "type": "integer",
@@ -161,6 +244,10 @@
           "preview": {
             "type": "array",
             "description": "First rows."
+          },
+          "column_profiles": {
+            "type": "object",
+            "description": "Missing value and uniqueness profile by column."
           },
           "describe": {
             "type": "object",

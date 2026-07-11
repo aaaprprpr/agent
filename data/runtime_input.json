@@ -5,6 +5,5 @@
   "selected_memory_ids": ["mem_conversation_conv_000"],
   "use_global_memory": true,
   "toolset": "basic_tools",
-  "max_turns": 3,
   "save_memory": "conversation"
 }

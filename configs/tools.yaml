@@ -24,9 +24,10 @@ toolsets:
     - current_time
     - file_reader
     - local_file_search
-    - mcp_web_search
     - table_analyzer
     - format_converter
+  mcp_tools:
+    - mcp_web_search
 
 tools:
   calculator:

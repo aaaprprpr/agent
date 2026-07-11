@@ -1,6 +1,6 @@
 {
   "role": "assistant",
-  "content": "",
+  "content": "I will read the file first.",
   "tool_calls": [
     {
       "id": "call_001",
@@ -10,5 +10,10 @@
         "max_chars": 5000
       }
     }
-  ]
+  ],
+  "control": {
+    "state": "acting",
+    "action": "call_tools",
+    "reason": "need file contents"
+  }
 }

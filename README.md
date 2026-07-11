@@ -189,7 +189,7 @@ python b3_tool_layer.py --tools_config ../configs/tools.yaml --toolset basic_too
 python b3_tool_layer.py --tools_config ../configs/tools.yaml --toolset basic_tools --tool_calls ../data/messages/b3_tool_call_current_time.json --execute --outdir ../outputs/B3_tools/current_time
 python b3_tool_layer.py --tools_config ../configs/tools.yaml --toolset basic_tools --tool_calls ../data/messages/b3_tool_call_file_reader_docx.json --execute --outdir ../outputs/B3_tools/file_reader_docx
 python b3_tool_layer.py --tools_config ../configs/tools.yaml --toolset basic_tools --tool_calls ../data/messages/b3_tool_call_file_reader_pptx.json --execute --outdir ../outputs/B3_tools/file_reader_pptx
-python b3_tool_layer.py --tools_config ../configs/tools.yaml --toolset basic_tools --tool_calls ../data/messages/b3_tool_call_mcp_web_search.json --execute --outdir ../outputs/B3_tools/mcp_web_search
+python b3_tool_layer.py --tools_config ../configs/tools.yaml --toolset mcp_tools --tool_calls ../data/messages/b3_tool_call_mcp_web_search.json --execute --outdir ../outputs/B3_tools/mcp_web_search
 python b3_tool_layer.py --tools_config ../configs/tools.yaml --toolset basic_tools --tool_calls ../data/messages/b3_tool_call_unknown_tool.json --execute --outdir ../outputs/B3_tools/unknown_tool
 python b3_tool_layer.py --tools_config ../configs/tools.yaml --toolset basic_tools --tool_calls ../data/messages/b3_tool_call_missing_required.json --execute --outdir ../outputs/B3_tools/missing_required
 ```

@@ -19,22 +19,6 @@ from common.schemas import make_ai_message, validate_ai_message, validate_messag
 
 PARSE_ERROR_CONTENT = "模型输出解析失败，无法生成有效工具调用或最终回答。"
 _MODEL_CACHE: dict[tuple[str, ...], tuple[Any, Any]] = {}
-_CURRENT_TIME_PATTERNS = [
-    "现在几点",
-    "当前时间",
-    "现在时间",
-    "本地时间",
-    "北京时间",
-    "上海时间",
-    "utc时间",
-    "utctime",
-    "今天星期几",
-    "今天几号",
-    "今天是几号",
-    "今天日期",
-    "当前日期",
-    "现在日期",
-]
 
 
 def _load_model_config(model_config: str | Path) -> tuple[Path, dict]:
@@ -281,14 +265,11 @@ def _candidate_to_message(candidate: dict) -> tuple[dict, dict]:
     if "control" in candidate:
         message["control"] = candidate["control"]
     validate_ai_message(message)
-    has_content = bool(message["content"].strip())
-    has_tool_calls = bool(message["tool_calls"])
-    if has_content and has_tool_calls:
-        message["content"] = ""
-        has_content = False
-    if has_content == has_tool_calls:
-        raise ValueError("model output must contain either final content or tool calls, but not both")
-    parsed_candidate = {"content": message["content"], "tool_calls": message["tool_calls"]}
+    parsed_candidate = {
+        "content": message["content"],
+        "tool_calls": message["tool_calls"],
+        "control": message["control"],
+    }
     return parsed_candidate, message
 
 
@@ -304,61 +285,6 @@ def _parse_model_output(raw_text: str) -> tuple[dict, dict]:
             except Exception:
                 candidate = _parse_content_fragment(raw_text, exc)
     return _candidate_to_message(candidate)
-
-
-def _current_user_input_text(messages: list[dict]) -> str:
-    for message in reversed(messages):
-        if message.get("role") != "user":
-            continue
-        content = str(message.get("content", ""))
-        if "当前用户输入：" in content:
-            content = content.rsplit("当前用户输入：", 1)[-1]
-        return content.split("IMPORTANT OUTPUT FORMAT:", 1)[0].strip()
-    return ""
-
-
-def _has_tool_schema(tools_schema: list[dict], tool_name: str) -> bool:
-    for item in tools_schema:
-        function = item.get("function") if isinstance(item, dict) else None
-        if isinstance(function, dict) and function.get("name") == tool_name:
-            return True
-    return False
-
-
-def _is_current_time_request(text: str) -> bool:
-    compact = re.sub(r"\s+", "", text).lower()
-    if any(pattern in compact for pattern in _CURRENT_TIME_PATTERNS):
-        return True
-    return bool(re.search(r"(现在|当前|此刻).{0,8}(几点|时间|日期|星期)", compact))
-
-
-def _current_time_timezone(text: str) -> str:
-    compact = re.sub(r"\s+", "", text).lower()
-    if any(token in compact for token in ("上海", "北京", "北京时间", "中国时间", "asia/shanghai")):
-        return "Asia/Shanghai"
-    if "utc" in compact and not any(token in compact for token in ("本地", "local", "当地")):
-        return "UTC"
-    return "local"
-
-
-def _forced_current_time_message(messages: list[dict], tools_schema: list[dict]) -> dict | None:
-    if any(message.get("role") == "tool" for message in messages):
-        return None
-    if not _has_tool_schema(tools_schema, "current_time"):
-        return None
-    text = _current_user_input_text(messages)
-    if not _is_current_time_request(text):
-        return None
-    return make_ai_message(
-        "",
-        [
-            {
-                "id": "call_time_001",
-                "name": "current_time",
-                "args": {"timezone": _current_time_timezone(text)},
-            }
-        ],
-    )
 
 
 def _dtype_value(torch_module: Any, configured: str) -> Any:
@@ -528,11 +454,16 @@ def _build_prompt_messages(messages: list[dict], tools_schema: list[dict]) -> li
         "Do not output text outside the JSON object.\n"
         "Do not output code fences or backticks.\n"
         'The first output character must be "{" and the last output character must be "}".\n\n'
-        "Valid schema A:\n"
-        '{"content":"final answer text","tool_calls":[]}\n\n'
-        "Valid schema B:\n"
-        '{"content":"","tool_calls":[{"id":"call_001","name":"file_reader",'
-        '"args":{"path":"docs/agent_intro.txt","max_chars":2000}}]}\n\n'
+        "Successful final-answer example:\n"
+        '{"content":"final answer text","tool_calls":[],"control":'
+        '{"state":"completed","action":"finish","reason":"task completed"}}\n\n'
+        "Failed final-answer example:\n"
+        '{"content":"I need the missing filename before I can continue.","tool_calls":[],"control":'
+        '{"state":"failed","action":"finish","reason":"required filename is missing"}}\n\n'
+        "Tool-call example:\n"
+        '{"content":"I will read the file first.","tool_calls":[{"id":"call_001","name":"file_reader",'
+        '"args":{"path":"docs/agent_intro.txt","max_chars":2000}}],"control":'
+        '{"state":"acting","action":"call_tools","reason":"need file contents"}}\n\n'
         "The top-level keys must be exactly:\n"
         "- content: string\n"
         "- tool_calls: array\n"
@@ -793,10 +724,6 @@ def generate_ai_message(
             raw_text = _fastapi_prompt_json_generate(config_path, config, messages, tools_schema)
         try:
             parsed_candidate, ai_message = _parse_model_output(raw_text)
-            forced_message = _forced_current_time_message(messages, tools_schema)
-            if forced_message is not None and not ai_message["tool_calls"]:
-                ai_message = forced_message
-                parsed_candidate = {"content": "", "tool_calls": ai_message["tool_calls"]}
             status = "success"
             error = None
         except Exception as exc:
@@ -861,19 +788,17 @@ def stream_ai_message(
             yield {"type": "delta", "text": ai_message["content"]}
     elif mode == "prompt_json":
         prompt_messages = _build_prompt_messages(messages, tools_schema)
-        suppress_content_stream = _forced_current_time_message(messages, tools_schema) is not None
         if source == "fastapi":
             raw_parts = []
             emitted_chars = 0
             for chunk in _fastapi_prompt_json_stream(config_path, config, messages, tools_schema):
                 raw_parts.append(chunk)
-                if not suppress_content_stream:
-                    content = _streaming_content_prefix("".join(raw_parts))
-                    if len(content) > emitted_chars:
-                        delta = content[emitted_chars:]
-                        emitted_chars = len(content)
-                        if delta:
-                            yield {"type": "delta", "text": delta}
+                content = _streaming_content_prefix("".join(raw_parts))
+                if len(content) > emitted_chars:
+                    delta = content[emitted_chars:]
+                    emitted_chars = len(content)
+                    if delta:
+                        yield {"type": "delta", "text": delta}
             raw_text = "".join(raw_parts)
         elif source == "local":
             raw_text = _prompt_json_generate(config_path, config, messages, tools_schema)
@@ -881,11 +806,7 @@ def stream_ai_message(
             raise ValueError("runtime.llm_source must be local or fastapi")
         try:
             parsed_candidate, ai_message = _parse_model_output(raw_text)
-            forced_message = _forced_current_time_message(messages, tools_schema)
-            if forced_message is not None and not ai_message["tool_calls"]:
-                ai_message = forced_message
-                parsed_candidate = {"content": "", "tool_calls": ai_message["tool_calls"]}
-            if (source == "local" or suppress_content_stream) and ai_message["content"]:
+            if source == "local" and ai_message["content"]:
                 yield {"type": "delta", "text": ai_message["content"]}
         except Exception as exc:
             ai_message = make_ai_message(PARSE_ERROR_CONTENT, [])
