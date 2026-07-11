@@ -182,8 +182,18 @@ def _validate_messages(messages: Any) -> list[dict[str, Any]]:
         role = message.get("role")
         if role not in {"system", "user", "assistant", "tool"}:
             raise ValueError(f"message {index} has invalid role: {role}")
-        if not isinstance(message.get("content", ""), str):
-            raise ValueError(f"message {index} content must be a string")
+        content = message.get("content", "")
+        if isinstance(content, str):
+            continue
+        if not isinstance(content, list) or not content:
+            raise ValueError(f"message {index} content must be a string or non-empty content block array")
+        for block_index, block in enumerate(content):
+            if not isinstance(block, dict) or block.get("type") not in {"text", "image"}:
+                raise ValueError(f"message {index} content block {block_index} must be text or image")
+            if block["type"] == "text" and not isinstance(block.get("text"), str):
+                raise ValueError(f"message {index} text block {block_index} requires text")
+            if block["type"] == "image" and not isinstance(block.get("url"), str):
+                raise ValueError(f"message {index} image block {block_index} requires url")
     return messages
 
 
@@ -281,7 +291,7 @@ class RawModelServer:
 
             try:
                 import torch
-                from transformers import AutoModelForCausalLM, AutoTokenizer
+                from transformers import AutoModelForMultimodalLM, AutoProcessor
             except ImportError as exc:
                 raise RuntimeError("install torch and transformers before starting the server") from exc
 
@@ -301,8 +311,8 @@ class RawModelServer:
 
             dtype = _dtype_value(torch, str(model_config.get("torch_dtype", "auto")))
             tokenizer, model = _load_model_bundle(
-                AutoModelForCausalLM,
-                AutoTokenizer,
+                AutoModelForMultimodalLM,
+                AutoProcessor,
                 model_path,
                 tokenizer_path,
                 bool(model_config.get("local_files_only", True)),
@@ -319,20 +329,18 @@ class RawModelServer:
             return tokenizer, model, torch
 
     def generate(self, messages: list[dict[str, Any]], options: dict[str, Any]) -> dict[str, Any]:
-        tokenizer, model, torch = self.load()
+        processor, model, torch = self.load()
         with self._generate_lock:
-            inputs = self._apply_chat_template(tokenizer, messages)
+            inputs = self._apply_chat_template(processor, messages)
             device = next(model.parameters()).device
             inputs = inputs.to(device)
             input_length = int(inputs["input_ids"].shape[-1])
-            if getattr(tokenizer, "pad_token_id", None) is not None:
-                options.setdefault("pad_token_id", tokenizer.pad_token_id)
-            elif getattr(tokenizer, "eos_token_id", None) is not None:
-                options.setdefault("pad_token_id", tokenizer.eos_token_id)
+            tokenizer = self._text_tokenizer(processor)
+            self._ensure_pad_token(tokenizer, options)
             with torch.no_grad():
                 generated = model.generate(**inputs, **options)
             new_tokens = generated[0][input_length:]
-            raw_text = tokenizer.decode(new_tokens, skip_special_tokens=True)
+            raw_text = self._decode(processor, new_tokens)
             return {
                 "raw_text": raw_text,
                 "usage": {
@@ -343,7 +351,7 @@ class RawModelServer:
             }
 
     def generate_batch(self, requests: list[dict[str, Any]], batch_size: int) -> dict[str, Any]:
-        tokenizer, model, torch = self.load()
+        processor, model, torch = self.load()
         results: list[dict[str, Any] | None] = [None] * len(requests)
         grouped: dict[str, dict[str, Any]] = {}
         for item in requests:
@@ -357,7 +365,7 @@ class RawModelServer:
                 items = group["items"]
                 for start in range(0, len(items), batch_size):
                     chunk = items[start : start + batch_size]
-                    chunk_results = self._generate_batch_same_options(tokenizer, model, torch, chunk, dict(options))
+                    chunk_results = self._generate_batch_same_options(processor, model, torch, chunk, dict(options))
                     for result in chunk_results:
                         usage = result.get("usage", {})
                         total_usage["prompt_tokens"] += int(usage.get("prompt_tokens", 0))
@@ -375,13 +383,14 @@ class RawModelServer:
 
     def _generate_batch_same_options(
         self,
-        tokenizer: Any,
+        processor: Any,
         model: Any,
         torch: Any,
         items: list[dict[str, Any]],
         options: dict[str, Any],
     ) -> list[dict[str, Any]]:
-        prompts = [self._render_chat_prompt(tokenizer, item["messages"]) for item in items]
+        prompts = [self._render_chat_prompt(processor, item["messages"]) for item in items]
+        tokenizer = self._text_tokenizer(processor)
         self._ensure_pad_token(tokenizer, options)
         old_padding_side = getattr(tokenizer, "padding_side", None)
         if old_padding_side is not None:
@@ -407,7 +416,7 @@ class RawModelServer:
         results = []
         for row_index, item in enumerate(items):
             new_tokens = generated[row_index][prompt_width:]
-            raw_text = tokenizer.decode(new_tokens, skip_special_tokens=True)
+            raw_text = self._decode(processor, new_tokens)
             if pad_token_id is None:
                 completion_tokens = int(new_tokens.shape[-1])
             else:
@@ -428,20 +437,18 @@ class RawModelServer:
         return results
 
     def generate_stream(self, messages: list[dict[str, Any]], options: dict[str, Any]) -> Iterator[str]:
-        tokenizer, model, torch = self.load()
+        processor, model, torch = self.load()
         try:
             from transformers import TextIteratorStreamer
         except ImportError as exc:
             raise RuntimeError("transformers TextIteratorStreamer is required for streaming") from exc
 
         with self._generate_lock:
-            inputs = self._apply_chat_template(tokenizer, messages)
+            inputs = self._apply_chat_template(processor, messages)
             device = next(model.parameters()).device
             inputs = inputs.to(device)
-            if getattr(tokenizer, "pad_token_id", None) is not None:
-                options.setdefault("pad_token_id", tokenizer.pad_token_id)
-            elif getattr(tokenizer, "eos_token_id", None) is not None:
-                options.setdefault("pad_token_id", tokenizer.eos_token_id)
+            tokenizer = self._text_tokenizer(processor)
+            self._ensure_pad_token(tokenizer, options)
 
             streamer = TextIteratorStreamer(
                 tokenizer,
@@ -481,6 +488,16 @@ class RawModelServer:
                     yield chunk
             if errors:
                 yield f"\n[stream_error] {type(errors[0]).__name__}: {errors[0]}"
+
+    @staticmethod
+    def _text_tokenizer(processor: Any) -> Any:
+        return getattr(processor, "tokenizer", processor)
+
+    @classmethod
+    def _decode(cls, processor: Any, tokens: Any) -> str:
+        if hasattr(processor, "decode"):
+            return processor.decode(tokens, skip_special_tokens=True)
+        return cls._text_tokenizer(processor).decode(tokens, skip_special_tokens=True)
 
     @staticmethod
     def _apply_chat_template(tokenizer: Any, messages: list[dict[str, Any]]) -> Any:

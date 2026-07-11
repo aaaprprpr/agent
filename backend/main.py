@@ -61,6 +61,18 @@ SUPPORTED_UPLOAD_SUFFIXES = {
     ".log",
     ".docx",
     ".pptx",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".webp",
+    ".gif",
+}
+IMAGE_MIME_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
 }
 
 
@@ -213,12 +225,13 @@ def _save_run_uploads(conversation_id: str, files: list[UploadFilePayload]) -> l
 
 
 def _user_input_with_uploaded_files(user_input: str, files: list[UploadedFileRef]) -> str:
-    if not files:
+    readable_files = [file for file in files if Path(file.path).suffix.lower() not in IMAGE_MIME_TYPES]
+    if not readable_files:
         return user_input
     lines = [
         "本次用户上传了以下文件。调用文件工具时，path 必须原样使用这里给出的规范路径：",
     ]
-    for file in files:
+    for file in readable_files:
         lines.append(f"- path: {file.path}")
     lines.extend(
         [
@@ -229,6 +242,26 @@ def _user_input_with_uploaded_files(user_input: str, files: list[UploadedFileRef
         ]
     )
     return "\n".join(lines)
+
+
+def _uploaded_image_data_urls(files: list[UploadedFileRef]) -> list[str]:
+    data_root = (PROJECT_ROOT / "data").resolve()
+    images = []
+    for file in files:
+        suffix = Path(file.path).suffix.lower()
+        mime_type = IMAGE_MIME_TYPES.get(suffix)
+        if mime_type is None:
+            continue
+        source = (data_root / file.path).resolve()
+        try:
+            source.relative_to(data_root)
+        except ValueError as exc:
+            raise ValueError(f"uploaded image path escapes data root: {file.path}") from exc
+        if not source.is_file():
+            raise FileNotFoundError(f"uploaded image not found: {file.path}")
+        encoded = base64.b64encode(source.read_bytes()).decode("ascii")
+        images.append(f"data:{mime_type};base64,{encoded}")
+    return images
 
 
 def _now_stamp() -> str:
@@ -401,6 +434,7 @@ def _build_runtime_payload(
     conversation_id: str,
     user_input: str,
     history_messages: list[dict],
+    input_images: list[str],
 ) -> dict:
     # Web chat uses SQLite as the primary memory store. Legacy markdown memory
     # remains independently testable, but its documents are not injected into
@@ -411,6 +445,7 @@ def _build_runtime_payload(
         "conversation_id": conversation_id,
         "user_input": user_input,
         "history_messages": history_messages,
+        "input_images": input_images,
         "system_prompt_path": SYSTEM_PROMPT_PATH,
         "selected_memory_ids": selected_memory_ids,
         "use_global_memory": use_global_memory,
@@ -530,8 +565,9 @@ def _call_agent(request: RunRequest) -> RunResponse:
         *_save_run_uploads(conversation_id, request.uploaded_file_payloads),
     ]
     agent_user_input = _user_input_with_uploaded_files(raw_user_input, uploaded_refs)
+    input_images = _uploaded_image_data_urls(uploaded_refs)
     runtime_payload = _build_runtime_payload(
-        request, conversation_id, agent_user_input, history_messages
+        request, conversation_id, agent_user_input, history_messages, input_images
     )
     run_id = _now_stamp()
     user_message_id, assistant_message_id = _start_run_messages(
@@ -603,8 +639,9 @@ def _stream_agent(request: RunRequest) -> Iterator[str]:
         *_save_run_uploads(conversation_id, request.uploaded_file_payloads),
     ]
     agent_user_input = _user_input_with_uploaded_files(raw_user_input, uploaded_refs)
+    input_images = _uploaded_image_data_urls(uploaded_refs)
     runtime_payload = _build_runtime_payload(
-        request, conversation_id, agent_user_input, history_messages
+        request, conversation_id, agent_user_input, history_messages, input_images
     )
     run_id = _now_stamp()
     user_message_id, assistant_message_id = _start_run_messages(
@@ -751,6 +788,19 @@ def _stream_agent(request: RunRequest) -> Iterator[str]:
         )
 
 
+def _safe_stream_agent(request: RunRequest) -> Iterator[str]:
+    try:
+        yield from _stream_agent(request)
+    except Exception as exc:
+        yield _stream_event(
+            {
+                "type": "error",
+                "conversation_id": request.conversation_id,
+                "message": f"{type(exc).__name__}: {exc}",
+            }
+        )
+
+
 @app.get("/api/health")
 def health() -> dict:
     return {
@@ -833,7 +883,7 @@ async def run_agent_stream(request: RunRequest) -> StreamingResponse:
     if not request.user_input.strip():
         raise HTTPException(status_code=400, detail="user_input is required")
     return StreamingResponse(
-        _stream_agent(request),
+        _safe_stream_agent(request),
         media_type="application/x-ndjson; charset=utf-8",
     )
 

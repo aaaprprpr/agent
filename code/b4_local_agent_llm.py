@@ -540,6 +540,15 @@ def _build_prompt_messages(messages: list[dict], tools_schema: list[dict]) -> li
                 ),
             }
         )
+    for message in prompt_messages:
+        images = message.pop("images", [])
+        if not images:
+            continue
+        text_content = message.get("content", "")
+        message["content"] = [
+            *({"type": "image", "url": image_url} for image_url in images),
+            {"type": "text", "text": text_content},
+        ]
     return prompt_messages
 
 

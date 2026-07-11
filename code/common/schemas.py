@@ -168,6 +168,11 @@ def validate_messages(messages: Any) -> list[dict]:
             raise ValueError(f"message {index} has invalid role: {role}")
         if not isinstance(message.get("content", ""), str):
             raise ValueError(f"message {index} content must be a string")
+        images = message.get("images", [])
+        if not isinstance(images, list) or not all(isinstance(item, str) and item.startswith("data:image/") for item in images):
+            raise ValueError(f"message {index} images must be an array of image data URLs")
+        if images and role != "user":
+            raise ValueError(f"message {index} images are only supported on user messages")
         if role == "assistant":
             message.setdefault("tool_calls", [])
             validate_ai_message(message)

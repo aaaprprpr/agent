@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { ChangeEvent, ClipboardEvent, DragEvent, KeyboardEvent } from 'react'
-import { File, FileCode2, FileJson, FileSpreadsheet, FileText, Presentation } from 'lucide-react'
+import { File, FileCode2, FileJson, FileSpreadsheet, FileText, Image, Presentation } from 'lucide-react'
 import './App.css'
 
 type Role = 'user' | 'assistant' | 'tool'
@@ -157,6 +157,7 @@ function prettyJson(value: unknown) {
 function FileTypeIcon({ name }: { name: string }) {
   const extension = name.split('.').pop()?.toLowerCase() ?? ''
   const Icon = (() => {
+    if (['png', 'jpg', 'jpeg', 'webp', 'gif'].includes(extension)) return Image
     if (['csv', 'tsv', 'xls', 'xlsx'].includes(extension)) return FileSpreadsheet
     if (['ppt', 'pptx'].includes(extension)) return Presentation
     if (['json', 'jsonl'].includes(extension)) return FileJson
@@ -671,6 +672,7 @@ function App() {
                   body: finalAnswer,
                   status: undefined,
                   toolDetails: savedToolDetails.length > 0 ? savedToolDetails : message.toolDetails,
+                  toolPanelOpen: false,
                 }
               : message,
           ),

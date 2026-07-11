@@ -30,6 +30,11 @@ def _validate_runtime_input(payload: dict) -> dict:
     if payload["save_memory"] not in {"none", "conversation", "global"}:
         raise ValueError("save_memory must be none, conversation, or global")
     payload["history_messages"] = normalize_history_messages(payload.get("history_messages", []))
+    input_images = payload.setdefault("input_images", [])
+    if not isinstance(input_images, list) or not all(
+        isinstance(item, str) and item.startswith("data:image/") for item in input_images
+    ):
+        raise ValueError("input_images must be an array of image data URLs")
     if execution_mode == "fixture":
         fixtures = payload.get("fixtures")
         if not isinstance(fixtures, dict):
@@ -170,10 +175,13 @@ def run(
         )
         tools_schema = get_tools_schema(str(tools_file), runtime["toolset"], str(output_dir))
         mode = llm_mode or _default_llm_mode(model_file)
+    current_user_message = {"role": "user", "content": runtime["user_input"]}
+    if runtime["input_images"]:
+        current_user_message["images"] = runtime["input_images"]
     messages = [
         {"role": "system", "content": system_prompt},
         *runtime["history_messages"],
-        {"role": "user", "content": runtime["user_input"]},
+        current_user_message,
     ]
     tool_rounds = 0
     llm_calls = 0
@@ -401,10 +409,13 @@ def run_stream(
         )
         tools_schema = get_tools_schema(str(tools_file), runtime["toolset"], str(output_dir))
         mode = llm_mode or _default_llm_mode(model_file)
+    current_user_message = {"role": "user", "content": runtime["user_input"]}
+    if runtime["input_images"]:
+        current_user_message["images"] = runtime["input_images"]
     messages = [
         {"role": "system", "content": system_prompt},
         *runtime["history_messages"],
-        {"role": "user", "content": runtime["user_input"]},
+        current_user_message,
     ]
     tool_rounds = 0
     llm_calls = 0
