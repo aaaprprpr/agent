@@ -21,3 +21,4 @@ tqdm==4.68.3
 fastapi
 uvicorn
 mcp>=1.27,<2
+ddgs[mcp]>=9.14,<10

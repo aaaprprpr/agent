@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import codecs
 import json
-import re
 import sys
 import urllib.error
 import urllib.request
@@ -116,7 +115,20 @@ def _extract_tool_result(message: dict) -> dict:
 
 
 def _three_points(text: str) -> list[str]:
-    parts = [part.strip(" \t\r\n。") for part in re.split(r"\n+|(?<=[。！？!?])", text) if part.strip()]
+    parts = []
+    current = []
+    strip_chars = " \t\r\n。！？!?"
+    for char in text:
+        current.append(char)
+        if char in "\r\n。！？!?":
+            part = "".join(current).strip(strip_chars)
+            if part:
+                parts.append(part)
+            current = []
+    tail = "".join(current).strip(strip_chars)
+    if tail:
+        parts.append(tail)
+
     points = []
     for part in parts:
         if part not in points:
@@ -205,37 +217,29 @@ def _decode_partial_json_string(fragment: str) -> str:
     return fragment
 
 
-def _parse_content_fragment(raw_text: str, original_error: json.JSONDecodeError) -> dict:
-    match = re.search(r'"content"\s*:\s*"', raw_text)
-    if not match:
-        raise original_error
-    chars = []
-    escaped = False
-    for char in raw_text[match.end() :]:
-        if escaped:
-            chars.append(char)
-            escaped = False
-            continue
-        if char == "\\":
-            chars.append(char)
-            escaped = True
-            continue
-        if char == '"':
-            break
-        chars.append(char)
-    content = _decode_partial_json_string("".join(chars)).strip()
-    if not content:
-        raise original_error
-    return {"content": content, "tool_calls": []}
+def _json_string_value_start(raw_text: str, key: str) -> int:
+    key_token = json.dumps(key, ensure_ascii=False)
+    search_from = 0
+    while True:
+        key_index = raw_text.find(key_token, search_from)
+        if key_index == -1:
+            return -1
+        cursor = key_index + len(key_token)
+        while cursor < len(raw_text) and raw_text[cursor].isspace():
+            cursor += 1
+        if cursor < len(raw_text) and raw_text[cursor] == ":":
+            cursor += 1
+            while cursor < len(raw_text) and raw_text[cursor].isspace():
+                cursor += 1
+            if cursor < len(raw_text) and raw_text[cursor] == '"':
+                return cursor + 1
+        search_from = key_index + 1
 
 
-def _streaming_content_prefix(raw_text: str) -> str:
-    match = re.search(r'"content"\s*:\s*"', raw_text)
-    if not match:
-        return ""
+def _partial_json_string(raw_text: str, start_index: int) -> str:
     chars = []
     escaped = False
-    for char in raw_text[match.end() :]:
+    for char in raw_text[start_index:]:
         if escaped:
             chars.append(char)
             escaped = False
@@ -250,6 +254,23 @@ def _streaming_content_prefix(raw_text: str) -> str:
     return _decode_partial_json_string("".join(chars))
 
 
+def _parse_content_fragment(raw_text: str, original_error: json.JSONDecodeError) -> dict:
+    value_start = _json_string_value_start(raw_text, "content")
+    if value_start == -1:
+        raise original_error
+    content = _partial_json_string(raw_text, value_start).strip()
+    if not content:
+        raise original_error
+    return {"content": content, "tool_calls": []}
+
+
+def _streaming_content_prefix(raw_text: str) -> str:
+    value_start = _json_string_value_start(raw_text, "content")
+    if value_start == -1:
+        return ""
+    return _partial_json_string(raw_text, value_start)
+
+
 def _candidate_to_message(candidate: dict) -> tuple[dict, dict]:
     if not isinstance(candidate, dict):
         raise ValueError("model output JSON must be an object")
@@ -257,13 +278,25 @@ def _candidate_to_message(candidate: dict) -> tuple[dict, dict]:
     unknown_keys = set(candidate) - expected_keys
     if unknown_keys:
         raise ValueError(f"model output JSON contains unknown keys: {', '.join(sorted(unknown_keys))}")
+    content = candidate.get("content", "")
+    tool_calls = candidate.get("tool_calls", [])
+    control = candidate.get("control")
+    if (
+        isinstance(control, dict)
+        and control.get("action") == "finish"
+        and isinstance(content, str)
+        and content.strip()
+        and isinstance(tool_calls, list)
+        and tool_calls
+    ):
+        tool_calls = []
     message = {
         "role": "assistant",
-        "content": candidate.get("content", ""),
-        "tool_calls": candidate.get("tool_calls", []),
+        "content": content,
+        "tool_calls": tool_calls,
     }
-    if "control" in candidate:
-        message["control"] = candidate["control"]
+    if control is not None:
+        message["control"] = control
     validate_ai_message(message)
     parsed_candidate = {
         "content": message["content"],
@@ -468,9 +501,15 @@ def _build_prompt_messages(messages: list[dict], tools_schema: list[dict]) -> li
         "- content: string\n"
         "- tool_calls: array\n"
         "- control: object with exactly state, action, and reason\n\n"
+        "Choose tools from the available schema when the user request requires runtime, local, "
+        "external, or computed information that the model should not invent. This includes current "
+        "time/date, local or uploaded file contents, web search/live information, and calculations.\n"
+        "Do not say a needed capability is unavailable if a matching tool exists in the available schema; "
+        "call the matching tool first and answer after its ToolMessage.\n"
         "Use action call_tools with non-empty tool_calls and state acting or replanning.\n"
         "After ToolMessages, analyze progress and either call tools again with state replanning or finish.\n"
         "Use action finish with empty tool_calls and state completed or failed.\n"
+        "When finishing after a ToolMessage, do not repeat previous tool calls; set tool_calls to [].\n"
         "A failed state must include a concrete reason.\n"
         "Never put tool_calls inside content.\n"
         'Never output {"content":"tool_calls": ...}.'
@@ -482,6 +521,7 @@ def _build_prompt_messages(messages: list[dict], tools_schema: list[dict]) -> li
         'Use exactly the top-level keys "content" (string), "tool_calls" (array), and "control" (object). '
         "Set control.action to call_tools when requesting tools, or finish when ending the loop. "
         "Set control.state to acting, replanning, completed, or failed. "
+        "When finishing, set tool_calls to [] and do not repeat previous tool calls. "
         "When finishing after failure, include the reason in control.reason. "
         'Never put tool_calls inside content. Never output {"content":"tool_calls": ...}.'
     )

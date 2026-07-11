@@ -86,8 +86,39 @@
   {
     "type": "function",
     "function": {
+      "name": "mcp_web_search",
+      "description": "Search the web through a configured MCP search server. Use this for internet search, live news, recent events, current external information, or topics not contained in local files.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {"type": "string", "description": "Web search query."},
+          "top_k": {"type": "integer", "description": "Maximum number of results requested from the MCP search tool."}
+        },
+        "required": ["query"],
+        "additionalProperties": false
+      },
+      "x-returns": {
+        "type": "object",
+        "properties": {
+          "query": {"type": "string", "description": "Original search query."},
+          "top_k": {"type": "integer", "description": "Requested result count."},
+          "mcp_config": {"type": "string", "description": "MCP configuration file used by the bridge."},
+          "mcp_tool_name": {"type": "string", "description": "MCP tool invoked."},
+          "mcp_arguments": {"type": "object", "description": "Arguments sent to the successful or final MCP tool attempt."},
+          "mcp_attempt_count": {"type": "integer", "description": "Number of MCP search attempts performed."},
+          "mcp_attempts": {"type": "array", "description": "MCP search attempts tried, including fallback attempts and error text."},
+          "structured_content": {"type": "object", "description": "Structured content returned by the MCP server when available."},
+          "text": {"type": "string", "description": "Text content returned by the MCP server."},
+          "is_error": {"type": "boolean", "description": "Whether the MCP tool reported an error."}
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
       "name": "local_file_search",
-      "description": "Search local txt and md files for query terms.",
+      "description": "Search local text-like files under allowed workspace roots for query terms. This is only for local project files; do not use it for web, internet, live news, or current external information.",
       "parameters": {
         "type": "object",
         "properties": {
