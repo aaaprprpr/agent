@@ -271,7 +271,27 @@ def _streaming_content_prefix(raw_text: str) -> str:
     return _partial_json_string(raw_text, value_start)
 
 
-def _candidate_to_message(candidate: dict) -> tuple[dict, dict]:
+def _normalize_control_tool_conflict(message: dict, has_tool_messages: bool) -> None:
+    control = message.get("control")
+    tool_calls = message.get("tool_calls")
+    if not isinstance(control, dict) or not isinstance(tool_calls, list) or not tool_calls:
+        return
+    if control.get("action") != "finish":
+        return
+    if has_tool_messages:
+        message["tool_calls"] = []
+        return
+    normalized = dict(control)
+    normalized["action"] = "call_tools"
+    if normalized.get("state") not in {"acting", "replanning"}:
+        normalized["state"] = "acting"
+    reason = normalized.get("reason")
+    if not isinstance(reason, str) or not reason.strip():
+        normalized["reason"] = "tool call requested"
+    message["control"] = normalized
+
+
+def _candidate_to_message(candidate: dict, has_tool_messages: bool = False) -> tuple[dict, dict]:
     if not isinstance(candidate, dict):
         raise ValueError("model output JSON must be an object")
     expected_keys = {"content", "tool_calls", "control"}
@@ -285,6 +305,7 @@ def _candidate_to_message(candidate: dict) -> tuple[dict, dict]:
     }
     if "control" in candidate:
         message["control"] = candidate["control"]
+    _normalize_control_tool_conflict(message, has_tool_messages)
     validate_ai_message(message)
     parsed_candidate = {
         "content": message["content"],
@@ -294,7 +315,7 @@ def _candidate_to_message(candidate: dict) -> tuple[dict, dict]:
     return parsed_candidate, message
 
 
-def _parse_model_output(raw_text: str) -> tuple[dict, dict]:
+def _parse_model_output(raw_text: str, has_tool_messages: bool = False) -> tuple[dict, dict]:
     try:
         candidate = json.loads(raw_text.strip())
     except json.JSONDecodeError as exc:
@@ -305,7 +326,7 @@ def _parse_model_output(raw_text: str) -> tuple[dict, dict]:
                 candidate = _parse_tool_calls_fragment(raw_text, exc)
             except Exception:
                 candidate = _parse_content_fragment(raw_text, exc)
-    return _candidate_to_message(candidate)
+    return _candidate_to_message(candidate, has_tool_messages)
 
 
 def _dtype_value(torch_module: Any, configured: str) -> Any:
@@ -485,6 +506,16 @@ def _build_prompt_messages(messages: list[dict], tools_schema: list[dict]) -> li
         '{"content":"I will read the file first.","tool_calls":[{"id":"call_001","name":"file_reader",'
         '"args":{"path":"docs/agent_intro.txt","max_chars":2000}}],"control":'
         '{"state":"acting","action":"call_tools","reason":"need file contents"}}\n\n'
+        "File-writer tool-call example:\n"
+        '{"content":"I will create the requested markdown file.","tool_calls":[{"id":"call_001",'
+        '"name":"file_writer","args":{"filename":"interview_tips.md","file_type":"markdown",'
+        '"content":"# Interview Tips\\n\\n- Prepare concise examples.\\n- Review the role requirements."}}],'
+        '"control":{"state":"acting","action":"call_tools","reason":"create requested file"}}\n\n'
+        "Code-file tool-call example:\n"
+        '{"content":"I will create the requested C source file.","tool_calls":[{"id":"call_001",'
+        '"name":"file_writer","args":{"filename":"hello_world.c","file_type":"code",'
+        '"content":"int main(void) {\\n    return 0;\\n}\\n"}}],'
+        '"control":{"state":"acting","action":"call_tools","reason":"create requested code file"}}\n\n'
         "The top-level keys must be exactly:\n"
         "- content: string\n"
         "- tool_calls: array\n"
@@ -494,7 +525,11 @@ def _build_prompt_messages(messages: list[dict], tools_schema: list[dict]) -> li
         "time/date, local or uploaded file contents, web search/live information, and calculations.\n"
         "Do not say a needed capability is unavailable if a matching tool exists in the available schema; "
         "call the matching tool first and answer after its ToolMessage.\n"
+        "For file-generation requests, the first response must call file_writer. Inline code, markdown, "
+        "or document text with empty tool_calls does not create a file and is not a valid completion.\n"
         "Use action call_tools with non-empty tool_calls and state acting or replanning.\n"
+        "If tool_calls is non-empty, control.action must be call_tools; never use action finish with non-empty tool_calls.\n"
+        "For file generation requests, call file_writer and wait for its ToolMessage before reporting the generated path.\n"
         "After ToolMessages, analyze progress and either call tools again with state replanning or finish.\n"
         "Use action finish with empty tool_calls and state completed or failed.\n"
         "When finishing after a ToolMessage, do not repeat previous tool calls; set tool_calls to [].\n"
@@ -509,6 +544,9 @@ def _build_prompt_messages(messages: list[dict], tools_schema: list[dict]) -> li
         'Use exactly the top-level keys "content" (string), "tool_calls" (array), and "control" (object). '
         "Set control.action to call_tools when requesting tools, or finish when ending the loop. "
         "Set control.state to acting, replanning, completed, or failed. "
+        "If the current user asks to create, generate, or write a file, call file_writer before finishing. "
+        "Inline file contents with empty tool_calls do not create a file. "
+        "If tool_calls is non-empty, set control.action to call_tools and do not set it to finish. "
         "When finishing, set tool_calls to [] and do not repeat previous tool calls. "
         "When finishing after failure, include the reason in control.reason. "
         'Never put tool_calls inside content. Never output {"content":"tool_calls": ...}.'
@@ -760,7 +798,10 @@ def generate_ai_message(
         else:
             raw_text = _fastapi_prompt_json_generate(config_path, config, messages, tools_schema)
         try:
-            parsed_candidate, ai_message = _parse_model_output(raw_text)
+            parsed_candidate, ai_message = _parse_model_output(
+                raw_text,
+                any(message.get("role") == "tool" for message in messages),
+            )
             status = "success"
             error = None
         except Exception as exc:
@@ -842,7 +883,10 @@ def stream_ai_message(
         else:
             raise ValueError("runtime.llm_source must be local or fastapi")
         try:
-            parsed_candidate, ai_message = _parse_model_output(raw_text)
+            parsed_candidate, ai_message = _parse_model_output(
+                raw_text,
+                any(message.get("role") == "tool" for message in messages),
+            )
             if source == "local" and ai_message["content"]:
                 yield {"type": "delta", "text": ai_message["content"]}
         except Exception as exc:
