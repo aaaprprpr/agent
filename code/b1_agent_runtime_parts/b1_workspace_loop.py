@@ -24,6 +24,7 @@ from .b1_workspace import (
     _merge_unique,
     _record_no_tool_action,
     _record_stage,
+    _required_outputs_pending,
     _workspace_from_runtime,
 )
 
@@ -137,6 +138,22 @@ def _has_successful_tool_result(tool_messages: list[dict] | None) -> bool:
         if isinstance(message, dict) and message.get("status") == "success":
             return True
     return False
+
+
+def _apply_observation_next_stage(workspace: dict, observation: dict) -> str:
+    next_stage = str(observation.get("next_stage") or "answering")
+    if next_stage == "answering":
+        pending_outputs = _required_outputs_pending(workspace)
+        if pending_outputs:
+            next_stage = "tool_calling"
+            _merge_unique(workspace["draft"]["missing_info"], ["用户要求生成文件，但还没有成功的文件产物。"])
+            _merge_unique(
+                workspace["tools"]["rejected_evidence"],
+                ["观察阶段试图进入最终回答，但必需文件产物尚未生成。"],
+            )
+    workspace["task"]["stage"] = next_stage
+    workspace["task"]["reason"] = str(observation.get("reason") or "")
+    return next_stage
 
 
 def _workspace_parse_failure(
@@ -389,6 +406,8 @@ def _run_workspace(
         {
             "user_goal": str(plan.get("user_goal") or runtime["user_input"]),
             "requirements": _as_string_list(plan.get("requirements")),
+            "success_criteria": _as_string_list(plan.get("success_criteria")),
+            "required_outputs": plan.get("required_outputs") if isinstance(plan.get("required_outputs"), list) else [],
             "plan": str(plan.get("plan") or ""),
             "stage": str(plan.get("next_stage") or "answering"),
             "reason": str(plan.get("reason") or ""),
@@ -539,9 +558,7 @@ def _run_workspace(
         _merge_unique(workspace["draft"]["known_facts"], observation.get("known_facts"))
         _merge_unique(workspace["draft"]["missing_info"], observation.get("missing_info"))
         workspace["tools"]["observations"].append(str(observation.get("observation") or ""))
-        next_stage = str(observation.get("next_stage") or "answering")
-        workspace["task"]["stage"] = next_stage
-        workspace["task"]["reason"] = str(observation.get("reason") or "")
+        next_stage = _apply_observation_next_stage(workspace, observation)
         _record_stage(workspace, "observation", observation)
         observation_ai_message = make_ai_message(
             str(observation.get("observation") or observation.get("reason") or "已观察工具结果。"),
@@ -746,6 +763,8 @@ def _run_workspace_stream(
         {
             "user_goal": str(plan.get("user_goal") or runtime["user_input"]),
             "requirements": _as_string_list(plan.get("requirements")),
+            "success_criteria": _as_string_list(plan.get("success_criteria")),
+            "required_outputs": plan.get("required_outputs") if isinstance(plan.get("required_outputs"), list) else [],
             "plan": str(plan.get("plan") or ""),
             "stage": str(plan.get("next_stage") or "answering"),
             "reason": str(plan.get("reason") or ""),
@@ -935,9 +954,7 @@ def _run_workspace_stream(
         _merge_unique(workspace["draft"]["known_facts"], observation.get("known_facts"))
         _merge_unique(workspace["draft"]["missing_info"], observation.get("missing_info"))
         workspace["tools"]["observations"].append(str(observation.get("observation") or ""))
-        next_stage = str(observation.get("next_stage") or "answering")
-        workspace["task"]["stage"] = next_stage
-        workspace["task"]["reason"] = str(observation.get("reason") or "")
+        next_stage = _apply_observation_next_stage(workspace, observation)
         _record_stage(workspace, "observation", observation)
         observation_ai_message = make_ai_message(
             str(observation.get("observation") or observation.get("reason") or "已观察工具结果。"),

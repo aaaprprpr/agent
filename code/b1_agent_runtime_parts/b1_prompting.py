@@ -5,6 +5,8 @@ from copy import deepcopy
 
 from .b1_workspace import (
     _memory_overview,
+    _required_outputs_pending,
+    _successful_artifacts,
     _tool_attempts_summary,
     _workspace_history_messages,
     _workspace_memory,
@@ -198,7 +200,9 @@ def _workspace_planning_messages(
             "记忆会由系统在对话结束后保存，不存在也不得创造 memory_writer、memory_write、save_memory 等工具。"
             "只有需要读取文件、搜索网页、获取当前时间、计算、写真实文件、分析表格或格式转换时，才写 tool_calling。"
             "如果可以直接回答，next_stage 写 answering；如果确实无法推进，写 failed。不要调用工具。"
-            "JSON 键：user_goal、requirements、plan、known_facts、missing_info、next_stage、reason。"
+            "如果用户要求生成、保存、导出或下载文件，必须在 required_outputs 中列出需要交付的文件产物；"
+            "只有看到成功写文件工具返回的 artifact/download_url 后，才能认为该产物完成。"
+            "JSON 键：user_goal、requirements、success_criteria、required_outputs、plan、known_facts、missing_info、next_stage、reason。"
             "known_facts 和 missing_info 只写和用户目标直接相关的信息，不要列工具清单、内部模块或实现细节。"
         ),
         payload,
@@ -221,6 +225,10 @@ def _workspace_tool_messages(
         "previous_tool_attempts": _tool_attempts_summary(workspace),
         "previous_no_action_outputs": workspace["tools"].get("no_action_outputs", []),
         "observations": workspace["tools"].get("observations", []),
+        "success_criteria": workspace["task"].get("success_criteria", []),
+        "required_outputs": workspace["task"].get("required_outputs", []),
+        "produced_artifacts": _successful_artifacts(workspace),
+        "pending_required_outputs": _required_outputs_pending(workspace),
         "available_tools_schema": _llm_tool_schemas(tools_schema),
     }
     return [
@@ -244,6 +252,8 @@ def _workspace_tool_messages(
                 "tool_calls[*].name 必须逐字匹配 available_tools_schema 中已有工具名。\n"
                 "如果用户只是让你记住信息、打招呼或普通对话，不要调用工具，返回 finish/completed。\n"
                 "如果已有失败尝试，必须根据失败原因调整工具、参数或路径；不要无变化地重复同一调用。\n"
+                "如果 pending_required_outputs 非空，优先调用合适的写文件工具生成产物；不能直接回答说已经生成。\n"
+                "如果 file_reader 结果 truncated=true 且任务需要完整文档内容，应重新读取同一路径并调大 max_chars，不能声称已经读完整文档。\n"
                 "如果确认没有任何可用工具能推进任务，返回 control.action=finish、control.state=failed、tool_calls=[]，并在 reason 写清原因。\n"
                 "不能用 content 代替工具调用；content 只写极短工具前说明，不能写最终答案、完整代码、文件内容或完成声明。\n\n"
                 f"本轮状态如下：\n{_json_block(payload)}"
@@ -267,6 +277,10 @@ def _workspace_observation_messages(
         "accepted_evidence_before": workspace["tools"].get("accepted_evidence", []),
         "known_facts_before": workspace["draft"].get("known_facts", []),
         "missing_info_before": workspace["draft"].get("missing_info", []),
+        "success_criteria": workspace["task"].get("success_criteria", []),
+        "required_outputs": workspace["task"].get("required_outputs", []),
+        "produced_artifacts": _successful_artifacts(workspace),
+        "pending_required_outputs": _required_outputs_pending(workspace),
     }
     return _stage_messages(
         system_prompt,
@@ -277,6 +291,8 @@ def _workspace_observation_messages(
             "status=error 的结果不能作为事实证据，只能作为失败原因。"
             "把可用于最终回答的内容放入 accepted_evidence 和 known_facts；"
             "无效、错误或偏题的信息放入 rejected_evidence；仍需要的信息放入 missing_info。"
+            "如果 pending_required_outputs 非空，说明用户要求的文件产物还未生成，next_stage 必须写 tool_calling 或 failed，不能写 answering。"
+            "如果 file_reader 的 output.truncated=true 且用户任务需要总结整份文档，不能说已完整读取，应继续读取更多内容或在证据中明确只是部分内容。"
             "如果失败原因已经表明没有工具能力或目标文件不存在，应主动结束到 answering/failed，而不是反复调用同一工具。"
             "下一步由你决定：需要继续工具写 tool_calling；足以回答写 answering；无法推进写 failed。"
             "JSON 键：observation、accepted_evidence、rejected_evidence、known_facts、missing_info、next_stage、reason。"
@@ -297,6 +313,10 @@ def _workspace_answer_messages(system_prompt: str, workspace: dict) -> list[dict
         "missing_info": workspace["draft"].get("missing_info", []),
         "tool_attempts": _tool_attempts_summary(workspace),
         "observations": workspace["tools"].get("observations", []),
+        "success_criteria": workspace["task"].get("success_criteria", []),
+        "required_outputs": workspace["task"].get("required_outputs", []),
+        "produced_artifacts": _successful_artifacts(workspace),
+        "pending_required_outputs": _required_outputs_pending(workspace),
     }
     return [
         {
@@ -313,8 +333,9 @@ def _workspace_answer_messages(system_prompt: str, workspace: dict) -> list[dict
                 "根据用户任务、可用证据和已知事实生成最终回答。\n"
                 "如果信息不足，直接说明还需要什么；不要编造。"
                 "只有 accepted_evidence 或成功工具结果中明确出现的信息，才能声明为已经完成。"
+                "如果 pending_required_outputs 非空，不得声称文件已生成，只能说明还缺少对应产物。"
                 "没有成功的写文件工具结果时，不得说文件已生成；没有下载接口或下载工具时，不得说已经可以直接下载；"
-                "文件生成成功时，面向用户优先说明文件名和下载入口；不要展示 generated_file_path 或本地绝对路径，除非用户明确要求本地路径。"
+                "文件生成成功时，只说明文件名和已生成；不要在正文写 download_url、/api/artifacts 链接、generated_file_path 或本地绝对路径，前端会用独立下载卡片展示文件。"
                 "没有成功 file_reader/search/calculator 等结果时，不得声称已经读取、搜索或计算完成。\n"
                 "只输出 AIMessage JSON 对象，顶层键只能是 content、tool_calls、control、agent_step。\n"
                 "必须满足：tool_calls=[]，control.action=finish，control.state 为 completed 或 failed，"
@@ -343,6 +364,10 @@ def _workspace_stage_failure_answer_messages(
         "missing_info": workspace["draft"].get("missing_info", []),
         "tool_attempts": _tool_attempts_summary(workspace),
         "observations": workspace["tools"].get("observations", []),
+        "success_criteria": workspace["task"].get("success_criteria", []),
+        "required_outputs": workspace["task"].get("required_outputs", []),
+        "produced_artifacts": _successful_artifacts(workspace),
+        "pending_required_outputs": _required_outputs_pending(workspace),
         "result_policy": {
             "only_successful_tool_results_are_evidence": True,
             "do_not_claim_completion_without_evidence": True,
@@ -365,8 +390,9 @@ def _workspace_stage_failure_answer_messages(
                 "根据本轮状态生成最终回答。\n"
                 "如果已有工具结果或证据足够完成用户任务，就直接完成。"
                 "如果信息不足或没有可靠工具结果，说明还缺什么或下一步需要什么。"
+                "如果 pending_required_outputs 非空，不得声称文件已生成，只能说明还缺少对应产物。"
                 "不要使用固定兜底文案，不要编造已经完成的文件、下载、读取、搜索或写入结果。\n"
-                "文件生成成功时，面向用户优先说明文件名和下载入口；不要展示 generated_file_path 或本地绝对路径，除非用户明确要求本地路径。\n"
+                "文件生成成功时，只说明文件名和已生成；不要在正文写 download_url、/api/artifacts 链接、generated_file_path 或本地绝对路径，前端会用独立下载卡片展示文件。\n"
                 "只输出 AIMessage JSON 对象，顶层键只能是 content、tool_calls、control、agent_step。\n"
                 "必须满足：tool_calls=[]，control.action=finish，control.state 为 completed 或 failed，agent_step.phase=final。\n\n"
                 f"本轮状态如下：\n{_json_block(payload)}"

@@ -61,8 +61,10 @@ export function ChatMessageList({
 }) {
   return (
     <section className="conversation" aria-label="消息列表" ref={conversationRef} onScroll={onScroll}>
-      {messages.map((message) => (
-        <article className={`message ${message.role} ${message.status ?? ''}`} key={message.id}>
+      {messages.map((message) => {
+        const statusClass = message.status === 'pending' ? 'pending' : ''
+        return (
+        <article className={`message ${message.role} ${statusClass}`} key={message.id}>
           <div className="message-body" onCopy={handleMessageCopy}>
             {message.role === 'assistant' && <ToolTrace message={message} onToggle={onToggleTool} />}
             {message.role === 'user' && message.attachments && message.attachments.length > 0 && (
@@ -85,7 +87,8 @@ export function ChatMessageList({
             )}
           </div>
         </article>
-      ))}
+        )
+      })}
     </section>
   )
 }

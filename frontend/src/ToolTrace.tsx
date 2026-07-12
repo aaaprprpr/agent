@@ -126,6 +126,15 @@ function agentStepFromStep(step: Record<string, unknown>) {
   return undefined
 }
 
+export function toolDetailsFromAgentStep(step?: Record<string, unknown>): ToolDetail[] {
+  if (!step || typeof step !== 'object') return []
+  const body = agentStepBody(step)
+  if (!body) return []
+  const phase = typeof step.phase === 'string' ? step.phase : ''
+  const label = phase === 'final' || phase === 'observation' ? '观察' : '思考'
+  return [{ label, body, kind: 'agent' as const }]
+}
+
 function stringList(value: unknown) {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0) : []
 }
@@ -143,15 +152,6 @@ function agentStepBody(step: Record<string, unknown>) {
   if (missing.length > 0) lines.push(`还需要：${missing.join('；')}`)
   if (next) lines.push(`下一步：${next}`)
   return lines.join('\n')
-}
-
-export function toolDetailsFromAgentStep(step?: Record<string, unknown>) {
-  if (!step || typeof step !== 'object') return []
-  const body = agentStepBody(step)
-  if (!body) return []
-  const phase = typeof step.phase === 'string' ? step.phase : ''
-  const label = phase === 'final' || phase === 'observation' ? '观察' : '思考'
-  return [{ label, body, kind: 'agent' as const }]
 }
 
 function compactToolStepInput(value: unknown) {
@@ -253,13 +253,13 @@ export function ToolTrace({ message, onToggle }: { message: ChatMessage; onToggl
   if (details.length === 0) return null
   const open = Boolean(message.toolPanelOpen)
   const active = message.status === 'pending'
-  const toolCount = details.filter((detail) => detail.kind === 'tool').length || details.length
+  const processedCount = details.length
   return (
     <div className={`tool-trace ${open ? 'open' : ''}`}>
       <button className="tool-trace-toggle" type="button" onClick={() => onToggle(message.id)}>
         <ChevronDownIcon />
-        <span>{active ? '处理中' : '工具调用'}</span>
-        <small>{toolCount} 项</small>
+        <span>{active ? '处理中' : '已处理'}</span>
+        <small>{processedCount} 项</small>
       </button>
       {open && <div className="tool-trace-panel">
         {details.map((detail, index) => <section className={`tool-trace-item ${detail.kind ?? 'tool'}`} key={`${detail.label}-${index}`}>

@@ -91,6 +91,8 @@ def _workspace_from_runtime(runtime: dict, selected_memory: dict) -> dict:
         "task": {
             "user_goal": "",
             "requirements": [],
+            "success_criteria": [],
+            "required_outputs": [],
             "plan": "",
             "stage": "planning",
             "reason": "",
@@ -161,6 +163,70 @@ def _tool_message_payload(message: dict) -> dict:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _successful_artifacts(workspace: dict) -> list[dict]:
+    artifacts: list[dict] = []
+    for message in workspace["tools"].get("results", []):
+        if not isinstance(message, dict):
+            continue
+        parsed = _tool_message_payload(message)
+        if parsed.get("status") != "success" and message.get("status") != "success":
+            continue
+        output = parsed.get("output")
+        if isinstance(output, dict):
+            if any(output.get(key) for key in ("generated_file_path", "relative_output_path", "download_url")):
+                artifacts.append(
+                    {
+                        key: output.get(key)
+                        for key in (
+                            "filename",
+                            "file_type",
+                            "suffix",
+                            "relative_output_path",
+                            "download_url",
+                            "num_bytes",
+                        )
+                        if output.get(key) is not None
+                    }
+                )
+        raw_artifacts = parsed.get("artifacts")
+        if isinstance(raw_artifacts, list):
+            for artifact in raw_artifacts:
+                if isinstance(artifact, dict):
+                    artifacts.append(
+                        {
+                            key: artifact.get(key)
+                            for key in (
+                                "filename",
+                                "file_type",
+                                "suffix",
+                                "relative_output_path",
+                                "download_url",
+                                "num_bytes",
+                            )
+                            if artifact.get(key) is not None
+                        }
+                    )
+    deduped = []
+    seen = set()
+    for artifact in artifacts:
+        key = artifact.get("download_url") or artifact.get("relative_output_path") or artifact.get("filename")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(artifact)
+    return deduped
+
+
+def _required_outputs_pending(workspace: dict) -> list[object]:
+    required = workspace["task"].get("required_outputs", [])
+    if not isinstance(required, list) or not required:
+        return []
+    artifacts = _successful_artifacts(workspace)
+    if len(artifacts) >= len(required):
+        return []
+    return required[len(artifacts):]
+
+
 def _tool_attempts_summary(workspace: dict) -> list[dict]:
     calls = workspace["tools"].get("calls", [])
     results = workspace["tools"].get("results", [])
@@ -200,7 +266,11 @@ def _record_no_tool_action(workspace: dict, ai_message: dict) -> None:
     )
     _merge_unique(workspace["tools"]["rejected_evidence"], [note])
     _merge_unique(workspace["draft"]["missing_info"], ["缺少本轮工具动作实际执行后的结果。"])
-    workspace["task"]["stage"] = "answering"
+    if _required_outputs_pending(workspace):
+        workspace["task"]["stage"] = "failed"
+        _merge_unique(workspace["draft"]["missing_info"], ["用户要求生成文件，但本轮没有成功的文件产物。"])
+    else:
+        workspace["task"]["stage"] = "answering"
     workspace["task"]["reason"] = note
 
 

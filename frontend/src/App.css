@@ -372,11 +372,6 @@
   color: #666;
 }
 
-.message.error .message-body {
-  border-color: #efc0c0;
-  background: #fff7f7;
-}
-
 .tool-trace {
   margin: -4px 0 8px;
   color: #777;
