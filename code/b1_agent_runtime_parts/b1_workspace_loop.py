@@ -130,6 +130,15 @@ def _write_runtime_outputs(
     return result
 
 
+def _has_successful_tool_result(tool_messages: list[dict] | None) -> bool:
+    if not tool_messages:
+        return False
+    for message in tool_messages:
+        if isinstance(message, dict) and message.get("status") == "success":
+            return True
+    return False
+
+
 def _workspace_parse_failure(
     runtime: dict,
     execution_mode: str,
@@ -169,9 +178,12 @@ def _workspace_parse_failure(
         },
     )
     llm_calls += 1
+    answer_messages = _workspace_stage_failure_answer_messages(system_prompt, workspace, stage, error, raw_text)
+    if stage == "observation" and _has_successful_tool_result(all_tool_messages or workspace["tools"].get("results", [])):
+        answer_messages = _workspace_answer_messages(system_prompt, workspace)
     final_result = generate_ai_message(
         str(model_file),
-        _workspace_stage_failure_answer_messages(system_prompt, workspace, stage, error, raw_text),
+        answer_messages,
         [],
         mode,
         str(output_dir / "llm_calls"),
