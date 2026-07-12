@@ -4,10 +4,11 @@
   "tool_calls": [
     {
       "id": "call_search_001",
-      "name": "mcp_web_search",
+      "name": "web_search",
       "args": {
         "query": "Model Context Protocol Python SDK client tools",
-        "top_k": 5
+        "top_k": 5,
+        "search_type": "text"
       }
     }
   ]

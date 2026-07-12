@@ -22,6 +22,5 @@ tqdm==4.68.3
 fastapi
 uvicorn
 paramiko
-mcp>=1.27,<2
-ddgs[mcp]>=9.14,<10
+ddgs>=9.14,<10
 langchain-openai>=1.0,<2

@@ -1,5 +1,4 @@
 fastapi
 uvicorn
 paramiko
-mcp>=1.27,<2
-ddgs[mcp]>=9.14,<10
+ddgs>=9.14,<10

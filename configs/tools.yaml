@@ -31,11 +31,11 @@ toolsets:
     - json_file_writer
     - docx_writer
     - table_file_writer
-    - mcp_web_search
+    - web_search
     - local_file_search
     - table_analyzer
-  mcp_tools:
-    - mcp_web_search
+  web_tools:
+    - web_search
 
 tools:
   calculator:
@@ -339,26 +339,37 @@ tools:
       root_alias: {type: string, description: 搜索目录匹配到的允许根目录别名。}
       results: {type: array, description: 按相关度排序的路径、片段和分数。}
 
-  mcp_web_search:
-    module: skills.mcp_web_search
-    function: mcp_web_search
-    description: 通过已配置的搜索服务进行网页搜索。用于互联网搜索、实时新闻、近期事件、当前外部信息，或本地文件中没有的主题。query 必须写成具体搜索词，包含主题、时间范围、地区或信息类型；不要只写“实时新闻”“查一下”等空泛词。
+  web_search:
+    module: skills.web_search
+    function: web_search
+    description: 直接通过 DDGS/DuckDuckGo 进行网页搜索。用于互联网搜索、实时新闻、近期事件、当前外部信息，或本地文件中没有的主题。query 应写成具体搜索词，包含主题、地区、时间范围或信息类型；不要只写“查一下”“实时新闻”等空泛词。该工具只返回搜索结果和链接，不负责打开网页正文。
     parameters:
       query: {type: string, description: 网页搜索关键词。}
       top_k: {type: integer, description: 请求的最大结果数量。}
+      search_type:
+        type: string
+        description: 搜索类型，可选 auto、text、news；实时新闻优先使用 news，不确定时用 auto。
+      region:
+        type: string
+        description: 搜索区域，默认 cn-zh；需要英文或国际结果时可用 us-en。
+      timelimit:
+        type: string
+        description: 可选时间范围：d 表示近一天，w 表示近一周，m 表示近一月，y 表示近一年。
     required: [query]
     returns:
       query: {type: string, description: 原始搜索关键词。}
-      top_k: {type: integer, description: 请求的结果数量。}
-      mcp_config: {type: string, description: 使用的搜索服务配置文件。}
-      mcp_tool_name: {type: string, description: 实际调用的搜索工具名称。}
-      mcp_arguments: {type: object, description: 发送给成功或最终搜索尝试的参数。}
-      mcp_attempt_count: {type: integer, description: 搜索尝试次数。}
-      mcp_attempts: {type: array, description: 已尝试的搜索调用，包括回退尝试和错误文本。}
-      structured_content: {type: object, description: 搜索服务返回的结构化内容；存在时返回。}
-      content: {type: array, description: 搜索服务返回的原始内容块。}
-      text: {type: string, description: 搜索服务返回的文本内容。}
-      is_error: {type: boolean, description: 搜索工具是否报告错误。}
+      requested_top_k: {type: integer, description: 用户请求的结果数量。}
+      top_k: {type: integer, description: 实际请求的结果数量。}
+      search_type: {type: string, description: 搜索类型。}
+      region: {type: string, description: 搜索区域。}
+      timelimit: {type: string, description: 搜索时间范围；未设置时为空。}
+      category: {type: string, description: 实际执行的搜索类别：text 或 news。}
+      backend: {type: string, description: 实际使用的 DDGS 后端。}
+      attempt_count: {type: integer, description: 搜索尝试次数。}
+      attempts: {type: array, description: 搜索尝试记录，包括类别、后端、结果数量或错误。}
+      result_count: {type: integer, description: 返回结果数量。}
+      results: {type: array, description: 搜索结果，包含 rank、title、url、source_name、published、snippet、category。}
+      text: {type: string, description: 便于模型阅读的搜索结果摘要文本。}
 
   table_analyzer:
     module: skills.table_analyzer

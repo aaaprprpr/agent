@@ -11,8 +11,6 @@ memory/conversations
 memory/memory_index.json
 outputs/full_demo
 
-# Local MCP configuration. Keep per-machine settings out of Git.
-configs/mcp.local.yaml
 .env
 
 data/uploads/
