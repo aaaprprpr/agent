@@ -4,7 +4,7 @@ import asyncio
 import sys
 from datetime import datetime
 from pathlib import Path
-from threading import Thread
+from threading import Event, Lock, Thread
 from typing import Iterator
 
 import uvicorn
@@ -91,6 +91,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+_RUN_CANCEL_EVENTS: dict[str, Event] = {}
+_RUN_CANCEL_LOCK = Lock()
+
 
 def _now_stamp() -> str:
     return datetime.now().strftime("%Y%m%d_%H%M%S_%f")
@@ -104,6 +107,28 @@ def _safe_conversation_id(value: str | None) -> str:
         return validate_conversation_id(cleaned)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="conversation_id contains unsupported characters") from exc
+
+
+def _register_cancel_event(conversation_id: str) -> Event:
+    cancel_event = Event()
+    with _RUN_CANCEL_LOCK:
+        _RUN_CANCEL_EVENTS[conversation_id] = cancel_event
+    return cancel_event
+
+
+def _request_cancel(conversation_id: str) -> bool:
+    with _RUN_CANCEL_LOCK:
+        cancel_event = _RUN_CANCEL_EVENTS.get(conversation_id)
+    if cancel_event is None:
+        return False
+    cancel_event.set()
+    return True
+
+
+def _clear_cancel_event(conversation_id: str, cancel_event: Event) -> None:
+    with _RUN_CANCEL_LOCK:
+        if _RUN_CANCEL_EVENTS.get(conversation_id) is cancel_event:
+            _RUN_CANCEL_EVENTS.pop(conversation_id, None)
 
 
 def _build_runtime_payload(
@@ -198,7 +223,10 @@ def _finish_run_message(
     trace: dict,
 ) -> None:
     metadata = _assistant_metadata(result, trace)
-    if result.get("status") != "success":
+    if result.get("status") == "cancelled":
+        metadata["ui_status"] = "cancelled"
+        metadata["cancelled"] = True
+    elif result.get("status") != "success":
         metadata["ui_status"] = "error"
     update_conversation_message(
         str(MEMORY_CONFIG),
@@ -297,6 +325,20 @@ def _mark_run_failed(assistant_message_id: str, error: Exception) -> None:
             "ui_status": "error",
             "agent_status": "backend_error",
             "error": {"type": type(error).__name__, "message": str(error)},
+        },
+    )
+
+
+def _mark_run_cancelled(assistant_message_id: str, partial_answer: str = "") -> None:
+    content = partial_answer.strip() or "已终止回答。"
+    update_conversation_message(
+        str(MEMORY_CONFIG),
+        assistant_message_id,
+        content=content,
+        metadata={
+            "ui_status": "cancelled",
+            "agent_status": "cancelled",
+            "cancelled": True,
         },
     )
 
@@ -424,17 +466,19 @@ def _stream_agent(request: RunRequest) -> Iterator[str]:
         uploaded_refs,
     )
     output_dir = OUTPUT_ROOT / conversation_id / run_id
-    yield _stream_event(
-        {
-            "type": "start",
-            "conversation_id": conversation_id,
-            "user_message_id": user_message_id,
-            "assistant_message_id": assistant_message_id,
-        }
-    )
+    cancel_event = _register_cancel_event(conversation_id)
     streamed_answer = ""
     candidate_chunks: list[str] = []
+    run_finished = False
     try:
+        yield _stream_event(
+            {
+                "type": "start",
+                "conversation_id": conversation_id,
+                "user_message_id": user_message_id,
+                "assistant_message_id": assistant_message_id,
+            }
+        )
         for event in run_agent_runtime_stream(
             runtime_payload,
             str(TOOLS_CONFIG),
@@ -443,6 +487,7 @@ def _stream_agent(request: RunRequest) -> Iterator[str]:
             str(output_dir),
             request.llm_mode,
             RUNTIME_BASE,
+            should_cancel=cancel_event.is_set,
         ):
             if not isinstance(event, dict):
                 continue
@@ -525,33 +570,47 @@ def _stream_agent(request: RunRequest) -> Iterator[str]:
                     result,
                     full_trace,
                 )
-                full_trace["memory_save"] = {
-                    "requested": "database",
-                    "status": "success",
-                    "conversation_id": conversation_id,
-                    "user_message_id": user_message_id,
-                    "assistant_message_id": assistant_message_id,
-                    "storage": "sqlite",
-                    "turn_memory": {
-                        "status": "scheduled",
-                        "mode": "background",
-                        "reason": "memory reflection and layered memory writes run after the user response",
-                    },
-                }
-                _write_json_file(result["trace_path"], full_trace)
-                _schedule_completed_turn_memory(
-                    conversation_id,
-                    run_id,
-                    user_message_id,
-                    assistant_message_id,
-                    raw_user_input,
-                    result,
-                    full_trace,
-                    request.llm_mode,
-                    output_dir,
-                    result["trace_path"],
-                )
+                if result.get("status") == "cancelled":
+                    full_trace["memory_save"] = {
+                        "requested": "database",
+                        "status": "skipped",
+                        "reason": "cancelled",
+                        "conversation_id": conversation_id,
+                        "user_message_id": user_message_id,
+                        "assistant_message_id": assistant_message_id,
+                        "storage": "sqlite",
+                        "turn_memory": {"status": "skipped", "reason": "cancelled"},
+                    }
+                    _write_json_file(result["trace_path"], full_trace)
+                else:
+                    full_trace["memory_save"] = {
+                        "requested": "database",
+                        "status": "success",
+                        "conversation_id": conversation_id,
+                        "user_message_id": user_message_id,
+                        "assistant_message_id": assistant_message_id,
+                        "storage": "sqlite",
+                        "turn_memory": {
+                            "status": "scheduled",
+                            "mode": "background",
+                            "reason": "memory reflection and layered memory writes run after the user response",
+                        },
+                    }
+                    _write_json_file(result["trace_path"], full_trace)
+                    _schedule_completed_turn_memory(
+                        conversation_id,
+                        run_id,
+                        user_message_id,
+                        assistant_message_id,
+                        raw_user_input,
+                        result,
+                        full_trace,
+                        request.llm_mode,
+                        output_dir,
+                        result["trace_path"],
+                    )
                 tool_steps = list_message_tool_steps(str(MEMORY_CONFIG), assistant_message_id)
+                run_finished = True
                 yield _stream_event(
                     {
                         "type": "done",
@@ -567,7 +626,33 @@ def _stream_agent(request: RunRequest) -> Iterator[str]:
                     }
                 )
                 return
+    except GeneratorExit:
+        if not run_finished:
+            _mark_run_cancelled(assistant_message_id, streamed_answer or "".join(candidate_chunks))
+        raise
     except Exception as exc:
+        if cancel_event.is_set():
+            cancelled_answer = streamed_answer or "".join(candidate_chunks)
+            _mark_run_cancelled(assistant_message_id, cancelled_answer)
+            yield _stream_event(
+                {
+                    "type": "done",
+                    "conversation_id": conversation_id,
+                    "user_message_id": user_message_id,
+                    "assistant_message_id": assistant_message_id,
+                    "status": "cancelled",
+                    "final_answer": cancelled_answer.strip() or "已终止回答。",
+                    "elapsed_ms": None,
+                    "output_dir": str(output_dir),
+                    "trace": {
+                        "final_state": "failed",
+                        "finish_reason": "user cancelled",
+                        "memory_save": {"status": "skipped", "reason": "cancelled"},
+                    },
+                    "tool_steps": list_message_tool_steps(str(MEMORY_CONFIG), assistant_message_id),
+                }
+            )
+            return
         _mark_run_failed(assistant_message_id, exc)
         yield _stream_event(
             {
@@ -577,6 +662,8 @@ def _stream_agent(request: RunRequest) -> Iterator[str]:
                 "message": f"{type(exc).__name__}: {exc}",
             }
         )
+    finally:
+        _clear_cancel_event(conversation_id, cancel_event)
 
 
 def _safe_stream_agent(request: RunRequest) -> Iterator[str]:
@@ -671,6 +758,15 @@ def delete_conversation(conversation_id: str) -> DeleteConversationResponse:
 def get_message_tool_steps(message_id: str) -> dict:
     init_conversation_db(str(MEMORY_CONFIG))
     return {"message_id": message_id, "tool_steps": list_message_tool_steps(str(MEMORY_CONFIG), message_id)}
+
+
+@app.post("/api/conversations/{conversation_id}/cancel")
+def cancel_conversation_run(conversation_id: str) -> dict:
+    safe_conversation_id = _safe_conversation_id(conversation_id)
+    return {
+        "conversation_id": safe_conversation_id,
+        "cancel_requested": _request_cancel(safe_conversation_id),
+    }
 
 
 @app.post("/api/run", response_model=RunResponse)

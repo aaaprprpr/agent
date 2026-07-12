@@ -8,21 +8,9 @@ conda activate agent310 && cd /d E:\assignment_B\agent
 
 python start_all.py
 
-# -------------------------7.12 B5 接入新版 B1 workspace------------------------------
-
-- 根据团队反馈重做 B5 到 B1 的接口：B5 新增 `prepare_workspace_memory_context`，统一返回 `recent_history_messages` 和 `workspace_memory`。
-- B1 不再隐式覆盖原始 runtime `history_messages`；`prompt_json` workspace 单独读取 B5 返回的近期原文，完整历史计数通过 `history_policy` 暴露。
-- 更早历史只通过 B5 召回结果进入 `workspace.memory.layered`，包含任务记忆、块/轮摘要、source message 和 source tool step 片段。
-- B5 反思输入已加入 B1 `workspace.trace`、任务状态、known facts、missing info、工具 observation 和 final 状态，使每轮记忆基于完整 Agent 轨迹。
-- B5 context object 现在显式输出 `foreground_task`、`paused_tasks`、`recalled_blocks`、`recalled_turns`、`source_messages`、`source_tool_steps` 和 `memory_policy`。
-- 如果 B5 上下文组装失败，错误包由 B5 生成；B1 只记录 `layered memory context failed` warning 并继续主流程。
-- B5 写 `workspace_memory_context.json` 等调试产物失败时只返回 `artifact_write_error`，不阻断 B1 主流程。
-- 根据测试产物修复 B5 反思入口：改用 B4 `generate_json_object` 直接生成 `turn_tags/turn_summary/task_memory`，避免通用 AIMessage 协议把反思任务带成普通回答。
-
 # -------------------------7.12------------------------------
 
 做记忆系统，改bug
-
 
 
 # -------------------------7.11------------------------------
@@ -34,6 +22,18 @@ python start_all.py
 环境爆炸 补救
 前端实现删除会话，同时删除本地上传文件
 实现文件生成txt,md,code
+
+
+# -------------------------7.12 B5 接入新版 B1 workspace------------------------------
+
+- 根据团队反馈重做 B5 到 B1 的接口：B5 新增 `prepare_workspace_memory_context`，统一返回 `recent_history_messages` 和 `workspace_memory`。
+- B1 不再隐式覆盖原始 runtime `history_messages`；`prompt_json` workspace 单独读取 B5 返回的近期原文，完整历史计数通过 `history_policy` 暴露。
+- 更早历史只通过 B5 召回结果进入 `workspace.memory.layered`，包含任务记忆、块/轮摘要、source message 和 source tool step 片段。
+- B5 反思输入已加入 B1 `workspace.trace`、任务状态、known facts、missing info、工具 observation 和 final 状态，使每轮记忆基于完整 Agent 轨迹。
+- B5 context object 现在显式输出 `foreground_task`、`paused_tasks`、`recalled_blocks`、`recalled_turns`、`source_messages`、`source_tool_steps` 和 `memory_policy`。
+- 如果 B5 上下文组装失败，错误包由 B5 生成；B1 只记录 `layered memory context failed` warning 并继续主流程。
+- B5 写 `workspace_memory_context.json` 等调试产物失败时只返回 `artifact_write_error`，不阻断 B1 主流程。
+- 根据测试产物修复 B5 反思入口：改用 B4 `generate_json_object` 直接生成 `turn_tags/turn_summary/task_memory`，避免通用 AIMessage 协议把反思任务带成普通回答。
 
 
 # -------------------------7.12 B5 分层召回设计修正------------------------------
@@ -135,3 +135,12 @@ tool/skill 第一批增强：
 - 修复联网搜索最终回答解析失败：模型在第二轮已生成最终 `content`，但同时重复上一轮 `tool_calls` 且 `control.action=finish`，导致 schema 校验失败。B4 现在仅对这种结构性矛盾做格式规范化：finish 且 content 非空时清空多余 tool_calls；同时提示模型 finish 时不要重复旧工具调用。不涉及业务关键词判断。
 
 2026-07-11：按团队反馈修正 B4 职责边界。移除 b4_local_agent_llm.py 中基于用户文本关键词/正则强制调用 current_time 的逻辑；B4 不再做业务意图判别，只负责构造模型提示、调用模型、解析并校验 AIMessage。工具选择回到模型根据 system prompt 和 tools schema 生成 tool_calls，B1 负责循环编排，B3 负责执行工具。
+
+# -------------------------7.12 回答终止与 B5 结构拆分------------------------------
+
+- 前端回答中不再禁用为死按钮：发送按钮在运行中切换为终止按钮，调用后端取消接口并中断当前流读取；AbortError 不再显示为请求失败。
+- 后端新增会话级取消标记和取消接口；流式回答取消后 assistant 消息落为 `ui_status=cancelled`，不会长期 pending，也不会按错误态展示。
+- B1 流式入口新增可选 `should_cancel` 检查点；取消时写出 `status=cancelled` 的 trace/final_answer/runtime_log，并跳过记忆保存。
+- B5 历史上下文过滤 `cancelled` 消息，避免已终止回答污染下一轮模型输入。
+- 将 `code/b5_memory.py` 拆为兼容门面，内部实现移动到 `code/b5_memory_parts/paths.py`、`conversation_api.py`、`layered.py`、`legacy.py`、`cli.py`；公开导入接口保持 `from b5_memory import ...` 不变。
+- 按要求未启动项目、未跑训练、未跑测试；需要由你本地执行前后端联调验证终止按钮实际效果。

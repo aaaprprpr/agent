@@ -52,6 +52,7 @@ function App() {
   const conversationRef = useRef<HTMLElement | null>(null)
   const currentConversationIdRef = useRef<string | null>(null)
   const runningConversationIdsRef = useRef<Set<string>>(new Set())
+  const abortControllersRef = useRef<Map<string, AbortController>>(new Map())
   const stickToBottomRef = useRef(true)
   const [showScrollBottom, setShowScrollBottom] = useState(false)
 
@@ -80,6 +81,14 @@ function App() {
       runningConversationIdsRef.current = next
       return next
     })
+  }
+
+  function stopConversation(conversationId: string | null = currentConversationIdRef.current) {
+    if (!conversationId || !runningConversationIdsRef.current.has(conversationId)) return
+    void fetch(`${API_BASE}/api/conversations/${encodeURIComponent(conversationId)}/cancel`, {
+      method: 'POST',
+    }).catch(() => undefined)
+    abortControllersRef.current.get(conversationId)?.abort()
   }
 
   function updateHistoryMessages(conversationId: string, nextMessages: ChatMessage[], memoryReady?: boolean) {
@@ -289,6 +298,8 @@ function App() {
     setDraft('')
     setAttachments([])
     setConversationRunning(conversationId, true)
+    const abortController = new AbortController()
+    abortControllersRef.current.set(conversationId, abortController)
     requestAnimationFrame(() => {
       if (inputRef.current) inputRef.current.style.height = '24px'
     })
@@ -449,6 +460,7 @@ function App() {
           conversation_id: conversationId,
           uploaded_file_payloads: uploadPayloads,
         }),
+        signal: abortController.signal,
       })
       if (!response.ok) {
         const payload = await response.json().catch(() => null)
@@ -472,13 +484,26 @@ function App() {
       buffer += decoder.decode()
       consumeStreamLine(buffer)
     } catch (error) {
+      const aborted = error instanceof DOMException
+        ? error.name === 'AbortError'
+        : error instanceof Error && error.name === 'AbortError'
       const message = error instanceof Error ? error.message : String(error)
       const failedMessages: ChatMessage[] = currentMessages.map((item): ChatMessage =>
         item.id === activeAssistantId
           ? {
               ...item,
-              body: `请求失败：${message}`,
-              status: 'error',
+              body: aborted
+                ? streamedAnswer.trim()
+                  ? `${streamedAnswer.trimEnd()}\n\n（回答已终止）`
+                  : '已终止回答。'
+                : `请求失败：${message}`,
+              status: aborted ? undefined : 'error',
+              toolPanelOpen: aborted ? false : item.toolPanelOpen,
+              toolDetails: aborted
+                ? item.toolDetails?.map((detail) =>
+                    detail.status === 'pending' ? { ...detail, status: 'done' } : detail,
+                  )
+                : item.toolDetails,
             }
           : item,
       )
@@ -488,6 +513,7 @@ function App() {
       }
       updateHistoryMessages(conversationId, failedMessages)
     } finally {
+      abortControllersRef.current.delete(conversationId)
       setConversationRunning(conversationId, false)
     }
   }
@@ -639,6 +665,8 @@ function App() {
           onFileChange={handleFileChange}
           onRemoveAttachment={(id) => setAttachments((current) => current.filter((item) => item.id !== id))}
           onSend={handleSend}
+          isRunning={isCurrentConversationRunning}
+          onStop={() => stopConversation(currentConversationId)}
         />
       </section>
     </main>

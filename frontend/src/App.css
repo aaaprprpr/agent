@@ -534,6 +534,15 @@
   color: #fff;
 }
 
+.send-button.stop {
+  border-color: #b3261e;
+  background: #b3261e;
+}
+
+.send-button svg {
+  display: block;
+}
+
 .tool-button {
   position: absolute;
   left: 10px;
@@ -543,6 +552,10 @@
 .send-button:hover:not(:disabled) {
   transform: translateY(-1px) scale(1.02);
   background: #000;
+}
+
+.send-button.stop:hover:not(:disabled) {
+  background: #8f1e18;
 }
 
 .send-button:disabled {
