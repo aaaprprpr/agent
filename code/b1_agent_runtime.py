@@ -209,6 +209,54 @@ def _memory_overview(selected_memory: dict) -> dict:
     }
 
 
+def _workspace_memory(selected_memory: dict, workspace_memory_context: dict | None = None) -> dict:
+    result = {"legacy": _memory_overview(selected_memory)}
+    result["layered"] = deepcopy(workspace_memory_context) if isinstance(workspace_memory_context, dict) else {
+        "status": "not_requested"
+    }
+    return result
+
+
+def _workspace_history_messages(runtime: dict) -> list[dict]:
+    recent_history = runtime.get("recent_history_messages")
+    if isinstance(recent_history, list):
+        return normalize_history_messages(recent_history)
+    return normalize_history_messages(runtime.get("history_messages", []))
+
+
+def _prepare_workspace_runtime_context(
+    runtime: dict,
+    memory_file: Path,
+    selected_memory: dict,
+    output_dir: Path,
+) -> tuple[dict, dict]:
+    from b5_memory import prepare_workspace_memory_context
+
+    updated = deepcopy(runtime)
+    memory_package = prepare_workspace_memory_context(
+        str(memory_file),
+        runtime["conversation_id"],
+        runtime["user_input"],
+        runtime["history_messages"],
+        selected_memory,
+        str(output_dir),
+    )
+    recent_history = memory_package.get("recent_history_messages")
+    if isinstance(recent_history, list):
+        updated["recent_history_messages"] = normalize_history_messages(recent_history)
+    workspace_memory = memory_package.get("workspace_memory")
+    updated["workspace_memory_context"] = workspace_memory if isinstance(workspace_memory, dict) else {
+        "status": "error",
+        "error": {"type": "InvalidMemoryPackage", "message": "B5 did not return workspace_memory"},
+    }
+    updated["workspace_memory_build"] = {
+        "status": memory_package.get("status"),
+        "history_message_count": memory_package.get("history_message_count"),
+        "recent_history_message_count": memory_package.get("recent_history_message_count"),
+    }
+    return updated, memory_package
+
+
 def _stage_messages(system_prompt: str, stage_name: str, instruction: str, payload: dict) -> list[dict]:
     return [
         {
@@ -238,11 +286,18 @@ def _workspace_planning_messages(
     selected_memory: dict,
     tools_schema: list[dict],
 ) -> list[dict]:
+    history_messages = _workspace_history_messages(runtime)
     payload = {
         "user_input": runtime["user_input"],
         "input_images_count": len(runtime.get("input_images", [])),
-        "history_messages": runtime.get("history_messages", []),
-        "selected_memory": _memory_overview(selected_memory),
+        "history_messages": history_messages,
+        "history_policy": {
+            "source": "recent_history_messages" if isinstance(runtime.get("recent_history_messages"), list) else "history_messages",
+            "full_history_message_count": len(runtime.get("history_messages", [])),
+            "workspace_history_message_count": len(history_messages),
+        },
+        "legacy_memory": _memory_overview(selected_memory),
+        "workspace_memory": _workspace_memory(selected_memory, runtime.get("workspace_memory_context")),
         "available_tools": _tool_briefs(tools_schema),
     }
     return _stage_messages(
@@ -327,7 +382,7 @@ def _workspace_answer_messages(system_prompt: str, workspace: dict) -> list[dict
     payload = {
         "user_input": workspace["input"]["user_input"],
         "history_messages": workspace["input"].get("history_messages", []),
-        "selected_memory": workspace["memory"],
+        "workspace_memory": workspace["memory"],
         "task": workspace["task"],
         "accepted_evidence": workspace["tools"].get("accepted_evidence", []),
         "known_facts": workspace["draft"].get("known_facts", []),
@@ -358,14 +413,20 @@ def _workspace_answer_messages(system_prompt: str, workspace: dict) -> list[dict
 
 
 def _workspace_from_runtime(runtime: dict, selected_memory: dict) -> dict:
+    history_messages = _workspace_history_messages(runtime)
     return {
         "input": {
             "conversation_id": runtime["conversation_id"],
             "user_input": runtime["user_input"],
-            "history_messages": runtime.get("history_messages", []),
+            "history_messages": history_messages,
+            "history_policy": {
+                "source": "recent_history_messages" if isinstance(runtime.get("recent_history_messages"), list) else "history_messages",
+                "full_history_message_count": len(runtime.get("history_messages", [])),
+                "workspace_history_message_count": len(history_messages),
+            },
             "input_images_count": len(runtime.get("input_images", [])),
         },
-        "memory": _memory_overview(selected_memory),
+        "memory": _workspace_memory(selected_memory, runtime.get("workspace_memory_context")),
         "task": {
             "user_goal": "",
             "requirements": [],
@@ -613,7 +674,7 @@ def _run_workspace(
         current_user_message["images"] = runtime["input_images"]
     messages = [
         {"role": "system", "content": system_prompt},
-        *runtime["history_messages"],
+        *workspace["input"].get("history_messages", []),
         current_user_message,
     ]
     turns = []
@@ -621,6 +682,9 @@ def _run_workspace(
     warnings = []
     if selected_memory.get("status") in {"partial", "error"}:
         warnings.append("memory selection completed with errors")
+    layered_status = workspace.get("memory", {}).get("layered", {}).get("status")
+    if layered_status == "error":
+        warnings.append("layered memory context failed")
     llm_calls = 0
     tool_rounds = 0
     status = "success"
@@ -936,7 +1000,7 @@ def _run_workspace_stream(
         current_user_message["images"] = runtime["input_images"]
     messages = [
         {"role": "system", "content": system_prompt},
-        *runtime["history_messages"],
+        *workspace["input"].get("history_messages", []),
         current_user_message,
     ]
     turns = []
@@ -944,6 +1008,9 @@ def _run_workspace_stream(
     warnings = []
     if selected_memory.get("status") in {"partial", "error"}:
         warnings.append("memory selection completed with errors")
+    layered_status = workspace.get("memory", {}).get("layered", {}).get("status")
+    if layered_status == "error":
+        warnings.append("layered memory context failed")
     llm_calls = 0
     tool_rounds = 0
     status = "success"
@@ -1378,6 +1445,8 @@ def run(
         )
         tools_schema = get_tools_schema(str(tools_file), runtime["toolset"], str(output_dir))
         mode = llm_mode or _default_llm_mode(model_file)
+        if mode == "prompt_json":
+            runtime, _ = _prepare_workspace_runtime_context(runtime, memory_file, selected_memory, output_dir)
     if execution_mode == "integrated" and mode == "prompt_json":
         return _run_workspace(
             runtime,
@@ -1629,6 +1698,8 @@ def run_stream(
         )
         tools_schema = get_tools_schema(str(tools_file), runtime["toolset"], str(output_dir))
         mode = llm_mode or _default_llm_mode(model_file)
+        if mode == "prompt_json":
+            runtime, _ = _prepare_workspace_runtime_context(runtime, memory_file, selected_memory, output_dir)
     if execution_mode == "integrated" and mode == "prompt_json":
         yield from _run_workspace_stream(
             runtime,

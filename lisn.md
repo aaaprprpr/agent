@@ -8,6 +8,17 @@ conda activate agent310 && cd /d E:\assignment_B\agent
 
 python start_all.py
 
+# -------------------------7.12 B5 接入新版 B1 workspace------------------------------
+
+- 根据团队反馈重做 B5 到 B1 的接口：B5 新增 `prepare_workspace_memory_context`，统一返回 `recent_history_messages` 和 `workspace_memory`。
+- B1 不再隐式覆盖原始 runtime `history_messages`；`prompt_json` workspace 单独读取 B5 返回的近期原文，完整历史计数通过 `history_policy` 暴露。
+- 更早历史只通过 B5 召回结果进入 `workspace.memory.layered`，包含任务记忆、块/轮摘要、source message 和 source tool step 片段。
+- B5 反思输入已加入 B1 `workspace.trace`、任务状态、known facts、missing info、工具 observation 和 final 状态，使每轮记忆基于完整 Agent 轨迹。
+- B5 context object 现在显式输出 `foreground_task`、`paused_tasks`、`recalled_blocks`、`recalled_turns`、`source_messages`、`source_tool_steps` 和 `memory_policy`。
+- 如果 B5 上下文组装失败，错误包由 B5 生成；B1 只记录 `layered memory context failed` warning 并继续主流程。
+- B5 写 `workspace_memory_context.json` 等调试产物失败时只返回 `artifact_write_error`，不阻断 B1 主流程。
+- 根据测试产物修复 B5 反思入口：改用 B4 `generate_json_object` 直接生成 `turn_tags/turn_summary/task_memory`，避免通用 AIMessage 协议把反思任务带成普通回答。
+
 # -------------------------7.12------------------------------
 
 做记忆系统，改bug
