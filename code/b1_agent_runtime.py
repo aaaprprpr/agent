@@ -270,6 +270,10 @@ def _workspace_tool_messages(
         "known_facts": workspace["draft"].get("known_facts", []),
         "missing_info": workspace["draft"].get("missing_info", []),
         "accepted_evidence": workspace["tools"].get("accepted_evidence", []),
+        "rejected_evidence": workspace["tools"].get("rejected_evidence", []),
+        "previous_tool_attempts": _tool_attempts_summary(workspace),
+        "previous_no_action_outputs": workspace["tools"].get("no_action_outputs", []),
+        "observations": workspace["tools"].get("observations", []),
         "available_tools_schema": tools_schema,
     }
     return [
@@ -278,7 +282,8 @@ def _workspace_tool_messages(
             "content": (
                 system_prompt
                 + "\n\n你现在是 B1 工作区的工具动作规划阶段。"
-                "必须根据用户目标、缺失信息和工具 schema 决定是否调用工具。"
+                "进入本阶段表示当前任务需要一个可执行工具动作。"
+                "必须根据用户目标、缺失信息、已有工具尝试和工具 schema 决定下一步。"
                 "不要输出最终答案，不要把工具结果当成已经存在的信息。"
             ),
         },
@@ -287,9 +292,10 @@ def _workspace_tool_messages(
             "content": (
                 "根据工作区状态选择下一步工具动作。\n"
                 "只输出 AIMessage JSON 对象，顶层键只能是 content、tool_calls、control、agent_step。\n"
-                "需要工具时：control.action=call_tools，tool_calls 填写要调用的工具。"
-                "如果你判断不需要工具：control.action=finish，tool_calls=[]，content 简要说明原因。\n"
-                "content 只写工具前说明，不要写工具调用 JSON，不要写最终答案。\n\n"
+                "正常情况必须返回至少一个 tool_call：control.action=call_tools，tool_calls 填写要调用的工具。\n"
+                "如果已有失败尝试，必须根据失败原因调整工具、参数或路径；不要无变化地重复同一调用。\n"
+                "如果确认没有任何可用工具能推进任务，才允许返回 control.action=finish、control.state=failed、tool_calls=[]，并在 reason 写清能力缺口。\n"
+                "不能用 content 代替工具调用；content 只写极短工具前说明，不能写最终答案、完整代码、文件内容或完成声明。\n\n"
                 f"工作区状态如下：\n{_json_block(payload)}"
             ),
         },
@@ -306,6 +312,9 @@ def _workspace_observation_messages(
         "task": workspace["task"],
         "last_tool_intent": workspace["tools"].get("last_tool_intent", ""),
         "last_tool_messages": tool_messages,
+        "previous_tool_attempts": _tool_attempts_summary(workspace),
+        "rejected_evidence_before": workspace["tools"].get("rejected_evidence", []),
+        "accepted_evidence_before": workspace["tools"].get("accepted_evidence", []),
         "known_facts_before": workspace["draft"].get("known_facts", []),
         "missing_info_before": workspace["draft"].get("missing_info", []),
     }
@@ -314,8 +323,11 @@ def _workspace_observation_messages(
         "observation",
         (
             "观察刚刚的工具结果。判断这些结果是否满足用户任务，而不只是满足工具调用目的。"
+            "必须以 ToolMessage 的 status、output、error 为依据：status=success 只表示工具执行成功，不等于任务完成；"
+            "status=error 的结果不能作为事实证据，只能作为失败原因。"
             "把可用于最终回答的内容放入 accepted_evidence 和 known_facts；"
             "无效、错误或偏题的信息放入 rejected_evidence；仍缺的信息放入 missing_info。"
+            "如果失败原因已经表明没有工具能力或目标文件不存在，应主动结束到 answering/failed，而不是反复调用同一工具。"
             "下一步由你决定：需要继续工具写 tool_calling；足以回答写 answering；无法推进写 failed。"
             "JSON 键：observation、accepted_evidence、rejected_evidence、known_facts、missing_info、next_stage、reason。"
         ),
@@ -330,8 +342,10 @@ def _workspace_answer_messages(system_prompt: str, workspace: dict) -> list[dict
         "selected_memory": workspace["memory"],
         "task": workspace["task"],
         "accepted_evidence": workspace["tools"].get("accepted_evidence", []),
+        "rejected_evidence": workspace["tools"].get("rejected_evidence", []),
         "known_facts": workspace["draft"].get("known_facts", []),
         "missing_info": workspace["draft"].get("missing_info", []),
+        "tool_attempts": _tool_attempts_summary(workspace),
         "observations": workspace["tools"].get("observations", []),
     }
     return [
@@ -348,6 +362,9 @@ def _workspace_answer_messages(system_prompt: str, workspace: dict) -> list[dict
             "content": (
                 "根据工作区中的用户任务、可用证据和已知事实生成最终回答。\n"
                 "如果信息不足，直接说明缺口；不要编造。"
+                "只有 accepted_evidence 或成功工具结果中明确出现的信息，才能声明为已经完成。"
+                "没有成功的 file_writer 结果时，不得说文件已生成；没有下载接口或下载工具时，不得说已经可以直接下载；"
+                "没有成功 file_reader/search/calculator 等结果时，不得声称已经读取、搜索或计算完成。\n"
                 "只输出 AIMessage JSON 对象，顶层键只能是 content、tool_calls、control、agent_step。\n"
                 "必须满足：tool_calls=[]，control.action=finish，control.state 为 completed 或 failed，"
                 "agent_step.phase=final。\n\n"
@@ -379,6 +396,7 @@ def _workspace_from_runtime(runtime: dict, selected_memory: dict) -> dict:
             "observations": [],
             "accepted_evidence": [],
             "rejected_evidence": [],
+            "no_action_outputs": [],
             "last_tool_intent": "",
         },
         "draft": {
@@ -408,6 +426,77 @@ def _merge_unique(target: list[str], values: object) -> None:
     for value in _as_string_list(values):
         if value not in target:
             target.append(value)
+
+
+def _compact_for_workspace(value: object, limit: int = 900) -> object:
+    if isinstance(value, str):
+        text = value.strip()
+        return text if len(text) <= limit else text[:limit].rstrip() + "..."
+    if isinstance(value, list):
+        return [_compact_for_workspace(item, max(160, limit // 3)) for item in value[:6]]
+    if isinstance(value, dict):
+        compact = {}
+        for key, item in value.items():
+            if key in {"content", "text"}:
+                compact[key] = _compact_for_workspace(item, limit)
+            elif key in {"generated_file_path", "relative_output_path", "filename", "file_type", "status", "error"}:
+                compact[key] = _compact_for_workspace(item, limit)
+            elif isinstance(item, (str, int, float, bool)) or item is None:
+                compact[key] = item
+        return compact
+    return value
+
+
+def _tool_message_payload(message: dict) -> dict:
+    raw_content = message.get("content")
+    try:
+        parsed = json.loads(raw_content) if isinstance(raw_content, str) else {}
+    except json.JSONDecodeError:
+        parsed = {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _tool_attempts_summary(workspace: dict) -> list[dict]:
+    calls = workspace["tools"].get("calls", [])
+    results = workspace["tools"].get("results", [])
+    summaries = []
+    for index, message in enumerate(results):
+        if not isinstance(message, dict):
+            continue
+        call = calls[index] if index < len(calls) and isinstance(calls[index], dict) else {}
+        parsed = _tool_message_payload(message)
+        output = parsed.get("output")
+        error = parsed.get("error")
+        summaries.append(
+            {
+                "index": index + 1,
+                "tool_name": message.get("name") or call.get("name") or parsed.get("skill_name"),
+                "tool_call_id": message.get("tool_call_id") or call.get("id"),
+                "args": call.get("args") or parsed.get("input"),
+                "status": message.get("status") or parsed.get("status"),
+                "output_summary": _compact_for_workspace(output),
+                "error": _compact_for_workspace(error),
+            }
+        )
+    return summaries
+
+
+def _record_no_tool_action(workspace: dict, ai_message: dict) -> None:
+    content = ai_message.get("content", "").strip()
+    note = "工具动作阶段没有返回 tool_calls，因此本阶段没有执行任何工具。"
+    if content:
+        note += " 该阶段输出的自然语言或草稿不能作为工具结果或完成证据。"
+    workspace["tools"]["no_action_outputs"].append(
+        {
+            "content": content,
+            "control": ai_message.get("control"),
+            "agent_step": ai_message.get("agent_step"),
+        }
+    )
+    _merge_unique(workspace["tools"]["rejected_evidence"], [note])
+    _merge_unique(workspace["draft"]["missing_info"], ["缺少本轮工具动作实际执行后的结果。"])
+    workspace["task"]["stage"] = "answering"
+    workspace["task"]["reason"] = note
 
 
 def _record_stage(workspace: dict, phase: str, payload: dict) -> None:
@@ -760,9 +849,9 @@ def _run_workspace(
             },
         )
         if not tool_calls:
+            _record_no_tool_action(workspace, ai_message)
             turns.append(turn)
-            next_stage = "answering"
-            workspace["task"]["stage"] = next_stage
+            next_stage = workspace["task"]["stage"]
             continue
         tool_messages = execute_tool_calls(
             tool_calls,
@@ -1099,9 +1188,9 @@ def _run_workspace_stream(
             },
         )
         if not tool_calls:
+            _record_no_tool_action(workspace, ai_message)
             turns.append(turn)
-            next_stage = "answering"
-            workspace["task"]["stage"] = next_stage
+            next_stage = workspace["task"]["stage"]
             continue
         yield {
             "type": "tool_start",
