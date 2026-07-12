@@ -41,6 +41,8 @@ def _prepare_workspace_runtime_context(
     memory_file: Path,
     selected_memory: dict,
     output_dir: Path,
+    model_file: Path | None = None,
+    llm_mode: str | None = None,
 ) -> tuple[dict, dict]:
     from b5_memory import prepare_workspace_memory_context
 
@@ -52,6 +54,8 @@ def _prepare_workspace_runtime_context(
         runtime["history_messages"],
         selected_memory,
         str(output_dir),
+        str(model_file) if model_file is not None else None,
+        llm_mode,
     )
     recent_history = memory_package.get("recent_history_messages")
     if isinstance(recent_history, list):

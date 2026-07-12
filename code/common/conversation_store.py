@@ -9,7 +9,7 @@ from typing import Any
 from common.logging_utils import now_iso
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def _connect(db_path: str | Path) -> sqlite3.Connection:
@@ -236,6 +236,19 @@ def init_store(db_path: str | Path) -> dict:
                 FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS memory_embeddings (
+                item_type TEXT NOT NULL,
+                item_id TEXT NOT NULL,
+                text_hash TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                dimension INTEGER NOT NULL,
+                vector_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (item_type, item_id, provider, model)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_conversation_turns_conversation_order
                 ON conversation_turns(conversation_id, turn_index);
             CREATE INDEX IF NOT EXISTS idx_turn_memory_tags_value
@@ -249,6 +262,8 @@ def init_store(db_path: str | Path) -> dict:
             CREATE UNIQUE INDEX IF NOT EXISTS idx_task_memories_one_foreground
                 ON task_memories(conversation_id)
                 WHERE status = 'foreground';
+            CREATE INDEX IF NOT EXISTS idx_memory_embeddings_item
+                ON memory_embeddings(item_type, item_id);
             """
         )
         connection.execute(
@@ -814,6 +829,98 @@ def record_memory_retrieval(
     return {"status": "success", "retrieval_log_id": log_id, "created_at": now}
 
 
+def get_memory_embedding(
+    db_path: str | Path,
+    item_type: str,
+    item_id: str,
+    provider: str,
+    model: str,
+) -> dict | None:
+    if not all(isinstance(value, str) and value for value in (item_type, item_id, provider, model)):
+        raise ValueError("embedding lookup keys must be non-empty strings")
+    init_store(db_path)
+    with _connect(db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT item_type, item_id, text_hash, provider, model, dimension,
+                   vector_json, created_at, updated_at
+            FROM memory_embeddings
+            WHERE item_type = ? AND item_id = ? AND provider = ? AND model = ?
+            """,
+            (item_type, item_id, provider, model),
+        ).fetchone()
+    if row is None:
+        return None
+    item = dict(row)
+    vector = _json_loads(item.get("vector_json"))
+    item["vector"] = vector if isinstance(vector, list) else []
+    return item
+
+
+def upsert_memory_embedding(
+    db_path: str | Path,
+    item_type: str,
+    item_id: str,
+    text_hash: str,
+    provider: str,
+    model: str,
+    vector: list[float],
+) -> dict:
+    if not all(isinstance(value, str) and value for value in (item_type, item_id, text_hash, provider, model)):
+        raise ValueError("embedding keys must be non-empty strings")
+    if not isinstance(vector, list) or not vector:
+        raise ValueError("embedding vector must be a non-empty array")
+    values = []
+    for item in vector:
+        try:
+            values.append(float(item))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("embedding vector must contain only numbers") from exc
+    init_store(db_path)
+    now = now_iso()
+    with _connect(db_path) as connection:
+        existing = connection.execute(
+            """
+            SELECT created_at FROM memory_embeddings
+            WHERE item_type = ? AND item_id = ? AND provider = ? AND model = ?
+            """,
+            (item_type, item_id, provider, model),
+        ).fetchone()
+        created_at = existing["created_at"] if existing else now
+        connection.execute(
+            """
+            INSERT INTO memory_embeddings(
+                item_type, item_id, text_hash, provider, model, dimension,
+                vector_json, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(item_type, item_id, provider, model) DO UPDATE SET
+                text_hash = excluded.text_hash,
+                dimension = excluded.dimension,
+                vector_json = excluded.vector_json,
+                updated_at = excluded.updated_at
+            """,
+            (
+                item_type,
+                item_id,
+                text_hash,
+                provider,
+                model,
+                len(values),
+                _json_dumps(values),
+                created_at,
+                now,
+            ),
+        )
+    return {
+        "status": "success",
+        "item_type": item_type,
+        "item_id": item_id,
+        "dimension": len(values),
+        "updated_at": now,
+    }
+
+
 def upsert_memory_block(
     db_path: str | Path,
     conversation_id: str,
@@ -1178,6 +1285,22 @@ def delete_conversation(db_path: str | Path, conversation_id: str) -> dict:
         ).fetchone()
         if row is None:
             return {"status": "not_found", "conversation_id": conversation_id, "deleted": False}
+        connection.execute(
+            """
+            DELETE FROM memory_embeddings
+            WHERE item_type = 'turn'
+              AND item_id IN (SELECT id FROM conversation_turns WHERE conversation_id = ?)
+            """,
+            (conversation_id,),
+        )
+        connection.execute(
+            """
+            DELETE FROM memory_embeddings
+            WHERE item_type = 'block'
+              AND item_id IN (SELECT id FROM memory_blocks WHERE conversation_id = ?)
+            """,
+            (conversation_id,),
+        )
         connection.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
     return {"status": "success", "conversation_id": conversation_id, "deleted": True}
 

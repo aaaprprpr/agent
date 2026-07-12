@@ -7,12 +7,13 @@ KssAT6iTwb
 conda activate agent310 && cd /d E:\assignment_B\agent
 
 python start_all.py
-
+python test.py
 # -------------------------7.12------------------------------
 
 做记忆，改bug
 改记忆模块
 优化记忆模块，优化轮级反思 prompt
+
 加对话终止按钮
 
 # -------------------------7.11------------------------------
@@ -163,3 +164,12 @@ tool/skill 第一批增强：
 - 向量 RAG 和 LLM rerank 当前只标记为 `not_configured`，未用词法相似度伪装成向量召回，也未擅自增加运行前模型重排调用。
 - 继续优化召回上下文组装：按 `task_related`、`durable_memory`、`supporting_context` 分组进入上下文；低分且允许丢弃的轮次不进入召回上下文，但仍保留原始消息和数据库记录。
 - 修复偏好误入任务记忆：反思结果现在必须包含 `category:task_state` 才允许更新 `task_memory`；普通长期偏好会剥离任务边界标签和 `task:` 关键词，避免“回答简洁/少用表格”被写成前台任务。
+
+# -------------------------7.12 B5 向量 RAG 与 LLM rerank------------------------------
+
+- 新增 B5 向量召回模块：`vector_retrieval.py` 读取 `memory.yaml`，调用 FastAPI `/embeddings`，使用 SQLite `memory_embeddings` 缓存 turn/block 向量，并用 cosine 相似度补强原有字段评分。
+- 新增 B5 LLM rerank 模块：`rerank.py` 复用 B4 `generate_json_object`，只允许模型从候选 block/turn id 中选择和重排；失败、非法 JSON 或无模型配置时自动回退旧排序。
+- `retrieval.py` 调整为候选召回、向量补强、LLM rerank、加载 source message/tool step 的链路；输出 `vector_retrieval`、`llm_rerank` 和 `score_breakdown`，方便从运行产物排查。
+- B1 只做最小边界透传：把 `model_config` 和 `llm_mode` 传给 B5，不参与 RAG 或 rerank 逻辑。
+- FastAPI 模型服务新增 `/embeddings`，复用已加载模型做 mean-pooling embedding；B5 配置默认启用向量和 rerank，但服务不可用时不会中断回答。
+- 本次未启动项目、未跑训练、未跑测试；需要你重启模型服务和后端后用前端长对话联调验证。

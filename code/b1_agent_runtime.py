@@ -76,7 +76,14 @@ def run(
         tools_schema = get_tools_schema(str(tools_file), runtime["toolset"], str(output_dir))
         mode = llm_mode or _default_llm_mode(model_file)
         if mode == "prompt_json":
-            runtime, _ = _prepare_workspace_runtime_context(runtime, memory_file, selected_memory, output_dir)
+            runtime, _ = _prepare_workspace_runtime_context(
+                runtime,
+                memory_file,
+                selected_memory,
+                output_dir,
+                model_file,
+                mode,
+            )
     if execution_mode == "integrated" and mode == "prompt_json":
         return _run_workspace(
             runtime,
@@ -156,7 +163,14 @@ def run_stream(
         tools_schema = get_tools_schema(str(tools_file), runtime["toolset"], str(output_dir))
         mode = llm_mode or _default_llm_mode(model_file)
         if mode == "prompt_json":
-            runtime, _ = _prepare_workspace_runtime_context(runtime, memory_file, selected_memory, output_dir)
+            runtime, _ = _prepare_workspace_runtime_context(
+                runtime,
+                memory_file,
+                selected_memory,
+                output_dir,
+                model_file,
+                mode,
+            )
     if execution_mode == "integrated" and mode == "prompt_json":
         yield from _run_workspace_stream(
             runtime,

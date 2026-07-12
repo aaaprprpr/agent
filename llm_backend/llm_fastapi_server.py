@@ -16,6 +16,9 @@ SERVER_HOST = "0.0.0.0"
 SERVER_PORT = 8012
 MAX_BATCH_ITEMS = 32
 DEFAULT_BATCH_SIZE = 8
+MAX_EMBEDDING_ITEMS = 64
+DEFAULT_EMBEDDING_BATCH_SIZE = 16
+DEFAULT_EMBEDDING_MAX_TOKENS = 512
 API_KEY: str | None = None
 _MODEL_CACHE: dict[tuple[str, ...], tuple[Any, Any]] = {}
 
@@ -273,6 +276,33 @@ def _validate_batch_requests(payload: dict[str, Any]) -> tuple[list[dict[str, An
     return requests, _validate_batch_size(payload.get("batch_size"))
 
 
+def _validate_embedding_payload(payload: dict[str, Any]) -> tuple[list[str], int, int]:
+    raw_texts = payload.get("texts")
+    if raw_texts is None:
+        raw_texts = payload.get("input")
+    if isinstance(raw_texts, str):
+        texts = [raw_texts]
+    elif isinstance(raw_texts, list):
+        texts = raw_texts
+    else:
+        raise ValueError("texts or input must be a string or non-empty string array")
+    if not texts or len(texts) > MAX_EMBEDDING_ITEMS:
+        raise ValueError(f"embedding input length must be between 1 and {MAX_EMBEDDING_ITEMS}")
+    clean_texts = []
+    for index, text in enumerate(texts):
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError(f"embedding input {index} must be a non-empty string")
+        clean_texts.append(text)
+    batch_size = _validate_batch_size(payload.get("batch_size") or DEFAULT_EMBEDDING_BATCH_SIZE)
+    try:
+        max_tokens = int(payload.get("max_tokens") or DEFAULT_EMBEDDING_MAX_TOKENS)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("max_tokens must be a positive integer") from exc
+    if max_tokens <= 0:
+        raise ValueError("max_tokens must be a positive integer")
+    return clean_texts, batch_size, max_tokens
+
+
 class RawModelServer:
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -379,6 +409,55 @@ class RawModelServer:
             "results": ordered_results,
             "usage": total_usage,
             "batch_size": batch_size,
+        }
+
+    def embed_texts(self, texts: list[str], batch_size: int, max_tokens: int) -> dict[str, Any]:
+        processor, model, torch = self.load()
+        tokenizer = self._text_tokenizer(processor)
+        embeddings = []
+        token_counts = []
+        with self._generate_lock:
+            for start in range(0, len(texts), batch_size):
+                chunk = texts[start : start + batch_size]
+                inputs = tokenizer(
+                    chunk,
+                    return_tensors="pt",
+                    padding=True,
+                    truncation=True,
+                    max_length=max_tokens,
+                )
+                device = next(model.parameters()).device
+                inputs = inputs.to(device)
+                with torch.no_grad():
+                    try:
+                        outputs = model(**inputs, output_hidden_states=True, return_dict=True, use_cache=False)
+                    except TypeError:
+                        outputs = model(**inputs, output_hidden_states=True, return_dict=True)
+                hidden_states = getattr(outputs, "hidden_states", None)
+                if hidden_states:
+                    hidden = hidden_states[-1]
+                else:
+                    hidden = getattr(outputs, "last_hidden_state", None)
+                if hidden is None:
+                    raise RuntimeError("model output does not include hidden states for embeddings")
+                attention_mask = inputs.get("attention_mask")
+                if attention_mask is None:
+                    attention_mask = torch.ones(hidden.shape[:2], device=hidden.device)
+                mask = attention_mask.unsqueeze(-1).to(hidden.dtype)
+                pooled = (hidden * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1)
+                pooled = torch.nn.functional.normalize(pooled, p=2, dim=1)
+                vectors = pooled.detach().float().cpu().tolist()
+                embeddings.extend(vectors)
+                token_counts.extend(int(value) for value in attention_mask.sum(dim=1).detach().cpu().tolist())
+        dimension = len(embeddings[0]) if embeddings else 0
+        return {
+            "status": "success",
+            "model": str(_model_config_path()),
+            "dimension": dimension,
+            "embeddings": [
+                {"index": index, "embedding": vector, "token_count": token_counts[index]}
+                for index, vector in enumerate(embeddings)
+            ],
         }
 
     def _generate_batch_same_options(
@@ -544,7 +623,7 @@ def root() -> dict[str, Any]:
     return {
         "status": "ok",
         "service": "b4_raw_llm",
-        "endpoints": ["/health", "/generate", "/generate_stream", "/generate_batch"],
+        "endpoints": ["/health", "/generate", "/generate_stream", "/generate_batch", "/embeddings"],
     }
 
 
@@ -576,6 +655,18 @@ def generate_batch(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     try:
         batch_requests, batch_size = _validate_batch_requests(payload)
         return MODEL_SERVER.generate_batch(batch_requests, batch_size)
+    except ValueError as exc:
+        raise _api_error(400, str(exc), "invalid_request_error") from exc
+    except Exception as exc:
+        raise _api_error(500, str(exc), "server_error") from exc
+
+
+@app.post("/embeddings")
+def embeddings(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    _check_auth(request)
+    try:
+        texts, batch_size, max_tokens = _validate_embedding_payload(payload)
+        return MODEL_SERVER.embed_texts(texts, batch_size, max_tokens)
     except ValueError as exc:
         raise _api_error(400, str(exc), "invalid_request_error") from exc
     except Exception as exc:
