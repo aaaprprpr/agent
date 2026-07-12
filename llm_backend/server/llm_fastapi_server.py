@@ -10,7 +10,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MODEL_CONFIG_PATH = PROJECT_ROOT / "configs" / "model.yaml"
 SERVER_HOST = "0.0.0.0"
 SERVER_PORT = 8012

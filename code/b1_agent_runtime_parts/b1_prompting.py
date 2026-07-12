@@ -27,7 +27,7 @@ def build_llm_prompt_messages(messages: list[dict], tools_schema: list[dict]) ->
     )
     tool_disclosure = (
         "\n\n本轮可用工具结构：\n"
-        + json.dumps(tools_schema, ensure_ascii=False)
+        + json.dumps(_llm_tool_schemas(tools_schema), ensure_ascii=False)
         + "\n\n"
         + protocol_instruction
     )
@@ -50,17 +50,94 @@ def _json_block(payload: object) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
-def _tool_briefs(tools_schema: list[dict]) -> list[dict]:
-    briefs = []
+def _short_tool_description(description: object) -> str:
+    text = str(description or "").strip()
+    for marker in (
+        "\n工具执行结果会封装",
+        "工具执行结果会封装",
+        "\n主要 output 字段",
+        "主要 output 字段",
+    ):
+        if marker in text:
+            text = text.split(marker, 1)[0].strip()
+    return text
+
+
+def _compact_parameter_schema(parameters: object) -> dict:
+    if not isinstance(parameters, dict):
+        return {"type": "object", "properties": {}, "required": []}
+    properties = parameters.get("properties")
+    if not isinstance(properties, dict):
+        properties = {}
+    compact_properties = {}
+    for name, definition in properties.items():
+        if not isinstance(definition, dict):
+            continue
+        entry = {}
+        for key in ("type", "description", "enum"):
+            if key in definition:
+                entry[key] = definition[key]
+        if definition.get("type") == "array" and isinstance(definition.get("items"), dict):
+            item_type = definition["items"].get("type")
+            entry["items"] = {"type": item_type} if item_type else definition["items"]
+        compact_properties[name] = entry
+    required = parameters.get("required", [])
+    if not isinstance(required, list):
+        required = []
+    return {
+        "type": "object",
+        "properties": compact_properties,
+        "required": [name for name in required if name in compact_properties],
+    }
+
+
+def _compact_returns_schema(function: dict) -> dict:
+    raw_returns = function.get("x-returns")
+    properties = raw_returns.get("properties") if isinstance(raw_returns, dict) else None
+    if not isinstance(properties, dict):
+        return {}
+    compact = {}
+    for name, definition in properties.items():
+        if not isinstance(definition, dict):
+            continue
+        entry = {}
+        for key in ("type", "description"):
+            if key in definition:
+                entry[key] = definition[key]
+        compact[name] = entry
+    return compact
+
+
+def _llm_tool_schemas(tools_schema: list[dict]) -> list[dict]:
+    """Return a compact model-facing tool view."""
+    compact = []
     for tool in tools_schema:
         if not isinstance(tool, dict):
             continue
-        function = tool.get("function") if isinstance(tool.get("function"), dict) else {}
+        function = tool.get("function") if isinstance(tool.get("function"), dict) else tool
+        name = function.get("name") or tool.get("name")
+        if not name:
+            continue
         entry = {
-            "name": tool.get("name") or function.get("name"),
-            "description": tool.get("description") or function.get("description", ""),
+            "name": name,
+            "description": _short_tool_description(function.get("description") or tool.get("description")),
+            "parameters": _compact_parameter_schema(function.get("parameters") or tool.get("parameters")),
         }
-        parameters = tool.get("parameters") or function.get("parameters")
+        returns = _compact_returns_schema(function)
+        if returns:
+            entry["returns"] = returns
+        compact.append(entry)
+    return compact
+
+
+def _tool_briefs(tools_schema: list[dict]) -> list[dict]:
+    briefs = []
+    for function in _llm_tool_schemas(tools_schema):
+        entry = {
+            "name": function.get("name"),
+            "description": function.get("description", ""),
+        }
+        parameters = function.get("parameters")
         if isinstance(parameters, dict):
             properties = parameters.get("properties")
             if isinstance(properties, dict):
@@ -144,7 +221,7 @@ def _workspace_tool_messages(
         "previous_tool_attempts": _tool_attempts_summary(workspace),
         "previous_no_action_outputs": workspace["tools"].get("no_action_outputs", []),
         "observations": workspace["tools"].get("observations", []),
-        "available_tools_schema": tools_schema,
+        "available_tools_schema": _llm_tool_schemas(tools_schema),
     }
     return [
         {
@@ -267,10 +344,11 @@ def _workspace_stage_failure_answer_messages(
         "observations": workspace["tools"].get("observations", []),
         "runtime_issue": {
             "failed_stage": failed_stage,
-            "error": error,
-            "raw_model_output": raw_text,
+            "issue": "内部结构化输出未通过解析；该阶段动作没有生效，不能把未执行的工具结果当作事实。",
+            "error_type": error.get("type") if isinstance(error, dict) else None,
         },
     }
+    del raw_text
     return [
         {
             "role": "system",

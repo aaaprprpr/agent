@@ -440,6 +440,112 @@
   overflow-wrap: anywhere;
 }
 
+.markdown-message {
+  color: #2f2f2f;
+  font-size: 15px;
+  line-height: 1.72;
+  overflow-wrap: anywhere;
+}
+
+.markdown-message > div + div {
+  margin-top: 12px;
+}
+
+.markdown-message p {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.markdown-message p + p,
+.markdown-message p + ul,
+.markdown-message p + ol,
+.markdown-message ul + p,
+.markdown-message ol + p,
+.markdown-message .markdown-code-block + p,
+.markdown-message p + .markdown-code-block {
+  margin-top: 10px;
+}
+
+.markdown-message h1,
+.markdown-message h2,
+.markdown-message h3,
+.markdown-message h4 {
+  margin: 0 0 8px;
+  color: #222;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.markdown-message h1 {
+  font-size: 20px;
+}
+
+.markdown-message h2 {
+  font-size: 18px;
+}
+
+.markdown-message h3 {
+  font-size: 16px;
+}
+
+.markdown-message h4 {
+  font-size: 15px;
+}
+
+.markdown-message ul,
+.markdown-message ol {
+  margin: 0;
+  padding-left: 22px;
+}
+
+.markdown-message li + li {
+  margin-top: 4px;
+}
+
+.markdown-message code {
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: #f1f1f1;
+  color: #333;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 0.92em;
+}
+
+.markdown-code-block {
+  margin: 12px 0;
+  overflow: hidden;
+  border: 1px solid #dedede;
+  border-radius: 10px;
+  background: #f7f7f7;
+}
+
+.markdown-code-lang {
+  padding: 6px 10px;
+  border-bottom: 1px solid #e5e5e5;
+  color: #777;
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+}
+
+.markdown-code-block pre {
+  margin: 0;
+  padding: 12px;
+  overflow-x: auto;
+  color: #2c2c2c;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre;
+}
+
+.markdown-code-block code {
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+
 .loading-bubble {
   display: inline-flex;
   align-items: center;

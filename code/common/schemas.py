@@ -88,7 +88,98 @@ def make_skill_result(
         "output": output,
         "error": error,
         "latency_ms": latency_ms,
+        "summary": _skill_result_summary(status, output, error),
+        "sources": _skill_result_sources(output),
+        "artifacts": _skill_result_artifacts(output),
     }
+
+
+def _skill_result_summary(status: str, output: dict | None, error: dict | None) -> dict:
+    if status == "error":
+        message = ""
+        if isinstance(error, dict):
+            message = str(error.get("message") or "")
+        return {"status": status, "message": message}
+    if not isinstance(output, dict):
+        return {"status": status, "message": ""}
+    counts = {}
+    for key in ("num_rows", "num_columns", "num_chars", "num_bytes", "line_count", "slide_count"):
+        value = output.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            counts[key] = value
+    if isinstance(output.get("results"), list):
+        counts["result_count"] = len(output["results"])
+    return {
+        "status": status,
+        "message": _skill_result_message(output),
+        "counts": counts,
+    }
+
+
+def _skill_result_message(output: dict) -> str:
+    if isinstance(output.get("content"), str):
+        text = output["content"].strip().replace("\n", " ")
+        return text[:180]
+    if isinstance(output.get("formatted_text"), str):
+        text = output["formatted_text"].strip().replace("\n", " ")
+        return text[:180]
+    if isinstance(output.get("text"), str):
+        text = output["text"].strip().replace("\n", " ")
+        return text[:180]
+    if "result" in output:
+        return str(output["result"])
+    if isinstance(output.get("time"), str) and isinstance(output.get("date"), str):
+        return f"{output['date']} {output['time']}"
+    return ""
+
+
+def _skill_result_sources(output: dict | None) -> list[dict]:
+    if not isinstance(output, dict):
+        return []
+    sources = []
+    source = output.get("source") or output.get("path")
+    if isinstance(source, str):
+        item = {
+            "source": source,
+            "relative_path": output.get("relative_path"),
+            "root_alias": output.get("root_alias"),
+        }
+        sources.append({key: value for key, value in item.items() if value is not None})
+    results = output.get("results")
+    if isinstance(results, list):
+        for result in results:
+            if not isinstance(result, dict):
+                continue
+            result_source = result.get("source") or result.get("path")
+            if not isinstance(result_source, str):
+                continue
+            item = {
+                "source": result_source,
+                "relative_path": result.get("relative_path"),
+                "root_alias": result.get("root_alias"),
+                "score": result.get("score"),
+                "line_number": result.get("line_number"),
+            }
+            sources.append({key: value for key, value in item.items() if value is not None})
+    return sources
+
+
+def _skill_result_artifacts(output: dict | None) -> list[dict]:
+    if not isinstance(output, dict):
+        return []
+    artifacts = []
+    generated_path = output.get("generated_file_path")
+    if isinstance(generated_path, str):
+        item = {
+            "path": generated_path,
+            "relative_output_path": output.get("relative_output_path"),
+            "filename": output.get("filename"),
+            "file_type": output.get("file_type"),
+            "suffix": output.get("suffix"),
+            "num_bytes": output.get("num_bytes"),
+        }
+        artifacts.append({key: value for key, value in item.items() if value is not None})
+    return artifacts
 
 
 def normalize_tool_call(tool_call: dict[str, Any], index: int = 0) -> dict:

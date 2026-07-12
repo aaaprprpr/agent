@@ -4,7 +4,8 @@
 
 python start_all.py
 
-
+env example去掉文件后缀，成.env
+填内容
 
 
 

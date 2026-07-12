@@ -61,7 +61,10 @@ tools:
       date: {type: string, description: 当前日期。}
       time: {type: string, description: 当前钟表时间。}
       weekday: {type: string, description: 星期名称。}
+      weekday_index: {type: integer, description: 星期序号，周一为 1。}
       utc_offset: {type: string, description: 协调世界时偏移，格式为正负小时分钟。}
+      unix_timestamp: {type: integer, description: Unix 时间戳。}
+      local_time: {type: string, description: 当前本地时区时间。}
       utc_time: {type: string, description: 当前协调世界时。}
 
   file_reader:
@@ -86,8 +89,12 @@ tools:
       content: {type: string, description: 文件内容。}
       num_chars: {type: integer, description: 返回的字符数。}
       source: {type: string, description: 规范化后的路径；如果不在数据目录下，会包含根目录别名。}
+      relative_path: {type: string, description: 相对匹配根目录的路径。}
       root_alias: {type: string, description: 匹配到的允许根目录别名。}
+      suffix: {type: string, description: 文件后缀。}
       line_count: {type: integer, description: 文件总行数。}
+      line_start: {type: integer, description: 本次返回内容的起始行。}
+      line_end: {type: integer, description: 本次返回内容的结束行。}
       parser: {type: string, description: 使用的解析器。}
       document_type: {type: string, description: 文档类型。}
       slide_count: {type: integer, description: 演示文件的页数；仅适用时返回。}
@@ -137,6 +144,8 @@ tools:
       max_file_chars: {type: integer, description: 每个文件最多扫描的字符数。}
     required: [query]
     returns:
+      query_terms: {type: array, description: 从 query 中解析出的搜索词。}
+      root_alias: {type: string, description: 搜索目录匹配到的允许根目录别名。}
       results: {type: array, description: 按相关度排序的路径、片段和分数。}
 
   mcp_web_search:
@@ -156,6 +165,7 @@ tools:
       mcp_attempt_count: {type: integer, description: 搜索尝试次数。}
       mcp_attempts: {type: array, description: 已尝试的搜索调用，包括回退尝试和错误文本。}
       structured_content: {type: object, description: 搜索服务返回的结构化内容；存在时返回。}
+      content: {type: array, description: 搜索服务返回的原始内容块。}
       text: {type: string, description: 搜索服务返回的文本内容。}
       is_error: {type: boolean, description: 搜索工具是否报告错误。}
 
@@ -169,6 +179,9 @@ tools:
       describe: {type: boolean, description: 是否计算数值统计信息。}
     required: [path]
     returns:
+      path: {type: string, description: 规范化后的表格路径；如果不在数据目录下，会包含根目录别名。}
+      relative_path: {type: string, description: 相对匹配根目录的路径。}
+      root_alias: {type: string, description: 匹配到的允许根目录别名。}
       num_rows: {type: integer, description: 数据行数。}
       num_columns: {type: integer, description: 列数。}
       columns: {type: array, description: 列名。}
@@ -189,3 +202,10 @@ tools:
     returns:
       formatted_text: {type: string, description: 转换后的文本。}
       generated_file_path: {type: string, description: 生成的输出文件路径。}
+      relative_output_path: {type: string, description: 运行输出目录下的相对路径，位于 generated_files 目录内。}
+      filename: {type: string, description: 唯一性处理后的最终文件名。}
+      file_type: {type: string, description: 规范化后的文件类型。}
+      suffix: {type: string, description: 生成文件后缀。}
+      num_chars: {type: integer, description: 转换后文本字符数。}
+      num_bytes: {type: integer, description: 生成文件的字节大小。}
+      overwritten: {type: boolean, description: 是否覆盖已有文件；该工具始终不会覆盖。}

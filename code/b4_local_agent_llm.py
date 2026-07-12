@@ -34,7 +34,9 @@ def _llm_source(config: dict) -> str:
         return "local"
     if source in {"fastapi", "api"}:
         return "fastapi"
-    raise ValueError("runtime.llm_source must be local or fastapi")
+    if source in {"qwen_api", "qwen", "dashscope"}:
+        return "qwen_api"
+    raise ValueError("runtime.llm_source must be local, fastapi, or qwen_api")
 
 
 def _generation_options(config: dict) -> dict:
@@ -67,22 +69,24 @@ def _max_input_tokens(config: dict) -> int | None:
     return value
 
 
-def _fastapi_config(config: dict) -> dict:
-    api_config = config.get("fastapi", {})
+def _fastapi_config(config: dict, source: str | None = None) -> dict:
+    source = source or _llm_source(config)
+    config_key = "qwen_api" if source == "qwen_api" else "fastapi"
+    api_config = config.get(config_key, {})
     if not isinstance(api_config, dict):
-        raise ValueError("fastapi config must be an object")
+        raise ValueError(f"{config_key} config must be an object")
     base_url = api_config.get("base_url")
     if not isinstance(base_url, str) or not base_url.strip():
-        raise ValueError("fastapi.base_url is required when runtime.llm_source=fastapi")
+        raise ValueError(f"{config_key}.base_url is required when runtime.llm_source={source}")
     generate_path = api_config.get("generate_path", "/generate")
     if not isinstance(generate_path, str) or not generate_path.startswith("/"):
-        raise ValueError("fastapi.generate_path must start with /")
+        raise ValueError(f"{config_key}.generate_path must start with /")
     stream_path = api_config.get("stream_path", "/generate_stream")
     if not isinstance(stream_path, str) or not stream_path.startswith("/"):
-        raise ValueError("fastapi.stream_path must start with /")
+        raise ValueError(f"{config_key}.stream_path must start with /")
     timeout = float(api_config.get("timeout_seconds", 600))
     if timeout <= 0:
-        raise ValueError("fastapi.timeout_seconds must be positive")
+        raise ValueError(f"{config_key}.timeout_seconds must be positive")
     return {
         "base_url": base_url.rstrip("/"),
         "generate_path": generate_path,
@@ -331,6 +335,49 @@ def _parse_error_fallback_content(raw_text: str) -> str:
     return "模型返回了空内容。"
 
 
+def _normalize_agent_step(value: object, action: str | None) -> dict | None:
+    if value is None:
+        return None
+    default_phase = "action" if action == "call_tools" else "final"
+    phase_aliases = {
+        "planning": "plan",
+        "plan": "plan",
+        "tool_calling": "action",
+        "action": "action",
+        "observing": "observation",
+        "observation": "observation",
+        "answering": "final",
+        "finish": "final",
+        "final": "final",
+    }
+    allowed = {"phase", "plan", "observation", "known_facts", "missing_info", "next_step"}
+    if isinstance(value, dict):
+        step = {key: value[key] for key in allowed if key in value}
+        raw_phase = step.get("phase")
+    else:
+        step = {"next_step": str(value).strip()}
+        raw_phase = value
+    phase = phase_aliases.get(str(raw_phase or "").strip(), default_phase)
+    step["phase"] = phase
+    for key in ("plan", "observation", "next_step"):
+        current = step.get(key)
+        if current is None:
+            step[key] = ""
+        elif not isinstance(current, str):
+            step[key] = json.dumps(current, ensure_ascii=False) if isinstance(current, (dict, list)) else str(current)
+    for key in ("known_facts", "missing_info"):
+        current = step.get(key)
+        if current is None:
+            step[key] = []
+        elif isinstance(current, str):
+            step[key] = [current] if current.strip() else []
+        elif isinstance(current, list):
+            step[key] = [str(item) for item in current if item is not None]
+        else:
+            step[key] = [str(current)]
+    return step
+
+
 def _candidate_to_message(candidate: dict, has_tool_messages: bool = False) -> tuple[dict, dict]:
     if not isinstance(candidate, dict):
         raise ValueError("model output JSON must be an object")
@@ -350,6 +397,11 @@ def _candidate_to_message(candidate: dict, has_tool_messages: bool = False) -> t
             else call
             for call in raw_tool_calls
         ]
+    content = candidate.get("content", "")
+    if content is None:
+        content = ""
+    elif not isinstance(content, str):
+        content = str(content)
     if isinstance(raw_control, dict):
         action = raw_control.get("action")
         if action not in {"call_tools", "finish"}:
@@ -360,20 +412,26 @@ def _candidate_to_message(candidate: dict, has_tool_messages: bool = False) -> t
         if action == "finish" and state not in {"completed", "failed"}:
             state = "completed"
         reason = raw_control.get("reason", "")
+        if action == "finish" and state == "failed" and not str(reason or "").strip():
+            reason = content.strip() or "模型返回 failed 状态。"
         normalized_control = {
             "state": state,
             "action": action,
             "reason": reason if isinstance(reason, str) else str(reason),
         }
+    else:
+        action = "call_tools" if raw_tool_calls else "finish"
     message = {
         "role": "assistant",
-        "content": candidate.get("content", ""),
+        "content": content,
         "tool_calls": raw_tool_calls,
     }
     if normalized_control is not None:
         message["control"] = normalized_control
     if "agent_step" in candidate:
-        message["agent_step"] = candidate["agent_step"]
+        agent_step = _normalize_agent_step(candidate["agent_step"], action)
+        if agent_step is not None:
+            message["agent_step"] = agent_step
     del has_tool_messages
     validate_ai_message(message)
     parsed_candidate = {
@@ -961,7 +1019,7 @@ def stream_ai_message(
             yield {"type": "delta", "text": ai_message["content"]}
     elif mode == "prompt_json":
         prompt_messages = _prompt_messages_for_model(messages, tools_schema, prompt_ready)
-        if source == "fastapi":
+        if source in {"fastapi", "qwen_api"}:
             raw_parts = []
             emitted_chars = 0
             for chunk in _fastapi_prompt_json_stream(config_path, config, messages, tools_schema, prompt_ready):
@@ -976,7 +1034,7 @@ def stream_ai_message(
         elif source == "local":
             raw_text = _prompt_json_generate(config_path, config, messages, tools_schema, prompt_ready)
         else:
-            raise ValueError("runtime.llm_source must be local or fastapi")
+            raise ValueError("runtime.llm_source must be local, fastapi, or qwen_api")
         try:
             parsed_candidate, ai_message = _parse_model_output(
                 raw_text,
