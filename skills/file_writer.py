@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import html
+import csv
 import re
 import zipfile
+import json
 from pathlib import Path, PureWindowsPath
 
 
@@ -14,6 +16,7 @@ TEXT_FILE_TYPES = {
     "txt": {".txt"},
     "markdown": {".md"},
 }
+TABLE_SUFFIXES = {".csv", ".tsv"}
 CODE_SUFFIXES = {
     ".py",
     ".js",
@@ -32,7 +35,7 @@ CODE_SUFFIXES = {
     ".sh",
     ".ps1",
 }
-SUPPORTED_FILE_TYPES = {"txt", "markdown", "docx", "code"}
+SUPPORTED_FILE_TYPES = {"txt", "markdown", "docx", "code", "json", "table"}
 WINDOWS_RESERVED_NAMES = {
     "CON",
     "PRN",
@@ -127,6 +130,14 @@ def _validate_suffix(path: Path, file_type: str) -> str:
         if suffix != ".docx":
             raise ValueError("filename suffix for file_type=docx must be .docx")
         return suffix
+    if file_type == "json":
+        if suffix != ".json":
+            raise ValueError("filename suffix for file_type=json must be .json")
+        return suffix
+    if file_type == "table":
+        if suffix not in TABLE_SUFFIXES:
+            raise ValueError("filename suffix for file_type=table must be .csv or .tsv")
+        return suffix
     if file_type == "code":
         if suffix not in CODE_SUFFIXES:
             raise ValueError("filename suffix for file_type=code is not in the supported code suffix whitelist")
@@ -185,12 +196,21 @@ def _write_docx_file(path: Path, content: str) -> None:
         raise RuntimeError(f"failed to generate docx file: {exc}") from exc
 
 
-def file_writer(
-    filename: str,
-    file_type: str,
-    content: str,
-    output_dir: str | None = None,
-) -> dict:
+def _write_table_file(path: Path, columns: list[str], rows: list) -> None:
+    delimiter = "\t" if path.suffix.lower() == ".tsv" else ","
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle, delimiter=delimiter)
+        writer.writerow(columns)
+        for row in rows:
+            if isinstance(row, dict):
+                writer.writerow([row.get(column, "") for column in columns])
+            elif isinstance(row, list):
+                writer.writerow(row)
+            else:
+                raise ValueError("table rows must contain objects or arrays")
+
+
+def _write_generated_file(filename: str, file_type: str, content: str, output_dir: str | None = None) -> dict:
     normalized_type = _normalize_file_type(file_type)
     validated_content = _validate_content(content)
     relative_path = _validate_filename(filename)
@@ -201,14 +221,84 @@ def file_writer(
         _write_docx_file(target, validated_content)
     else:
         _write_text_file(target, validated_content)
+    return _file_result(target, output_dir, normalized_type, suffix, len(validated_content))
+
+
+def _file_result(target: Path, output_dir: str | None, file_type: str, suffix: str, num_chars: int) -> dict:
     output_base = Path(output_dir).resolve() if output_dir else DEFAULT_OUTPUT_DIR.resolve()
     return {
         "generated_file_path": str(target),
         "relative_output_path": target.relative_to(output_base).as_posix(),
         "filename": target.name,
-        "file_type": normalized_type,
+        "file_type": file_type,
         "suffix": suffix,
-        "num_chars": len(validated_content),
+        "num_chars": num_chars,
         "num_bytes": target.stat().st_size,
         "overwritten": False,
     }
+
+
+def text_file_writer(filename: str, content: str, output_dir: str | None = None) -> dict:
+    return _write_generated_file(filename, "txt", content, output_dir)
+
+
+def markdown_file_writer(filename: str, content: str, output_dir: str | None = None) -> dict:
+    return _write_generated_file(filename, "markdown", content, output_dir)
+
+
+def code_file_writer(
+    filename: str,
+    content: str,
+    language: str | None = None,
+    output_dir: str | None = None,
+) -> dict:
+    result = _write_generated_file(filename, "code", content, output_dir)
+    if isinstance(language, str) and language.strip():
+        result["language"] = language.strip()
+    return result
+
+
+def docx_writer(filename: str, content: str, output_dir: str | None = None) -> dict:
+    return _write_generated_file(filename, "docx", content, output_dir)
+
+
+def json_file_writer(filename: str, data: dict, output_dir: str | None = None) -> dict:
+    if not isinstance(data, dict):
+        raise ValueError("data must be a JSON object")
+    content = json_dumps(data)
+    return _write_generated_file(filename, "json", content, output_dir)
+
+
+def table_file_writer(
+    filename: str,
+    columns: list,
+    rows: list,
+    output_dir: str | None = None,
+) -> dict:
+    if not isinstance(columns, list) or not columns or not all(isinstance(column, str) and column for column in columns):
+        raise ValueError("columns must be a non-empty array of strings")
+    if not isinstance(rows, list):
+        raise ValueError("rows must be an array")
+    relative_path = _validate_filename(filename)
+    suffix = _validate_suffix(relative_path, "table")
+    base_dir = _safe_base_output_dir(output_dir)
+    target = _unique_output_path(base_dir, relative_path)
+    _write_table_file(target, columns, rows)
+    num_chars = len(target.read_text(encoding="utf-8"))
+    result = _file_result(target, output_dir, "table", suffix, num_chars)
+    result["num_rows"] = len(rows)
+    result["num_columns"] = len(columns)
+    return result
+
+
+def json_dumps(data: dict) -> str:
+    return json.dumps(data, ensure_ascii=False, indent=2)
+
+
+def file_writer(
+    filename: str,
+    file_type: str,
+    content: str,
+    output_dir: str | None = None,
+) -> dict:
+    return _write_generated_file(filename, file_type, content, output_dir)

@@ -313,7 +313,7 @@ def _workspace_answer_messages(system_prompt: str, workspace: dict) -> list[dict
                 "根据用户任务、可用证据和已知事实生成最终回答。\n"
                 "如果信息不足，直接说明还需要什么；不要编造。"
                 "只有 accepted_evidence 或成功工具结果中明确出现的信息，才能声明为已经完成。"
-                "没有成功的 file_writer 结果时，不得说文件已生成；没有下载接口或下载工具时，不得说已经可以直接下载；"
+                "没有成功的写文件工具结果时，不得说文件已生成；没有下载接口或下载工具时，不得说已经可以直接下载；"
                 "没有成功 file_reader/search/calculator 等结果时，不得声称已经读取、搜索或计算完成。\n"
                 "只输出 AIMessage JSON 对象，顶层键只能是 content、tool_calls、control、agent_step。\n"
                 "必须满足：tool_calls=[]，control.action=finish，control.state 为 completed 或 failed，"

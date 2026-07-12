@@ -284,7 +284,14 @@ def _parse_malformed_tool_call_fragment(raw_text: str, original_error: json.JSON
     if array_start == -1 or call_start == -1:
         raise original_error
     name = _json_string_value(raw_text, "name", call_start)
-    if name != "file_writer":
+    writer_names = {
+        "file_writer",
+        "text_file_writer",
+        "markdown_file_writer",
+        "code_file_writer",
+        "docx_writer",
+    }
+    if name not in writer_names:
         raise original_error
     args_marker = raw_text.find(json.dumps("args", ensure_ascii=False), call_start)
     args_start = raw_text.find("{", args_marker)
@@ -293,8 +300,18 @@ def _parse_malformed_tool_call_fragment(raw_text: str, original_error: json.JSON
     filename = _json_string_value(raw_text, "filename", args_start)
     file_type = _json_string_value(raw_text, "file_type", args_start)
     file_content = _json_string_value(raw_text, "content", args_start)
-    if not filename or not file_type or file_content is None:
+    if not filename or file_content is None:
         raise original_error
+    recovered_name = name
+    if name == "file_writer":
+        recovered_name = {
+            "txt": "text_file_writer",
+            "markdown": "markdown_file_writer",
+            "docx": "docx_writer",
+            "code": "code_file_writer",
+        }.get(str(file_type or "").strip().lower(), "")
+        if not recovered_name:
+            raise original_error
     top_content = _json_string_value(raw_text, "content") or ""
     call_id = _json_string_value(raw_text, "id", call_start) or "call_001"
     return {
@@ -302,10 +319,9 @@ def _parse_malformed_tool_call_fragment(raw_text: str, original_error: json.JSON
         "tool_calls": [
             {
                 "id": call_id,
-                "name": "file_writer",
+                "name": recovered_name,
                 "args": {
                     "filename": filename,
-                    "file_type": file_type,
                     "content": file_content,
                 },
             }
@@ -313,7 +329,7 @@ def _parse_malformed_tool_call_fragment(raw_text: str, original_error: json.JSON
         "control": {
             "state": "acting",
             "action": "call_tools",
-            "reason": "recover explicit file_writer tool call",
+            "reason": f"recover explicit {recovered_name} tool call",
         },
     }
 
