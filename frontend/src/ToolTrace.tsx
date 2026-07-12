@@ -1,4 +1,4 @@
-import type { ChatMessage, ToolDetail } from './types'
+import type { ChatMessage, GeneratedArtifact, ToolDetail } from './types'
 
 function prettyJson(value: unknown) {
   if (typeof value === 'string') return value
@@ -7,6 +7,98 @@ function prettyJson(value: unknown) {
   } catch {
     return String(value)
   }
+}
+
+function objectRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined
+}
+
+function parseJsonObject(value: unknown): Record<string, unknown> | undefined {
+  if (typeof value !== 'string') return objectRecord(value)
+  try {
+    return objectRecord(JSON.parse(value))
+  } catch {
+    return undefined
+  }
+}
+
+function filenameFromPath(value: unknown) {
+  if (typeof value !== 'string' || !value.trim()) return undefined
+  const normalized = value.replace(/\\/g, '/')
+  return normalized.split('/').filter(Boolean).pop()
+}
+
+function numberValue(value: unknown) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function artifactFromRecord(record: Record<string, unknown>): GeneratedArtifact | undefined {
+  const downloadUrl = typeof record.download_url === 'string' && record.download_url.trim()
+    ? record.download_url.trim()
+    : undefined
+  if (!downloadUrl) return undefined
+  const filename =
+    (typeof record.filename === 'string' && record.filename.trim())
+      || filenameFromPath(record.relative_output_path)
+      || filenameFromPath(record.path)
+      || 'generated-file'
+  return {
+    filename,
+    download_url: downloadUrl,
+    file_type: typeof record.file_type === 'string' ? record.file_type : undefined,
+    suffix: typeof record.suffix === 'string' ? record.suffix : undefined,
+    num_bytes: numberValue(record.num_bytes),
+    relative_output_path: typeof record.relative_output_path === 'string' ? record.relative_output_path : undefined,
+  }
+}
+
+function artifactsFromSkillPayload(payload?: Record<string, unknown>) {
+  if (!payload) return []
+  const result: GeneratedArtifact[] = []
+  const output = objectRecord(payload.output)
+  if (output) {
+    const outputArtifact = artifactFromRecord(output)
+    if (outputArtifact) result.push(outputArtifact)
+  }
+  const artifacts = Array.isArray(payload.artifacts) ? payload.artifacts : []
+  artifacts.forEach((item) => {
+    const artifact = objectRecord(item)
+    if (!artifact) return
+    const normalized = artifactFromRecord(artifact)
+    if (normalized) result.push(normalized)
+  })
+  return mergeArtifacts([], result)
+}
+
+export function mergeArtifacts(
+  existing: GeneratedArtifact[] | undefined,
+  incoming: GeneratedArtifact[] | undefined,
+) {
+  const result: GeneratedArtifact[] = []
+  const seen = new Set<string>()
+  for (const artifact of [...(existing ?? []), ...(incoming ?? [])]) {
+    const key = artifact.download_url || artifact.relative_output_path || artifact.filename
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    result.push(artifact)
+  }
+  return result
+}
+
+export function artifactsFromToolMessages(messages?: unknown[]) {
+  if (!Array.isArray(messages)) return []
+  return mergeArtifacts([], messages.flatMap((message) => {
+    const record = objectRecord(message)
+    return artifactsFromSkillPayload(parseJsonObject(record?.content))
+  }))
+}
+
+export function artifactsFromToolSteps(steps?: Record<string, unknown>[]) {
+  if (!Array.isArray(steps)) return []
+  return mergeArtifacts([], steps.flatMap((step) => {
+    const output = objectRecord(step.output) ?? parseJsonObject(step.output_json)
+    return artifactsFromSkillPayload({ output, artifacts: output ? [output] : [] })
+  }))
 }
 
 function toolNameFromRecord(value: unknown, fallback: string) {

@@ -7,15 +7,19 @@ KssAT6iTwb
 conda activate agent310 && cd /d E:\assignment_B\agent
 
 python start_all.py
+
 python test.py
+
 # -------------------------7.12------------------------------
 
 做记忆，改bug
 改记忆模块
 优化记忆模块，优化轮级反思 prompt
 LLM rerank + RAG
+改进记忆系统，修bug
+改进记忆系统
 加对话终止按钮
-
+加生成文件的下载拉取
 
 # -------------------------7.11------------------------------
 
@@ -26,7 +30,7 @@ LLM rerank + RAG
 环境爆炸 补救
 前端实现删除会话，同时删除本地上传文件
 实现文件生成txt,md,code
-
+//B4支持流式输出，并行输出，可以维护一个任务队列，把同时进行的拼成一个betch提高吞吐量
 
 # -------------------------7.12 B5 接入新版 B1 workspace------------------------------
 
@@ -185,3 +189,11 @@ tool/skill 第一批增强：
 - 修复旧/新闲聊记录过高分问题：召回评分会压低无事实、无偏好、无决定、无纠正的闲聊/噪声；反思入库也会对这类内容强制降权并允许丢弃。
 - qwen_api 服务补 `/embeddings` 代理入口，`memory.yaml` 明确使用 `text-embedding-v4`，避免向量召回继续因 `/embeddings` 404 退化。
 - 本次仍未启动项目、未跑训练、未跑测试；需要你重启 qwen_api 服务和后端后复测。
+
+# -------------------------7.12 文件生成下载入口------------------------------
+
+- 在不改变 file_writer 写入位置和核心逻辑的前提下，确认生成文件仍落在每次运行的 `outputs/backend_runs/<conversation_id>/<run_id>/generated_files/`。
+- B3 在文件类工具结果中追加 `download_url`，格式为后端相对接口 `/api/artifacts/<conversation_id>/<run_id>/generated_files/...`，让文件生成完成时即可获得下载入口；B1 workspace 工具输出摘要同步保留该字段。
+- 后端新增受限下载接口，只允许读取对应 run 目录下的 `generated_files`，不暴露整个 `outputs` 静态目录。
+- 前端从 tool message/tool step 中提取生成文件 artifact，在助手消息中展示下载卡片；历史消息重新加载时也能恢复下载卡片。
+- 本次未启动项目、未跑训练、未跑测试；只做静态 diff 检查，需要你本地联调验证生成文件和下载按钮。

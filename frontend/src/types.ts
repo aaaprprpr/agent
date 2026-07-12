@@ -13,6 +13,15 @@ export type ToolDetail = {
   kind?: 'note' | 'tool' | 'agent'
 }
 
+export type GeneratedArtifact = {
+  filename: string
+  download_url: string
+  file_type?: string
+  suffix?: string
+  num_bytes?: number
+  relative_output_path?: string
+}
+
 export type ChatMessage = {
   id: number | string
   role: Role
@@ -21,6 +30,7 @@ export type ChatMessage = {
   toolDetails?: ToolDetail[]
   toolPanelOpen?: boolean
   attachments?: MessageAttachment[]
+  artifacts?: GeneratedArtifact[]
 }
 
 export type Attachment = {

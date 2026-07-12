@@ -3,7 +3,7 @@ import type { ClipboardEvent, RefObject, UIEventHandler } from 'react'
 import { FileTypeIcon, formatSize } from './fileUtils'
 import { MarkdownMessage } from './MarkdownMessage'
 import { LoadingBubble, ToolTrace } from './ToolTrace'
-import type { ChatMessage } from './types'
+import type { ChatMessage, GeneratedArtifact } from './types'
 
 
 function handleMessageCopy(event: ClipboardEvent<HTMLDivElement>) {
@@ -15,13 +15,46 @@ function handleMessageCopy(event: ClipboardEvent<HTMLDivElement>) {
 }
 
 
+function artifactHref(downloadUrl: string, apiBase: string) {
+  if (/^https?:\/\//i.test(downloadUrl)) return downloadUrl
+  if (downloadUrl.startsWith('/')) return `${apiBase.replace(/\/$/, '')}${downloadUrl}`
+  return downloadUrl
+}
+
+
+function ArtifactList({ artifacts, apiBase }: { artifacts: GeneratedArtifact[]; apiBase: string }) {
+  if (artifacts.length === 0) return null
+  return (
+    <div className="message-artifacts">
+      {artifacts.map((artifact) => (
+        <a
+          className="message-artifact"
+          href={artifactHref(artifact.download_url, apiBase)}
+          download={artifact.filename}
+          key={artifact.download_url}
+        >
+          <FileTypeIcon name={artifact.filename} />
+          <span>
+            <strong>{artifact.filename}</strong>
+            {typeof artifact.num_bytes === 'number' && <small>{formatSize(artifact.num_bytes)}</small>}
+          </span>
+          <em>下载</em>
+        </a>
+      ))}
+    </div>
+  )
+}
+
+
 export function ChatMessageList({
   messages,
+  apiBase,
   conversationRef,
   onScroll,
   onToggleTool,
 }: {
   messages: ChatMessage[]
+  apiBase: string
   conversationRef: RefObject<HTMLElement | null>
   onScroll: UIEventHandler<HTMLElement>
   onToggleTool: (messageId: number | string) => void
@@ -47,6 +80,9 @@ export function ChatMessageList({
               : message.role === 'assistant'
                 ? <MarkdownMessage text={message.body} />
                 : <p>{message.body}</p>}
+            {message.role === 'assistant' && message.artifacts && (
+              <ArtifactList artifacts={message.artifacts} apiBase={apiBase} />
+            )}
           </div>
         </article>
       ))}

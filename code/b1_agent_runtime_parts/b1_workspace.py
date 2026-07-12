@@ -144,7 +144,7 @@ def _compact_for_workspace(value: object, limit: int = 900) -> object:
         for key, item in value.items():
             if key in {"content", "text"}:
                 compact[key] = _compact_for_workspace(item, limit)
-            elif key in {"generated_file_path", "relative_output_path", "filename", "file_type", "status", "error"}:
+            elif key in {"generated_file_path", "relative_output_path", "download_url", "filename", "file_type", "status", "error"}:
                 compact[key] = _compact_for_workspace(item, limit)
             elif isinstance(item, (str, int, float, bool)) or item is None:
                 compact[key] = item

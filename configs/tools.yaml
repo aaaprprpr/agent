@@ -182,6 +182,7 @@ tools:
     returns:
       generated_file_path: {type: string, description: 生成文件的绝对路径。}
       relative_output_path: {type: string, description: 运行输出目录下的相对路径，位于 generated_files 目录内。}
+      download_url: {type: string, description: 浏览器可访问的文件下载接口地址。}
       filename: {type: string, description: 唯一性处理后的最终文件名。}
       file_type: {type: string, description: 文件类型，固定为 txt。}
       suffix: {type: string, description: 文件后缀，固定为 .txt。}
@@ -205,6 +206,7 @@ tools:
     returns:
       generated_file_path: {type: string, description: 生成文件的绝对路径。}
       relative_output_path: {type: string, description: 运行输出目录下的相对路径，位于 generated_files 目录内。}
+      download_url: {type: string, description: 浏览器可访问的文件下载接口地址。}
       filename: {type: string, description: 唯一性处理后的最终文件名。}
       file_type: {type: string, description: 文件类型，固定为 markdown。}
       suffix: {type: string, description: 文件后缀，固定为 .md。}
@@ -231,6 +233,7 @@ tools:
     returns:
       generated_file_path: {type: string, description: 生成文件的绝对路径。}
       relative_output_path: {type: string, description: 运行输出目录下的相对路径，位于 generated_files 目录内。}
+      download_url: {type: string, description: 浏览器可访问的文件下载接口地址。}
       filename: {type: string, description: 唯一性处理后的最终文件名。}
       file_type: {type: string, description: 文件类型，固定为 code。}
       suffix: {type: string, description: 生成文件后缀。}
@@ -255,6 +258,7 @@ tools:
     returns:
       generated_file_path: {type: string, description: 生成文件的绝对路径。}
       relative_output_path: {type: string, description: 运行输出目录下的相对路径，位于 generated_files 目录内。}
+      download_url: {type: string, description: 浏览器可访问的文件下载接口地址。}
       filename: {type: string, description: 唯一性处理后的最终文件名。}
       file_type: {type: string, description: 文件类型，固定为 json。}
       suffix: {type: string, description: 文件后缀，固定为 .json。}
@@ -278,6 +282,7 @@ tools:
     returns:
       generated_file_path: {type: string, description: 生成文件的绝对路径。}
       relative_output_path: {type: string, description: 运行输出目录下的相对路径，位于 generated_files 目录内。}
+      download_url: {type: string, description: 浏览器可访问的文件下载接口地址。}
       filename: {type: string, description: 唯一性处理后的最终文件名。}
       file_type: {type: string, description: 文件类型，固定为 docx。}
       suffix: {type: string, description: 文件后缀，固定为 .docx。}
@@ -305,6 +310,7 @@ tools:
     returns:
       generated_file_path: {type: string, description: 生成文件的绝对路径。}
       relative_output_path: {type: string, description: 运行输出目录下的相对路径，位于 generated_files 目录内。}
+      download_url: {type: string, description: 浏览器可访问的文件下载接口地址。}
       filename: {type: string, description: 唯一性处理后的最终文件名。}
       file_type: {type: string, description: 文件类型，固定为 table。}
       suffix: {type: string, description: 文件后缀，为 .csv 或 .tsv。}

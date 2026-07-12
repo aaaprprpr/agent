@@ -3,14 +3,14 @@ from __future__ import annotations
 import asyncio
 import sys
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from threading import Event, Lock, Thread
 from typing import Iterator
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -107,6 +107,23 @@ def _safe_conversation_id(value: str | None) -> str:
         return validate_conversation_id(cleaned)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="conversation_id contains unsupported characters") from exc
+
+
+def _safe_run_id(value: str) -> str:
+    try:
+        return validate_conversation_id(value.strip())
+    except (AttributeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="run_id contains unsupported characters") from exc
+
+
+def _safe_generated_artifact_path(relative_path: str) -> Path:
+    normalized = relative_path.strip().replace("\\", "/")
+    path = PurePosixPath(normalized)
+    if path.is_absolute() or not path.parts or path.parts[0] != "generated_files":
+        raise HTTPException(status_code=400, detail="artifact path must stay inside generated_files")
+    if any(part in {"", ".", ".."} for part in path.parts):
+        raise HTTPException(status_code=400, detail="artifact path contains unsupported segments")
+    return Path(*path.parts)
 
 
 def _register_cancel_event(conversation_id: str) -> Event:
@@ -758,6 +775,27 @@ def delete_conversation(conversation_id: str) -> DeleteConversationResponse:
 def get_message_tool_steps(message_id: str) -> dict:
     init_conversation_db(str(MEMORY_CONFIG))
     return {"message_id": message_id, "tool_steps": list_message_tool_steps(str(MEMORY_CONFIG), message_id)}
+
+
+@app.get("/api/artifacts/{conversation_id}/{run_id}/{relative_path:path}")
+def download_generated_artifact(conversation_id: str, run_id: str, relative_path: str) -> FileResponse:
+    safe_conversation_id = _safe_conversation_id(conversation_id)
+    safe_run_id = _safe_run_id(run_id)
+    artifact_path = _safe_generated_artifact_path(relative_path)
+    output_root = OUTPUT_ROOT.resolve()
+    run_dir = (OUTPUT_ROOT / safe_conversation_id / safe_run_id).resolve()
+    try:
+        run_dir.relative_to(output_root)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="artifact run directory is outside output root") from exc
+    target = (run_dir / artifact_path).resolve()
+    try:
+        target.relative_to(run_dir)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="artifact path is outside run directory") from exc
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="artifact not found")
+    return FileResponse(target, filename=target.name)
 
 
 @app.post("/api/conversations/{conversation_id}/cancel")

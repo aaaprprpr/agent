@@ -301,6 +301,60 @@
   font-size: 10px;
 }
 
+.message-artifacts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.message-artifact {
+  min-width: 0;
+  max-width: min(360px, 100%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border: 1px solid #dcdcdc;
+  border-radius: 9px;
+  background: #fafafa;
+  color: #2f2f2f;
+  text-decoration: none;
+  transition: border-color 0.16s ease, background 0.16s ease;
+}
+
+.message-artifact:hover {
+  border-color: #c7c7c7;
+  background: #f4f4f4;
+}
+
+.message-artifact > span {
+  min-width: 0;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+}
+
+.message-artifact strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 560;
+}
+
+.message-artifact small {
+  color: #888;
+  font-size: 10px;
+}
+
+.message-artifact em {
+  flex: 0 0 auto;
+  color: #555;
+  font-style: normal;
+  font-size: 12px;
+}
+
 .message-body {
   padding: 14px 16px;
   border-radius: 14px;

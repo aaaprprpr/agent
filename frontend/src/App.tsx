@@ -5,6 +5,9 @@ import { ChatMessageList } from './ChatMessageList'
 import { Composer } from './Composer'
 import { arrayBufferToBase64 } from './fileUtils'
 import {
+  artifactsFromToolMessages,
+  artifactsFromToolSteps,
+  mergeArtifacts,
   toolDetailsFromAgentStep,
   toolDetailsFromCalls,
   toolDetailsFromMessages,
@@ -209,6 +212,7 @@ function App() {
           body: message.content,
           status: message.status ?? undefined,
           toolDetails: toolDetailsFromSteps(message.tool_steps),
+          artifacts: artifactsFromToolSteps(message.tool_steps),
           attachments: message.attachments,
         })) satisfies ChatMessage[]
       if (currentConversationIdRef.current !== conversationId) return
@@ -430,6 +434,7 @@ function App() {
       }
       if (event.type === 'tool_done') {
         const resultDetails = toolDetailsFromMessages(event.tool_messages)
+        const resultArtifacts = artifactsFromToolMessages(event.tool_messages)
         applyMessageState(
           currentMessages.map((message): ChatMessage =>
             message.id === activeAssistantId
@@ -441,6 +446,7 @@ function App() {
                     ),
                     ...resultDetails,
                   ],
+                  artifacts: mergeArtifacts(message.artifacts, resultArtifacts),
                 }
               : message,
           ),
@@ -451,6 +457,7 @@ function App() {
         const finalAnswer = event.final_answer || streamedAnswer || 'Agent 没有返回内容。'
         const memorySaved = event.trace?.memory_save?.status === 'success'
         const savedToolDetails = toolDetailsFromSteps(event.tool_steps)
+        const savedArtifacts = artifactsFromToolSteps(event.tool_steps)
         applyMessageState(
           currentMessages.map((message): ChatMessage =>
             message.id === activeAssistantId
@@ -460,6 +467,7 @@ function App() {
                   status: undefined,
                   toolDetails: savedToolDetails.length > 0 ? savedToolDetails : message.toolDetails,
                   toolPanelOpen: false,
+                  artifacts: mergeArtifacts(message.artifacts, savedArtifacts),
                 }
               : message,
           ),
@@ -666,6 +674,7 @@ function App() {
       <section className="workspace">
         <ChatMessageList
           messages={messages}
+          apiBase={API_BASE}
           conversationRef={conversationRef}
           onScroll={updateScrollButton}
           onToggleTool={toggleToolPanel}

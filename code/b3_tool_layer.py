@@ -6,9 +6,10 @@ import inspect
 import json
 import sys
 from copy import deepcopy
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from time import perf_counter
 from typing import Any
+from urllib.parse import quote
 
 from common.io_utils import append_jsonl, read_json, write_json
 from common.logging_utils import now_iso
@@ -43,6 +44,51 @@ PYTHON_TO_JSON_TYPES = {
     dict: "object",
     list: "array",
 }
+
+
+def _safe_artifact_relative_path(value: Any) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    normalized = value.strip().replace("\\", "/")
+    path = PurePosixPath(normalized)
+    if path.is_absolute() or not path.parts or path.parts[0] != "generated_files":
+        return None
+    if any(part in {"", ".", ".."} for part in path.parts):
+        return None
+    return "/".join(path.parts)
+
+
+def _artifact_download_url(output_dir: Path | None, relative_output_path: Any) -> str | None:
+    relative_path = _safe_artifact_relative_path(relative_output_path)
+    if output_dir is None or relative_path is None:
+        return None
+    resolved_output = output_dir.resolve()
+    if resolved_output.parent.parent.name != "backend_runs":
+        return None
+    conversation_id = resolved_output.parent.name
+    run_id = resolved_output.name
+    if not conversation_id or not run_id:
+        return None
+    encoded_path = "/".join(quote(part, safe="") for part in PurePosixPath(relative_path).parts)
+    return f"/api/artifacts/{quote(conversation_id, safe='')}/{quote(run_id, safe='')}/{encoded_path}"
+
+
+def _attach_artifact_download_urls(result: dict, output_dir: Path | None) -> None:
+    output = result.get("output")
+    if isinstance(output, dict):
+        download_url = _artifact_download_url(output_dir, output.get("relative_output_path"))
+        if download_url:
+            output.setdefault("download_url", download_url)
+    artifacts = result.get("artifacts")
+    if not isinstance(artifacts, list):
+        return
+    for artifact in artifacts:
+        if not isinstance(artifact, dict):
+            continue
+        download_url = _artifact_download_url(output_dir, artifact.get("relative_output_path"))
+        if download_url:
+            artifact.setdefault("download_url", download_url)
+
 
 def _annotation_to_json_type(annotation: Any, default: Any = inspect._empty) -> str:
     if annotation in PYTHON_TO_JSON_TYPES:
@@ -454,6 +500,7 @@ def execute_tool_calls(
                 except Exception as exc:
                     latency_ms = round((perf_counter() - start) * 1000, 3)
                     result = _error_result(name, args, exc, latency_ms)
+        _attach_artifact_download_urls(result, output_dir)
         content = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
         message = make_tool_message(call["id"], call["name"], content, result["status"])
         tool_messages.append(message)
