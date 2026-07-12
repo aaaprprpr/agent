@@ -242,7 +242,7 @@ def _memory_reflection_messages(
             "has_decision": "boolean",
             "has_user_correction": "boolean",
             "allow_compress": "boolean",
-            "allow_drop": "boolean",
+            "allow_drop": "boolean; low-priority recall signal only, never permission to delete source turns",
             "noise_score": "0..1",
             "labels": [
                 "controlled labels such as category:task_state, category:preference, category:decision, "
@@ -283,7 +283,8 @@ def _memory_reflection_messages(
         "Do not wrap it in an AIMessage. Do not output content, tool_calls, control, or agent_step. "
         "Summaries are only locators: do not copy exact file paths, commands, code, parameters, traceback text, or tool output values. "
         "When exact facts are needed later, the system will load source messages and tool steps. "
-        "Classify the turn by memory role: task state, durable preference, user decision/correction, casual chat, or low-value noise. "
+        "Classify the turn by memory role: task state, durable preference, user decision/correction, casual chat, or low-priority noise. "
+        "Memory tags affect retrieval priority only; raw source turns must remain available for later source loading. "
         "A preference can be long-term memory without being a task. Casual chat and random noise must not update task memory. "
         "A task memory update is allowed only when the turn changes a concrete task goal, phase, constraint, file/resource, result, blocker, or next action. "
         "A task_memory action other than no_change requires category:task_state; boundary labels alone are not enough. "
@@ -299,7 +300,8 @@ def _memory_reflection_messages(
         "- category:decision: user or agent made a durable decision that future turns may need.\n"
         "- category:correction: user corrected previous content, assumptions, files, commands, or results.\n"
         "- category:casual_chat: greeting, thanks, brief social exchange, or normal small talk.\n"
-        "- category:noise: random text, accidental input, empty intent, or content with no recoverable future use.\n"
+        "- category:noise: random text, accidental input, empty intent, or content with no obvious future use; this is a low-priority signal, not deletion.\n"
+        "- allow_drop means the turn may be omitted from an unrelated assembled context; it must not remove the raw source turn.\n"
         "- task_memory.action must be no_change unless labels include category:task_state.\n"
         "- Do not use boundary:task_switch, boundary:phase_complete, or boundary:task_complete for ordinary preferences.\n"
         "- For category:casual_chat or category:noise, task_memory.action must be no_change unless the turn explicitly references an existing task.\n"
@@ -338,8 +340,24 @@ def _coerce_memory_decision(
     tags["allow_compress"] = _safe_bool(tags.get("allow_compress"), True)
     tags["allow_drop"] = _safe_bool(tags.get("allow_drop"))
     tags["labels"] = _safe_labels(tags.get("labels"))
-    if tags["has_explicit_fact"] or tags["has_decision"] or tags["has_user_correction"] or tags["long_term_value"] >= 0.65:
+    labels = set(tags["labels"])
+    durable_signal = (
+        tags["has_explicit_fact"]
+        or tags["has_decision"]
+        or tags["has_user_correction"]
+        or "category:preference" in labels
+        or "category:decision" in labels
+        or "category:correction" in labels
+    )
+    low_value_non_task = bool(labels.intersection({"category:casual_chat", "category:noise"})) and not durable_signal
+    if low_value_non_task:
+        tags["allow_drop"] = True
+        tags["long_term_value"] = min(tags["long_term_value"], 0.3)
+        tags["current_task_relevance"] = min(tags["current_task_relevance"], 0.3)
+    elif durable_signal or tags["long_term_value"] >= 0.65:
         tags["allow_drop"] = False
+    if tags["has_explicit_fact"]:
+        tags["long_term_value"] = max(tags["long_term_value"], 0.35)
     if tags["allow_drop"]:
         tags["long_term_value"] = min(tags["long_term_value"], 0.3)
         tags["current_task_relevance"] = min(tags["current_task_relevance"], 0.3)
@@ -365,7 +383,6 @@ def _coerce_memory_decision(
     task_status = task.get("status")
     task["status"] = task_status if task_status in {"foreground", "paused", "completed", "abandoned"} else "foreground"
     task.setdefault("source_turn_ids", [])
-    labels = set(tags["labels"])
     has_task_state = "category:task_state" in labels
     if not has_task_state:
         task["action"] = "no_change"
