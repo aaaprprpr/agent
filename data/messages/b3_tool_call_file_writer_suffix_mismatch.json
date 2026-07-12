@@ -2,10 +2,9 @@
   "tool_calls": [
     {
       "id": "call_001",
-      "name": "file_writer",
+      "name": "docx_writer",
       "args": {
         "filename": "a.md",
-        "file_type": "docx",
         "content": "This must fail because docx output requires a .docx filename."
       }
     }

@@ -23,11 +23,15 @@ toolsets:
     - calculator
     - current_time
     - file_reader
-    - file_writer
+    - text_file_writer
+    - markdown_file_writer
+    - code_file_writer
+    - json_file_writer
+    - docx_writer
+    - table_file_writer
     - mcp_web_search
     - local_file_search
     - table_analyzer
-    - format_converter
   mcp_tools:
     - mcp_web_search
 
@@ -35,7 +39,7 @@ tools:
   calculator:
     module: skills.calculator
     function: calculator
-    description: 计算安全的算术表达式。
+    description: 只用于计算明确的算术表达式，例如加减乘除、括号和幂运算。不要用于代码执行、单位换算、统计表格、符号推导或自然语言推理。
     parameters:
       expression:
         type: string
@@ -49,7 +53,7 @@ tools:
   current_time:
     module: skills.current_time
     function: current_time
-    description: 获取当前本地时间、协调世界时或指定时区时间。用户询问当前日期或时间时使用。
+    description: 获取当前日期、时间、星期、时间戳或指定时区时间。用户询问“现在几点”“今天日期”“当前时间”等实时问题时使用；默认不传 timezone 表示本地时间。
     parameters:
       timezone:
         type: string
@@ -70,7 +74,7 @@ tools:
   file_reader:
     module: skills.file_reader
     function: file_reader
-    description: 从允许的工作区根目录读取本地文本类文件或办公文档。支持常见文本、表格文本、配置、脚本、日志、文档和演示文件。路径默认相对于数据目录；需要访问其他根目录时使用别名路径。
+    description: 读取允许工作区内已有文件的内容。支持 txt、md、json、jsonl、csv、tsv、yaml、py、log、docx、pptx 等文本或 Office Open XML 文件；不支持图片、PDF、旧版 doc/ppt 或扫描件。路径默认相对于 data，也可使用 uploads/...、outputs/... 等允许根目录路径。若返回 truncated=true，只表示读取了部分内容，不能声称已读完整文件。
     parameters:
       path:
         type: string
@@ -100,39 +104,158 @@ tools:
       slide_count: {type: integer, description: 演示文件的页数；仅适用时返回。}
       truncated: {type: boolean, description: 内容是否被截断。}
 
-  file_writer:
+  text_file_writer:
     module: skills.file_writer
-    function: file_writer
+    function: text_file_writer
     side_effects: true
-    description: >-
-      在本次运行的 generated_files 输出目录中创建真实的新文件。当用户明确要求创建、生成或写入具体文件/文档时使用，
-      支持普通文本、Markdown、Word 文档和白名单内的代码文件。不能用它修改已有项目文件；
-      如果用户明确要求生成真实文件，不要只在回答中给出内联文本。
+    description: 当用户明确要求生成或保存 .txt 纯文本文件时使用。只在本次运行的 generated_files 输出目录中创建新文件，不修改已有项目文件，不覆盖同名文件；普通对话、记录、总结或直接回答不需要调用。
     parameters:
       filename:
         type: string
-        description: 带支持后缀的相对输出文件名；拒绝绝对路径和父目录片段。
-      file_type:
-        type: string
-        description: 文件类型，可为 txt、markdown、docx 或 code；文件后缀必须和类型匹配。
+        description: 相对输出文件名，必须以 .txt 结尾；拒绝绝对路径、空路径段和父目录片段。
       content:
         type: string
-        description: 要写入文件的完整内容。
-    required: [filename, file_type, content]
+        description: 要写入 .txt 文件的完整文本内容。
+    required: [filename, content]
     returns:
       generated_file_path: {type: string, description: 生成文件的绝对路径。}
       relative_output_path: {type: string, description: 运行输出目录下的相对路径，位于 generated_files 目录内。}
       filename: {type: string, description: 唯一性处理后的最终文件名。}
-      file_type: {type: string, description: 规范化后的文件类型。}
-      suffix: {type: string, description: 用于校验的文件后缀。}
+      file_type: {type: string, description: 文件类型，固定为 txt。}
+      suffix: {type: string, description: 文件后缀，固定为 .txt。}
       num_chars: {type: integer, description: 输入内容字符数。}
       num_bytes: {type: integer, description: 生成文件的字节大小。}
       overwritten: {type: boolean, description: 是否覆盖已有文件；该工具始终不会覆盖。}
 
+  markdown_file_writer:
+    module: skills.file_writer
+    function: markdown_file_writer
+    side_effects: true
+    description: 当用户明确要求生成或保存 Markdown 文档时使用。只创建 .md 文件；不要把普通回答、摘要或列表都自动写成文件，除非用户明确要求导出/保存/生成文件。
+    parameters:
+      filename:
+        type: string
+        description: 相对输出文件名，必须以 .md 结尾；拒绝绝对路径和父目录片段。
+      content:
+        type: string
+        description: 要写入 Markdown 文件的完整内容，可以包含标题、列表、表格和代码块。
+    required: [filename, content]
+    returns:
+      generated_file_path: {type: string, description: 生成文件的绝对路径。}
+      relative_output_path: {type: string, description: 运行输出目录下的相对路径，位于 generated_files 目录内。}
+      filename: {type: string, description: 唯一性处理后的最终文件名。}
+      file_type: {type: string, description: 文件类型，固定为 markdown。}
+      suffix: {type: string, description: 文件后缀，固定为 .md。}
+      num_chars: {type: integer, description: 输入内容字符数。}
+      num_bytes: {type: integer, description: 生成文件的字节大小。}
+      overwritten: {type: boolean, description: 是否覆盖已有文件；该工具始终不会覆盖。}
+
+  code_file_writer:
+    module: skills.file_writer
+    function: code_file_writer
+    side_effects: true
+    description: 当用户明确要求生成代码文件、脚本文件或给出具体代码文件名/后缀时使用。只写入代码文本，不执行代码、不安装依赖、不修改项目源文件；支持常见代码后缀如 .py、.cpp、.c、.js、.ts、.tsx、.html、.css、.java、.go、.rs、.sql、.sh、.ps1。
+    parameters:
+      filename:
+        type: string
+        description: 相对输出文件名，必须使用支持的代码后缀；拒绝绝对路径和父目录片段。
+      content:
+        type: string
+        description: 要写入代码文件的完整源码内容。
+      language:
+        type: string
+        description: 可选语言标签，仅用于结果说明，例如 python、cpp、javascript。
+    required: [filename, content]
+    returns:
+      generated_file_path: {type: string, description: 生成文件的绝对路径。}
+      relative_output_path: {type: string, description: 运行输出目录下的相对路径，位于 generated_files 目录内。}
+      filename: {type: string, description: 唯一性处理后的最终文件名。}
+      file_type: {type: string, description: 文件类型，固定为 code。}
+      suffix: {type: string, description: 生成文件后缀。}
+      num_chars: {type: integer, description: 输入内容字符数。}
+      num_bytes: {type: integer, description: 生成文件的字节大小。}
+      overwritten: {type: boolean, description: 是否覆盖已有文件；该工具始终不会覆盖。}
+      language: {type: string, description: 可选语言标签；仅在输入提供时返回。}
+
+  json_file_writer:
+    module: skills.file_writer
+    function: json_file_writer
+    side_effects: true
+    description: 当用户明确要求生成或导出 JSON 文件时使用。输入必须是结构化 JSON 对象，由工具负责序列化和格式化，避免让模型手写不合法 JSON 字符串。
+    parameters:
+      filename:
+        type: string
+        description: 相对输出文件名，必须以 .json 结尾；拒绝绝对路径和父目录片段。
+      data:
+        type: object
+        description: 要写入文件的 JSON 对象。
+    required: [filename, data]
+    returns:
+      generated_file_path: {type: string, description: 生成文件的绝对路径。}
+      relative_output_path: {type: string, description: 运行输出目录下的相对路径，位于 generated_files 目录内。}
+      filename: {type: string, description: 唯一性处理后的最终文件名。}
+      file_type: {type: string, description: 文件类型，固定为 json。}
+      suffix: {type: string, description: 文件后缀，固定为 .json。}
+      num_chars: {type: integer, description: 序列化后 JSON 字符数。}
+      num_bytes: {type: integer, description: 生成文件的字节大小。}
+      overwritten: {type: boolean, description: 是否覆盖已有文件；该工具始终不会覆盖。}
+
+  docx_writer:
+    module: skills.file_writer
+    function: docx_writer
+    side_effects: true
+    description: 当用户明确要求生成 Word 文档或 .docx 文件时使用。输入为纯文本内容，工具会生成最小可打开的 docx 文件；复杂样式、图片、页眉页脚和表格排版不由此工具保证。
+    parameters:
+      filename:
+        type: string
+        description: 相对输出文件名，必须以 .docx 结尾；拒绝绝对路径和父目录片段。
+      content:
+        type: string
+        description: 要写入 Word 文档的完整文本内容；换行会转换为段落。
+    required: [filename, content]
+    returns:
+      generated_file_path: {type: string, description: 生成文件的绝对路径。}
+      relative_output_path: {type: string, description: 运行输出目录下的相对路径，位于 generated_files 目录内。}
+      filename: {type: string, description: 唯一性处理后的最终文件名。}
+      file_type: {type: string, description: 文件类型，固定为 docx。}
+      suffix: {type: string, description: 文件后缀，固定为 .docx。}
+      num_chars: {type: integer, description: 输入内容字符数。}
+      num_bytes: {type: integer, description: 生成文件的字节大小。}
+      overwritten: {type: boolean, description: 是否覆盖已有文件；该工具始终不会覆盖。}
+
+  table_file_writer:
+    module: skills.file_writer
+    function: table_file_writer
+    side_effects: true
+    description: 当用户明确要求生成 CSV 或 TSV 表格文件时使用。输入必须包含列名和行数据；不要用于分析已有表格，分析已有表格应使用 table_analyzer。
+    parameters:
+      filename:
+        type: string
+        description: 相对输出文件名，必须以 .csv 或 .tsv 结尾；拒绝绝对路径和父目录片段。
+      columns:
+        type: array
+        items: {type: string}
+        description: 表头列名数组。
+      rows:
+        type: array
+        description: 数据行数组；每行可以是对象或数组。
+    required: [filename, columns, rows]
+    returns:
+      generated_file_path: {type: string, description: 生成文件的绝对路径。}
+      relative_output_path: {type: string, description: 运行输出目录下的相对路径，位于 generated_files 目录内。}
+      filename: {type: string, description: 唯一性处理后的最终文件名。}
+      file_type: {type: string, description: 文件类型，固定为 table。}
+      suffix: {type: string, description: 文件后缀，为 .csv 或 .tsv。}
+      num_chars: {type: integer, description: 生成文件字符数的近似值。}
+      num_bytes: {type: integer, description: 生成文件的字节大小。}
+      overwritten: {type: boolean, description: 是否覆盖已有文件；该工具始终不会覆盖。}
+      num_rows: {type: integer, description: 写入的数据行数，不含表头。}
+      num_columns: {type: integer, description: 写入的列数。}
+
   local_file_search:
     module: skills.local_file_search
     function: local_file_search
-    description: 在允许的工作区根目录下搜索本地文本类文件。此工具只用于本地项目文件，不能用于网页、互联网、实时新闻或当前外部信息。
+    description: 在允许工作区内按关键词搜索本地文本类文件，用于找到可能相关的文件路径和片段。此工具不读取完整文件内容；找到目标路径后通常应继续使用 file_reader。不能用于网页、互联网、实时新闻或当前外部信息。
     parameters:
       query: {type: string, description: 搜索关键词。}
       root_dir: {type: string, description: 相对于数据目录的目录，或允许工作区根目录下的别名路径。}
@@ -151,7 +274,7 @@ tools:
   mcp_web_search:
     module: skills.mcp_web_search
     function: mcp_web_search
-    description: 通过已配置的搜索服务进行网页搜索。用于互联网搜索、实时新闻、近期事件、当前外部信息，或本地文件中没有的主题。
+    description: 通过已配置的搜索服务进行网页搜索。用于互联网搜索、实时新闻、近期事件、当前外部信息，或本地文件中没有的主题。query 必须写成具体搜索词，包含主题、时间范围、地区或信息类型；不要只写“实时新闻”“查一下”等空泛词。
     parameters:
       query: {type: string, description: 网页搜索关键词。}
       top_k: {type: integer, description: 请求的最大结果数量。}
@@ -172,7 +295,7 @@ tools:
   table_analyzer:
     module: skills.table_analyzer
     function: table_analyzer
-    description: 分析本地表格文本文件。
+    description: 分析已有的本地 CSV 或 TSV 表格文件，返回行列数、列名、预览、缺失值和可选数值统计。不用于生成表格文件；生成 CSV/TSV 应使用 table_file_writer。不支持 xlsx。
     parameters:
       path: {type: string, description: 相对于数据目录的表格路径，或允许工作区根目录下的别名路径。}
       max_rows_preview: {type: integer, description: 预览行数。}
@@ -189,23 +312,3 @@ tools:
       column_profiles: {type: object, description: 按列统计的缺失值和唯一值信息。}
       describe: {type: object, description: 按列统计的数值信息。}
 
-  format_converter:
-    module: skills.format_converter
-    function: format_converter
-    side_effects: true
-    description: 将文本转换为项目符号列表或格式化结构，并把转换后的内容写入文件。
-    parameters:
-      text: {type: string, description: 输入文本。}
-      target_format: {type: string, description: 目标格式。}
-      output_filename: {type: string, description: 可选输出文件名；默认使用转换结果文件名。}
-    required: [text, target_format]
-    returns:
-      formatted_text: {type: string, description: 转换后的文本。}
-      generated_file_path: {type: string, description: 生成的输出文件路径。}
-      relative_output_path: {type: string, description: 运行输出目录下的相对路径，位于 generated_files 目录内。}
-      filename: {type: string, description: 唯一性处理后的最终文件名。}
-      file_type: {type: string, description: 规范化后的文件类型。}
-      suffix: {type: string, description: 生成文件后缀。}
-      num_chars: {type: integer, description: 转换后文本字符数。}
-      num_bytes: {type: integer, description: 生成文件的字节大小。}
-      overwritten: {type: boolean, description: 是否覆盖已有文件；该工具始终不会覆盖。}

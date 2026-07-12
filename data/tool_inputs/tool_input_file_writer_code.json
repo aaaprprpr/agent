@@ -1,5 +1,5 @@
 {
   "filename": "hello_agent.py",
-  "file_type": "code",
-  "content": "def hello_agent() -> str:\n    return \"hello, agent\"\n\nprint(hello_agent())\n"
+  "content": "def hello_agent() -> str:\n    return \"hello, agent\"\n\nprint(hello_agent())\n",
+  "language": "python"
 }
