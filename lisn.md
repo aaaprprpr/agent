@@ -1,6 +1,50 @@
 # 开发记录
 
-lisnny的详细变更。
+lisnny日志。
+
+KssAT6iTwb
+
+conda activate agent310 && cd /d E:\assignment_B\agent
+
+python start_all.py
+
+# -------------------------7.12 file_writer 过度触发修正------------------------------
+
+- 最新测试中，“记录番茄炒蛋做法/整理菜谱”被模型误判成需要生成文件。原因是上一轮为了修复文件生成失败，在 B1 集成提示里加入了 `file_writer` 示例和“生成文件必须先调用 file_writer”的全局提醒，小模型过度模仿示例。
+- 已收窄 B1 工具决策规则：只有当前用户明确要求真实文件输出、给出文件后缀/文件名，或说保存/写入为文件时才调用 `file_writer`；“记录、整理、总结、规划、记住、继续任务”默认只在对话中回答。
+- 移除 B1 集成提示里的 `file_writer` 正例，保留通用工具调用格式示例，避免模型每轮模仿文件生成。
+- 同步收窄 `configs/tools.yaml` 和 `data/messages/tools_schema_basic.json` 中 `file_writer` 描述，强调普通记录/整理/总结/计划请求不使用文件写入工具。
+- 清理 `configs/tools.yaml` 中重复的 `file_writer` 定义；保留带限制条件的新定义，避免旧定义覆盖新约束。
+- 保留 B4 对“模型已经显式写出 file_writer 但 JSON 结构破损”的恢复逻辑；该逻辑只恢复模型已有 tool_call，不根据用户文本发明工具调用。
+
+# -------------------------7.12 B5 测试反馈修正------------------------------
+
+- 检查最新前端测试会话 `conv_web_20260712_000132_238`：8 轮对话均已写入 `conversation_turns`、`turn_memory_tags`、`turn_summaries`，并形成 1 个 `memory_blocks` 和 1 条 `task_memories`。
+- 文件生成未实际落盘的原因不是 `file_writer` skill 写失败，而是模型 raw 输出里已经出现 `file_writer`，但 JSON 结构缺失右括号或把 `control` 放进 `args`，B4 解析时降级成纯 content，导致 B1 没进入工具执行轮。
+- 修复 B1 集成提示：生成文件必须调用 `file_writer`，`control` 必须是顶层字段；增加 markdown 文件生成示例，降低模型输出坏结构概率。
+- 修复 B4 解析：当 raw 输出显式包含 `file_writer` tool_call 但 JSON 结构不完整时，从模型输出中恢复标准 `file_writer` tool_call，让 B1/B3 能继续执行工具。该逻辑只恢复模型已经明确写出的工具调用，不按用户文本发明工具。
+- 前端回答后短时间不能继续发送，原因是 B5 模型反思同步执行。现改为后台线程写入分层记忆：trace 先记录 `turn_memory.status=scheduled`，后台完成后再更新真实结果，前端不再等待记忆反思。
+- 页面刷新不会破坏已经写入 SQLite 的轮级记忆；如果刷新发生在后端请求真正完成前，那一轮可能没有执行收尾落库，需要以后通过前端状态提示规避。
+
+# -------------------------7.11 B5 SQLite 分层记忆------------------------------
+
+- 按团队新方案，以 `memory/conversation_store.sqlite3` 作为 B5 主线，不改坏现有 `conversations`、`conversation_messages`、`tool_steps` 三张事实表。
+- 新增 SQLite 分层记忆表：`conversation_turns`、`turn_memory_tags`、`turn_summaries`、`memory_blocks`、`memory_block_turns`、`task_memories`、`memory_retrieval_log`。
+- 每轮前端 Agent 运行完成后，后端会让 B5 记录一个完整轮次：原始 user/assistant 消息和 tool_steps 仍是事实来源，轮级摘要只保存定位信息和 source 引用。
+- 轮级标签包含当前任务相关度、长期记忆价值、是否含明确事实/决定/用户纠正、是否允许压缩/丢弃、噪声权重等，不再只有“废话/非废话”。
+- 增加模型反思入口：正常情况下用模型对本轮输入、最终回答和工具轨迹做结构化记忆判断；模型反思失败时只写保守轻量记录，不影响主回答。
+- 任务记忆独立维护前台/暂停/完成任务，保存目标、阶段、已完成、待完成、约束、关键结果、阻塞和下一步。当前先完成落库，不替换现有上下文注入策略。
+- 块级记忆按未入块的轮次达到阈值后形成非重叠块，保持“块摘要 -> 轮摘要 -> 原始消息/工具步骤”的可下钻结构。
+
+# -------------------------7.11------------------------------
+
+实现前端文件上传
+优化文件读取
+实现time
+实现mcp联网搜索（duck）
+环境爆炸 补救
+前端实现删除会话，同时删除本地上传文件
+实现文件生成txt,md,code
 
 # -------------------------7.11 file_writer 未实际生成修正------------------------------
 

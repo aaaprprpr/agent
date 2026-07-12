@@ -4,6 +4,7 @@ import asyncio
 import sys
 from datetime import datetime
 from pathlib import Path
+from threading import Thread
 from typing import Iterator
 
 import uvicorn
@@ -74,6 +75,7 @@ from b5_memory import (  # noqa: E402
     list_conversation_records,
     list_conversation_messages,
     list_message_tool_steps,
+    record_completed_turn_memory,
     record_conversation_tool_step,
     update_conversation_message,
     upsert_conversation_record,
@@ -207,6 +209,85 @@ def _finish_run_message(
     _record_tool_steps(conversation_id, assistant_message_id, run_id, trace)
 
 
+def _record_completed_turn_memory(
+    conversation_id: str,
+    run_id: str,
+    user_message_id: str,
+    assistant_message_id: str,
+    raw_user_input: str,
+    result: dict,
+    trace: dict,
+    llm_mode: str | None,
+    output_dir: Path,
+) -> dict:
+    try:
+        return record_completed_turn_memory(
+            str(MEMORY_CONFIG),
+            conversation_id,
+            run_id,
+            user_message_id,
+            assistant_message_id,
+            raw_user_input,
+            result.get("final_answer") or "",
+            trace,
+            str(MODEL_CONFIG) if result.get("status") == "success" else None,
+            llm_mode,
+            str(output_dir / "memory_reflection"),
+        )
+    except Exception as exc:
+        return {
+            "status": "error",
+            "error": {"type": type(exc).__name__, "message": str(exc)},
+        }
+
+
+def _write_turn_memory_result(trace_path: str, turn_memory: dict) -> None:
+    trace = _read_trace_full(trace_path)
+    memory_save = trace.get("memory_save") if isinstance(trace.get("memory_save"), dict) else {}
+    memory_save["turn_memory"] = turn_memory
+    trace["memory_save"] = memory_save
+    _write_json_file(trace_path, trace)
+
+
+def _schedule_completed_turn_memory(
+    conversation_id: str,
+    run_id: str,
+    user_message_id: str,
+    assistant_message_id: str,
+    raw_user_input: str,
+    result: dict,
+    trace: dict,
+    llm_mode: str | None,
+    output_dir: Path,
+    trace_path: str,
+) -> dict:
+    scheduled = {
+        "status": "scheduled",
+        "mode": "background",
+        "reason": "memory reflection and layered memory writes run after the user response",
+    }
+
+    def worker() -> None:
+        try:
+            turn_memory = _record_completed_turn_memory(
+                conversation_id,
+                run_id,
+                user_message_id,
+                assistant_message_id,
+                raw_user_input,
+                result,
+                trace,
+                llm_mode,
+                output_dir,
+            )
+            _write_turn_memory_result(trace_path, turn_memory)
+        except Exception:
+            return
+
+    Thread(target=worker, name=f"memory-{run_id}", daemon=True).start()
+    return scheduled
+
+
 def _mark_run_failed(assistant_message_id: str, error: Exception) -> None:
     update_conversation_message(
         str(MEMORY_CONFIG),
@@ -280,8 +361,25 @@ def _call_agent(request: RunRequest) -> RunResponse:
         "user_message_id": user_message_id,
         "assistant_message_id": assistant_message_id,
         "storage": "sqlite",
+        "turn_memory": {
+            "status": "scheduled",
+            "mode": "background",
+            "reason": "memory reflection and layered memory writes run after the user response",
+        },
     }
     _write_json_file(result["trace_path"], full_trace)
+    _schedule_completed_turn_memory(
+        conversation_id,
+        run_id,
+        user_message_id,
+        assistant_message_id,
+        raw_user_input,
+        result,
+        full_trace,
+        request.llm_mode,
+        output_dir,
+        result["trace_path"],
+    )
     return RunResponse(
         conversation_id=result["conversation_id"],
         user_message_id=user_message_id,
@@ -434,8 +532,25 @@ def _stream_agent(request: RunRequest) -> Iterator[str]:
                     "user_message_id": user_message_id,
                     "assistant_message_id": assistant_message_id,
                     "storage": "sqlite",
+                    "turn_memory": {
+                        "status": "scheduled",
+                        "mode": "background",
+                        "reason": "memory reflection and layered memory writes run after the user response",
+                    },
                 }
                 _write_json_file(result["trace_path"], full_trace)
+                _schedule_completed_turn_memory(
+                    conversation_id,
+                    run_id,
+                    user_message_id,
+                    assistant_message_id,
+                    raw_user_input,
+                    result,
+                    full_trace,
+                    request.llm_mode,
+                    output_dir,
+                    result["trace_path"],
+                )
                 tool_steps = list_message_tool_steps(str(MEMORY_CONFIG), assistant_message_id)
                 yield _stream_event(
                     {

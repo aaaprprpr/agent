@@ -226,6 +226,12 @@ schema/report/tool messages 会被最近一次运行覆盖；tool-call 日志追
 
 入口：`code/b5_memory.py`
 
+当前前端对话历史以 `memory/conversation_store.sqlite3` 为主。B5 在保留原始
+`conversations`、`conversation_messages`、`tool_steps` 三类事实数据的基础上，
+新增分层记忆元数据：轮级标签、轮级概括、块级概括、任务记忆和召回日志。
+原始消息与工具结果始终是精确信息来源；摘要只用于定位，不保存精确路径、命令、
+参数、代码或报错全文。
+
 ### 5.1 输入文件
 
 | 输入文件 | 说明 |
@@ -234,6 +240,7 @@ schema/report/tool messages 会被最近一次运行覆盖；tool-call 日志追
 | `memory/memory_index.json` | `memory_id → 元数据` 的索引，记录类型、标题、摘要、路径和时间。 |
 | `memory/global/*.md` | 全局记忆文档。 |
 | `memory/conversations/*.md` | 对话记忆文档。 |
+| `memory/conversation_store.sqlite3` | 前端主对话库，保存原始消息、工具步骤和新增分层记忆表。 |
 | `data/memory_inputs/memory_save_input.json` | 保存对话类型记忆的样例，包含 conversation ID、保存类型及三个来源文件路径。 |
 | `data/memory_inputs/memory_save_global_input.json` | 保存全局类型记忆的样例，会写入项目正式记忆目录 `memory/global/` 和 `memory/memory_index.json`。 |
 | `data/memory_inputs/sample_messages.json` | 演示保存记忆时使用的消息数组。 |
@@ -272,6 +279,23 @@ B5 保存命令会更新项目正式记忆目录：生成或覆盖 `memory/conve
 | `memory/memory_index.json` | JSON 对象 | 保存后新增或更新对应记忆元数据。 |
 
 `selected_memory.json` 和 `saved_memory.json` 会覆盖；`memory_log.jsonl` 追加；索引和 Markdown 记忆文档会新增或更新。
+
+### 5.4 SQLite 分层记忆
+
+新增表不改变现有前端历史表语义：
+
+| 表 | 说明 |
+|---|---|
+| `conversation_turns` | 一次完整 user → Agent 交互轮次，引用原始 user/assistant 消息。 |
+| `turn_memory_tags` | 每轮轻量标签：当前任务相关度、长期价值、事实/决定/纠正、是否可压缩/丢弃等。 |
+| `turn_summaries` | 轮级概括，保存 source message/tool step 引用；精确事实必须回查原始数据。 |
+| `memory_blocks`、`memory_block_turns` | 多轮组成的块级记忆，形成 block → turn → 原始消息的下钻结构。 |
+| `task_memories` | 前台任务、暂停任务、完成任务的目标、阶段、进度、约束、下一步。 |
+| `memory_retrieval_log` | 后续两阶段召回的调试日志。 |
+
+前端每轮完成后，后端会调度 B5 在后台记录轮级记忆。模型反思成功时使用模型输出的
+结构化判断；失败时写入保守的轻量标签和引用，不阻断主回答，也不阻塞前端继续输入。
+当前版本先落库，暂不替换现有上下文注入策略。
 
 ## 6. B4：真实调用模型 / Mock 调试决策
 

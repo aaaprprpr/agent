@@ -217,9 +217,8 @@ def _decode_partial_json_string(fragment: str) -> str:
     return fragment
 
 
-def _json_string_value_start(raw_text: str, key: str) -> int:
+def _json_string_value_start(raw_text: str, key: str, search_from: int = 0) -> int:
     key_token = json.dumps(key, ensure_ascii=False)
-    search_from = 0
     while True:
         key_index = raw_text.find(key_token, search_from)
         if key_index == -1:
@@ -234,6 +233,14 @@ def _json_string_value_start(raw_text: str, key: str) -> int:
             if cursor < len(raw_text) and raw_text[cursor] == '"':
                 return cursor + 1
         search_from = key_index + 1
+
+
+def _json_string_value(raw_text: str, key: str, search_from: int = 0) -> str | None:
+    value_start = _json_string_value_start(raw_text, key, search_from)
+    if value_start == -1:
+        return None
+    value = _partial_json_string(raw_text, value_start).strip()
+    return value or None
 
 
 def _partial_json_string(raw_text: str, start_index: int) -> str:
@@ -262,6 +269,50 @@ def _parse_content_fragment(raw_text: str, original_error: json.JSONDecodeError)
     if not content:
         raise original_error
     return {"content": content, "tool_calls": []}
+
+
+def _parse_malformed_tool_call_fragment(raw_text: str, original_error: json.JSONDecodeError) -> dict:
+    marker = json.dumps("tool_calls", ensure_ascii=False)
+    marker_index = raw_text.find(marker)
+    if marker_index == -1:
+        raise original_error
+    array_start = raw_text.find("[", marker_index)
+    call_start = raw_text.find("{", array_start)
+    if array_start == -1 or call_start == -1:
+        raise original_error
+    name = _json_string_value(raw_text, "name", call_start)
+    if name != "file_writer":
+        raise original_error
+    args_marker = raw_text.find(json.dumps("args", ensure_ascii=False), call_start)
+    args_start = raw_text.find("{", args_marker)
+    if args_marker == -1 or args_start == -1:
+        raise original_error
+    filename = _json_string_value(raw_text, "filename", args_start)
+    file_type = _json_string_value(raw_text, "file_type", args_start)
+    file_content = _json_string_value(raw_text, "content", args_start)
+    if not filename or not file_type or file_content is None:
+        raise original_error
+    top_content = _json_string_value(raw_text, "content") or ""
+    call_id = _json_string_value(raw_text, "id", call_start) or "call_001"
+    return {
+        "content": top_content,
+        "tool_calls": [
+            {
+                "id": call_id,
+                "name": "file_writer",
+                "args": {
+                    "filename": filename,
+                    "file_type": file_type,
+                    "content": file_content,
+                },
+            }
+        ],
+        "control": {
+            "state": "acting",
+            "action": "call_tools",
+            "reason": "recover explicit file_writer tool call",
+        },
+    }
 
 
 def _streaming_content_prefix(raw_text: str) -> str:
@@ -327,7 +378,10 @@ def _parse_model_output(raw_text: str, has_tool_messages: bool = False) -> tuple
             try:
                 candidate = _parse_tool_calls_fragment(raw_text, exc)
             except Exception:
-                candidate = _parse_content_fragment(raw_text, exc)
+                try:
+                    candidate = _parse_malformed_tool_call_fragment(raw_text, exc)
+                except Exception:
+                    candidate = _parse_content_fragment(raw_text, exc)
     return _candidate_to_message(candidate, has_tool_messages)
 
 
