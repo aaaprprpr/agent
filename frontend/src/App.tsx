@@ -4,7 +4,13 @@ import { Trash2 } from 'lucide-react'
 import { ChatMessageList } from './ChatMessageList'
 import { Composer } from './Composer'
 import { arrayBufferToBase64 } from './fileUtils'
-import { toolDetailsFromCalls, toolDetailsFromMessages, toolDetailsFromProgress, toolDetailsFromSteps } from './ToolTrace'
+import {
+  toolDetailsFromAgentStep,
+  toolDetailsFromCalls,
+  toolDetailsFromMessages,
+  toolDetailsFromProgress,
+  toolDetailsFromSteps,
+} from './ToolTrace'
 import type { Attachment, BackendConversation, BackendMessage, ChatMessage, HistoryItem, RunStreamEvent, UploadedFilePayload } from './types'
 import './App.css'
 
@@ -339,10 +345,32 @@ function App() {
         replaceAssistant(streamedAnswer, 'pending')
         return
       }
-      if (event.type === 'state') return
+      if (event.type === 'state') {
+        const phase = typeof event.agent_step?.phase === 'string' ? event.agent_step.phase : ''
+        if (phase === 'plan' || phase === 'observation') {
+          const toolDetails = toolDetailsFromAgentStep(event.agent_step)
+          if (toolDetails.length > 0) {
+            applyMessageState(
+              currentMessages.map((message): ChatMessage =>
+                message.id === activeAssistantId
+                  ? {
+                      ...message,
+                      body: message.body || '...',
+                      status: 'pending',
+                      toolDetails: [...(message.toolDetails ?? []), ...toolDetails],
+                      toolPanelOpen: true,
+                    }
+                  : message,
+              ),
+            )
+          }
+        }
+        return
+      }
       if (event.type === 'tool_start') {
         streamedAnswer = ''
         const toolDetails = [
+          ...toolDetailsFromAgentStep(event.agent_step),
           ...toolDetailsFromProgress(event.assistant_content),
           ...toolDetailsFromCalls(event.tool_calls),
         ]

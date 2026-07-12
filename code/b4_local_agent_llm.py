@@ -271,47 +271,49 @@ def _streaming_content_prefix(raw_text: str) -> str:
     return _partial_json_string(raw_text, value_start)
 
 
-def _normalize_control_tool_conflict(message: dict, has_tool_messages: bool) -> None:
-    control = message.get("control")
-    tool_calls = message.get("tool_calls")
-    if not isinstance(control, dict) or not isinstance(tool_calls, list) or not tool_calls:
-        return
-    if control.get("action") != "finish":
-        return
-    if has_tool_messages:
-        message["tool_calls"] = []
-        return
-    normalized = dict(control)
-    normalized["action"] = "call_tools"
-    if normalized.get("state") not in {"acting", "replanning"}:
-        normalized["state"] = "acting"
-    reason = normalized.get("reason")
-    if not isinstance(reason, str) or not reason.strip():
-        normalized["reason"] = "tool call requested"
-    message["control"] = normalized
-
-
 def _candidate_to_message(candidate: dict, has_tool_messages: bool = False) -> tuple[dict, dict]:
     if not isinstance(candidate, dict):
         raise ValueError("model output JSON must be an object")
-    expected_keys = {"content", "tool_calls", "control"}
+    expected_keys = {"content", "tool_calls", "control", "agent_step"}
     unknown_keys = set(candidate) - expected_keys
     if unknown_keys:
         raise ValueError(f"model output JSON contains unknown keys: {', '.join(sorted(unknown_keys))}")
+    raw_tool_calls = candidate.get("tool_calls", [])
+    normalized_control = None
+    raw_control = candidate.get("control")
+    if isinstance(raw_control, dict):
+        action = raw_control.get("action")
+        if action not in {"call_tools", "finish"}:
+            action = "call_tools" if raw_tool_calls else "finish"
+        state = raw_control.get("state")
+        if action == "call_tools" and state not in {"acting", "replanning"}:
+            state = "acting" if not has_tool_messages else "replanning"
+        if action == "finish" and state not in {"completed", "failed"}:
+            state = "completed"
+        reason = raw_control.get("reason", "")
+        normalized_control = {
+            "state": state,
+            "action": action,
+            "reason": reason if isinstance(reason, str) else str(reason),
+        }
     message = {
         "role": "assistant",
         "content": candidate.get("content", ""),
-        "tool_calls": candidate.get("tool_calls", []),
+        "tool_calls": raw_tool_calls,
     }
-    if "control" in candidate:
-        message["control"] = candidate["control"]
-    _normalize_control_tool_conflict(message, has_tool_messages)
+    if normalized_control is not None:
+        message["control"] = normalized_control
+    if "agent_step" in candidate:
+        message["agent_step"] = candidate["agent_step"]
+    del has_tool_messages
     validate_ai_message(message)
     parsed_candidate = {
         "content": message["content"],
         "tool_calls": message["tool_calls"],
         "control": message["control"],
     }
+    if "agent_step" in message:
+        parsed_candidate["agent_step"] = message["agent_step"]
     return parsed_candidate, message
 
 
@@ -502,30 +504,43 @@ def _build_prompt_messages(messages: list[dict], tools_schema: list[dict]) -> li
         "JSON 顶层键必须且只能包含：\n"
         "- content：字符串。写给用户看的自然语言内容；请求工具时可简要说明下一步，但不能包含工具调用 JSON。\n"
         "- tool_calls：数组。需要调用工具时填写；不调用工具或结束时必须为 []。\n"
-        "- control：对象，且只能包含 state、action、reason。\n\n"
+        "- control：对象，且只能包含 state、action、reason。\n"
+        "- agent_step：对象，描述本轮 ReAct 中间状态，且只能包含 phase、plan、observation、known_facts、missing_info、next_step。\n\n"
         "control 取值规则：\n"
         "- 请求工具：control.action 为 call_tools，control.state 为 acting 或 replanning，tool_calls 不能为空。\n"
         "- 正常结束：control.action 为 finish，control.state 为 completed，tool_calls 必须为 []。\n"
         "- 无法继续：control.action 为 finish，control.state 为 failed，tool_calls 必须为 []，reason 必须写明具体原因。\n\n"
+        "agent_step 取值规则：\n"
+        "- phase 使用 plan、action、observation 或 final。\n"
+        "- 请求工具时，写明计划和本次工具目的；收到工具消息后，必须先概括 observation，再决定下一步。\n"
+        "- known_facts 只写已经确认的事实；missing_info 写仍缺少的信息；next_step 写下一步决策。\n"
+        "- 如果工具结果足以回答，phase 使用 final，content 给出最终回答；不要只说“已获得工具结果”。\n\n"
         "工具决策规则：\n"
         "- 需要运行时、本地、上传文件、外部、搜索、计算等信息时，从本轮可用工具结构中选择匹配工具。\n"
         "- 工具结构中存在匹配能力时，不要声称该能力不可用。\n"
         "- 最新消息如果是工具结果，应先判断结果是否足够；足够则完成，不足则继续规划或失败结束。\n"
         "- 工具结果之后结束时，不要重复之前的工具调用。\n\n"
         "示例，完成任务：\n"
-        '{"content":"这是最终回答。","tool_calls":[],"control":{"state":"completed","action":"finish","reason":"任务已完成"}}\n\n'
+        '{"content":"这是最终回答。","tool_calls":[],"control":{"state":"completed","action":"finish","reason":"任务已完成"},'
+        '"agent_step":{"phase":"final","plan":"已完成必要步骤","observation":"已有足够信息回答用户",'
+        '"known_facts":["示例事实"],"missing_info":[],"next_step":"给出最终回答"}}\n\n'
         "示例，请求工具：\n"
         '{"content":"我先读取相关文件。","tool_calls":[{"id":"call_001","name":"file_reader",'
         '"args":{"path":"docs/agent_intro.txt","max_chars":2000}}],"control":'
-        '{"state":"acting","action":"call_tools","reason":"需要读取文件内容"}}\n\n'
+        '{"state":"acting","action":"call_tools","reason":"需要读取文件内容"},'
+        '"agent_step":{"phase":"action","plan":"先获取文件原文，再总结要点","observation":"尚未获得文件内容",'
+        '"known_facts":[],"missing_info":["文件内容"],"next_step":"调用 file_reader"}}\n\n'
         "示例，无法继续：\n"
         '{"content":"继续处理前，我需要用户提供具体文件名。","tool_calls":[],"control":'
-        '{"state":"failed","action":"finish","reason":"缺少必要文件名"}}'
+        '{"state":"failed","action":"finish","reason":"缺少必要文件名"},'
+        '"agent_step":{"phase":"final","plan":"需要读取文件但缺少路径","observation":"当前信息不足",'
+        '"known_facts":[],"missing_info":["具体文件名"],"next_step":"请求用户补充信息"}}'
     )
     envelope_reminder = (
         "只输出符合协议的 JSON 对象。"
-        '顶层键只能是 "content"、"tool_calls"、"control"。'
+        '顶层键只能是 "content"、"tool_calls"、"control"、"agent_step"。'
         "请求工具时使用 call_tools；结束时使用 finish 且 tool_calls 为 []。"
+        "收到工具结果后必须先在 agent_step.observation 中观察结果，再决定继续工具或最终回答。"
         "不要在 JSON 外输出任何文字，不要把工具调用写进 content。"
     )
     system_instruction = (
@@ -549,8 +564,8 @@ def _build_prompt_messages(messages: list[dict], tools_schema: list[dict]) -> li
                 "role": "user",
                 "content": (
                     envelope_reminder
-                    + " 最新工具消息已经包含工具结果。先判断结果是否足以回答用户；足够则 completed，"
-                    "不足则 replanning 继续调用工具，无法继续则 failed 并说明原因。"
+                    + " 最新工具消息已经包含工具结果。必须在 agent_step.observation 中概括工具结果、有效事实和缺口；"
+                    "足够则 completed 并给最终回答，不足则 replanning 继续调用工具，无法继续则 failed 并说明原因。"
                 ),
             }
         )
@@ -842,6 +857,85 @@ def generate_ai_message(
         )
     return {
         "ai_message": ai_message,
+        "status": status,
+        "error": error,
+        "prompt_messages": prompt_messages,
+    }
+
+
+def _parse_json_object_output(raw_text: str) -> dict:
+    try:
+        candidate = json.loads(raw_text.strip())
+    except json.JSONDecodeError as exc:
+        candidate = _parse_json_with_backtick_tail(raw_text, exc)
+    if not isinstance(candidate, dict):
+        raise ValueError("model output JSON must be an object")
+    return candidate
+
+
+def generate_json_object(
+    model_config: str,
+    messages: list[dict],
+    mode: str = "prompt_json",
+    artifact_dir: str | None = None,
+    artifact_stem: str | None = None,
+    prompt_ready: bool = True,
+) -> dict:
+    """Generate a raw JSON object for B1-owned planning/observation stages.
+
+    This is intentionally not an AIMessage parser. B4 still only talks to the
+    model and validates transport-level shape; B1 owns the meaning of these
+    stage objects.
+    """
+    if mode != "prompt_json":
+        raise ValueError("generate_json_object only supports prompt_json mode")
+    config_path, config = _load_model_config(model_config)
+    messages = validate_messages(deepcopy(messages))
+    generated_at = now_iso()
+    source = _llm_source(config)
+    backend = source
+    prompt_messages = _prompt_messages_for_model(messages, [], prompt_ready)
+    if source == "local":
+        raw_text = _prompt_json_generate(config_path, config, messages, [], prompt_ready)
+    else:
+        raw_text = _fastapi_prompt_json_generate(config_path, config, messages, [], prompt_ready)
+    parsed_json = None
+    status = "success"
+    error = None
+    try:
+        parsed_json = _parse_json_object_output(raw_text)
+    except Exception as exc:
+        status = "error"
+        error = {"type": type(exc).__name__, "message": str(exc)}
+    if artifact_dir:
+        raw_path, parsed_path, log_path = _artifact_paths(artifact_dir, artifact_stem)
+        raw_record = {
+            "mode": mode,
+            "backend": backend,
+            "llm_source": source,
+            "raw_text": raw_text,
+            "prompt_messages": prompt_messages,
+            "parsed_json": parsed_json,
+            "status": status,
+            "error": error,
+            "generated_at": generated_at,
+        }
+        write_json(raw_record, raw_path)
+        write_json(parsed_json or {}, parsed_path)
+        append_jsonl(
+            {
+                "timestamp": generated_at,
+                "mode": mode,
+                "status": status,
+                "raw_output_path": str(raw_path),
+                "parsed_json_path": str(parsed_path),
+                "error": error,
+            },
+            log_path,
+        )
+    return {
+        "json": parsed_json,
+        "raw_text": raw_text,
         "status": status,
         "error": error,
         "prompt_messages": prompt_messages,

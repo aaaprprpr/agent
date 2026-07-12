@@ -6,6 +6,7 @@ from typing import Any
 VALID_ROLES = {"system", "user", "assistant", "tool"}
 VALID_AGENT_STATES = {"acting", "replanning", "completed", "failed"}
 VALID_AGENT_ACTIONS = {"call_tools", "finish"}
+VALID_AGENT_STEP_PHASES = {"plan", "action", "observation", "final"}
 HISTORY_ROLES = {"user", "assistant"}
 
 
@@ -38,6 +39,7 @@ def make_ai_message(
     content: str = "",
     tool_calls: list[dict] | None = None,
     control: dict | None = None,
+    agent_step: dict | None = None,
 ) -> dict:
     message = {
         "role": "assistant",
@@ -46,6 +48,8 @@ def make_ai_message(
     }
     if control is not None:
         message["control"] = control
+    if agent_step is not None:
+        message["agent_step"] = agent_step
     validate_ai_message(message)
     return message
 
@@ -155,6 +159,32 @@ def validate_ai_message(message: dict) -> None:
         raise ValueError("AIMessage finish action requires completed or failed state")
     if state == "failed" and not reason.strip():
         raise ValueError("AIMessage failed state requires a reason")
+    agent_step = message.get("agent_step")
+    if agent_step is None:
+        return
+    if not isinstance(agent_step, dict):
+        raise ValueError("AIMessage agent_step must be an object")
+    allowed = {"phase", "plan", "observation", "known_facts", "missing_info", "next_step"}
+    unknown = set(agent_step) - allowed
+    if unknown:
+        raise ValueError(f"AIMessage agent_step contains unknown keys: {', '.join(sorted(unknown))}")
+    phase = agent_step.get("phase")
+    if phase not in VALID_AGENT_STEP_PHASES:
+        raise ValueError(f"invalid AIMessage agent_step phase: {phase}")
+    for key in ("plan", "observation", "next_step"):
+        value = agent_step.get(key, "")
+        if value is None:
+            agent_step[key] = ""
+            continue
+        if not isinstance(value, str):
+            raise ValueError(f"AIMessage agent_step {key} must be a string")
+    for key in ("known_facts", "missing_info"):
+        value = agent_step.get(key, [])
+        if value is None:
+            agent_step[key] = []
+            continue
+        if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+            raise ValueError(f"AIMessage agent_step {key} must be an array of strings")
 
 
 def validate_messages(messages: Any) -> list[dict]:

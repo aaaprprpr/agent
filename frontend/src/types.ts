@@ -10,7 +10,7 @@ export type ToolDetail = {
   label: string
   body: string
   status?: string
-  kind?: 'note' | 'tool'
+  kind?: 'note' | 'tool' | 'agent'
 }
 
 export type ChatMessage = {
@@ -76,6 +76,7 @@ export type RunStreamEvent =
       state: string
       action?: string
       reason?: string
+      agent_step?: Record<string, unknown>
       conversation_id?: string
       assistant_message_id?: string
       llm_call_index?: number
@@ -87,6 +88,7 @@ export type RunStreamEvent =
       conversation_id?: string
       assistant_message_id?: string
       assistant_content?: string
+      agent_step?: Record<string, unknown>
       tool_calls?: unknown[]
       tool_messages?: unknown[]
     }

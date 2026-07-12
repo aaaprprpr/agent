@@ -80,12 +80,16 @@ def extract_tool_steps(trace: dict) -> list[dict]:
             continue
         ai_message = turn.get("ai_message") if isinstance(turn.get("ai_message"), dict) else {}
         assistant_content = ai_message.get("content") if isinstance(ai_message.get("content"), str) else ""
+        agent_step = ai_message.get("agent_step") if isinstance(ai_message.get("agent_step"), dict) else None
         raw_tool_calls = ai_message.get("tool_calls") if isinstance(ai_message, dict) else []
         tool_calls_by_id = {
             call.get("id"): call for call in raw_tool_calls
             if isinstance(call, dict) and isinstance(call.get("id"), str)
         } if isinstance(raw_tool_calls, list) else {}
-        for tool_message in turn.get("tool_messages", []):
+        turn_tool_messages = turn.get("tool_messages", [])
+        if not isinstance(turn_tool_messages, list):
+            turn_tool_messages = []
+        for tool_message in turn_tool_messages:
             if not isinstance(tool_message, dict):
                 continue
             raw_content = tool_message.get("content")
@@ -99,6 +103,7 @@ def extract_tool_steps(trace: dict) -> list[dict]:
             if tool_call is not None:
                 input_data = {
                     "assistant_content_before_tool": assistant_content,
+                    "agent_step_before_tool": agent_step,
                     "tool_call": tool_call,
                     "skill_input": input_data,
                 }
@@ -110,6 +115,20 @@ def extract_tool_steps(trace: dict) -> list[dict]:
                 "status": tool_message.get("status") or parsed.get("status") or "unknown",
                 "error": parsed.get("error"),
                 "latency_ms": parsed.get("latency_ms"),
+            })
+        if (
+            not turn_tool_messages
+            and isinstance(agent_step, dict)
+            and agent_step.get("phase") in {"plan", "observation"}
+        ):
+            steps.append({
+                "tool_call_id": None,
+                "tool_name": "agent_observation",
+                "input_data": {"agent_step": agent_step},
+                "output_data": None,
+                "status": "info",
+                "error": None,
+                "latency_ms": None,
             })
     return steps
 

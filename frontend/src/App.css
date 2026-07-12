@@ -388,9 +388,14 @@
 }
 
 .tool-trace-item + .tool-trace-item {
-  margin-top: 10px;
-  padding-top: 10px;
+  margin-top: 8px;
+  padding-top: 8px;
   border-top: 1px solid #ececec;
+}
+
+.tool-trace-item.agent + .tool-trace-item,
+.tool-trace-item.note + .tool-trace-item {
+  border-top-color: #f0f0f0;
 }
 
 .tool-trace-title {
@@ -416,6 +421,14 @@
   line-height: 1.45;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.tool-trace-item.agent pre,
+.tool-trace-item.note pre {
+  color: #8a8a8a;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.55;
 }
 
 .message-body p {

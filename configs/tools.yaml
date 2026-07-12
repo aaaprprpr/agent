@@ -98,70 +98,29 @@ tools:
     function: file_writer
     side_effects: true
     description: >-
-      Write a new real file into this run's generated_files output directory.
-      Use this when the user asks to create, generate, or write a file/document
-      with a concrete type or suffix, including txt/.txt, md/.md/markdown,
-      docx/.docx/Word, or supported code files such as .py, .js, .ts, .tsx,
-      .html, .css, .java, .cpp, .c, .h, .cs, .go, .rs, .sql, .sh, or .ps1.
-      Language-named code file requests such as Python, JavaScript, C, C++,
-      Java, Go, Rust, SQL, Shell, or PowerShell code files also use this tool.
-      Never use it to modify existing project files, and do not answer with
-      only inline file content when a real file is requested.
+      在本次运行的 generated_files 输出目录中创建真实的新文件。当用户明确要求创建、生成或写入具体文件/文档时使用，
+      支持普通文本、Markdown、Word 文档和白名单内的代码文件。不能用它修改已有项目文件；
+      如果用户明确要求生成真实文件，不要只在回答中给出内联文本。
     parameters:
       filename:
         type: string
-        description: Relative output filename with a supported suffix, such as report.md or hello_world.c. Absolute paths and parent-directory segments are rejected.
+        description: 带支持后缀的相对输出文件名；拒绝绝对路径和父目录片段。
       file_type:
         type: string
-        description: One of txt, markdown, docx, or code. The filename suffix must match the selected file_type.
+        description: 文件类型，可为 txt、markdown、docx 或 code；文件后缀必须和类型匹配。
       content:
         type: string
-        description: Complete file content to write.
+        description: 要写入文件的完整内容。
     required: [filename, file_type, content]
     returns:
-      generated_file_path: {type: string, description: Absolute path of the generated file.}
-      relative_output_path: {type: string, description: "Path relative to the run output directory, under generated_files/."}
-      filename: {type: string, description: Final generated filename after uniqueness handling.}
-      file_type: {type: string, description: Normalized file type.}
-      suffix: {type: string, description: File suffix used for validation.}
-      num_chars: {type: integer, description: Number of input content characters.}
-      num_bytes: {type: integer, description: Size of the generated file in bytes.}
-      overwritten: {type: boolean, description: Always false because file_writer never overwrites existing files.}
-
-  file_writer:
-    module: skills.file_writer
-    function: file_writer
-    side_effects: true
-    description: >-
-      Write a new real file into this run's generated_files output directory.
-      Use this when the user asks to create, generate, or write a file/document
-      with a concrete type or suffix, including txt/.txt, md/.md/markdown,
-      docx/.docx/Word, or supported code files such as .py, .js, .ts, .tsx,
-      .html, .css, .java, .cpp, .c, .h, .cs, .go, .rs, .sql, .sh, or .ps1.
-      Language-named code file requests such as Python, JavaScript, C, C++,
-      Java, Go, Rust, SQL, Shell, or PowerShell code files also use this tool.
-      Never use it to modify existing project files, and do not answer with
-      only inline file content when a real file is requested.
-    parameters:
-      filename:
-        type: string
-        description: Relative output filename with a supported suffix, such as report.md or hello_world.c. Absolute paths and parent-directory segments are rejected.
-      file_type:
-        type: string
-        description: One of txt, markdown, docx, or code. The filename suffix must match the selected file_type.
-      content:
-        type: string
-        description: Complete file content to write.
-    required: [filename, file_type, content]
-    returns:
-      generated_file_path: {type: string, description: Absolute path of the generated file.}
-      relative_output_path: {type: string, description: "Path relative to the run output directory, under generated_files/."}
-      filename: {type: string, description: Final generated filename after uniqueness handling.}
-      file_type: {type: string, description: Normalized file type.}
-      suffix: {type: string, description: File suffix used for validation.}
-      num_chars: {type: integer, description: Number of input content characters.}
-      num_bytes: {type: integer, description: Size of the generated file in bytes.}
-      overwritten: {type: boolean, description: Always false because file_writer never overwrites existing files.}
+      generated_file_path: {type: string, description: 生成文件的绝对路径。}
+      relative_output_path: {type: string, description: 运行输出目录下的相对路径，位于 generated_files 目录内。}
+      filename: {type: string, description: 唯一性处理后的最终文件名。}
+      file_type: {type: string, description: 规范化后的文件类型。}
+      suffix: {type: string, description: 用于校验的文件后缀。}
+      num_chars: {type: integer, description: 输入内容字符数。}
+      num_bytes: {type: integer, description: 生成文件的字节大小。}
+      overwritten: {type: boolean, description: 是否覆盖已有文件；该工具始终不会覆盖。}
 
   local_file_search:
     module: skills.local_file_search

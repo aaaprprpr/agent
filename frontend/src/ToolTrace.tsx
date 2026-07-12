@@ -23,6 +23,45 @@ function progressTextFromStep(step: Record<string, unknown>) {
   return typeof value === 'string' ? value.trim() : ''
 }
 
+function agentStepFromStep(step: Record<string, unknown>) {
+  const input = step.input
+  if (!input || typeof input !== 'object') return undefined
+  const record = input as Record<string, unknown>
+  const direct = record.agent_step
+  if (direct && typeof direct === 'object') return direct as Record<string, unknown>
+  const beforeTool = record.agent_step_before_tool
+  if (beforeTool && typeof beforeTool === 'object') return beforeTool as Record<string, unknown>
+  return undefined
+}
+
+function stringList(value: unknown) {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0) : []
+}
+
+function agentStepBody(step: Record<string, unknown>) {
+  const lines: string[] = []
+  const plan = typeof step.plan === 'string' ? step.plan.trim() : ''
+  const observation = typeof step.observation === 'string' ? step.observation.trim() : ''
+  const facts = stringList(step.known_facts)
+  const missing = stringList(step.missing_info)
+  const next = typeof step.next_step === 'string' ? step.next_step.trim() : ''
+  if (plan) lines.push(`计划：${plan}`)
+  if (observation) lines.push(`观察：${observation}`)
+  if (facts.length > 0) lines.push(`已知：${facts.join('；')}`)
+  if (missing.length > 0) lines.push(`缺口：${missing.join('；')}`)
+  if (next) lines.push(`下一步：${next}`)
+  return lines.join('\n')
+}
+
+export function toolDetailsFromAgentStep(step?: Record<string, unknown>) {
+  if (!step || typeof step !== 'object') return []
+  const body = agentStepBody(step)
+  if (!body) return []
+  const phase = typeof step.phase === 'string' ? step.phase : ''
+  const label = phase === 'final' || phase === 'observation' ? '观察' : '思考'
+  return [{ label, body, status: phase || 'info', kind: 'agent' as const }]
+}
+
 function compactToolStepInput(value: unknown) {
   if (!value || typeof value !== 'object') return value
   const input = value as Record<string, unknown>
@@ -61,12 +100,22 @@ export function toolDetailsFromSteps(steps?: Record<string, unknown>[]) {
   if (!Array.isArray(steps) || steps.length === 0) return []
   const details: ToolDetail[] = []
   const seenProgress = new Set<string>()
+  const seenAgentSteps = new Set<string>()
   steps.forEach((step, index) => {
+    const agentStep = agentStepFromStep(step)
+    for (const detail of toolDetailsFromAgentStep(agentStep)) {
+      const key = `${detail.label}:${detail.body}`
+      if (!seenAgentSteps.has(key)) {
+        seenAgentSteps.add(key)
+        details.push(detail)
+      }
+    }
     const progress = progressTextFromStep(step)
     if (progress && !seenProgress.has(progress)) {
       seenProgress.add(progress)
       details.push(...toolDetailsFromProgress(progress))
     }
+    if (step.tool_name === 'agent_observation') return
     details.push({
       label: `${index + 1}. ${toolNameFromRecord(step, 'tool')}`,
       body: prettyJson({
@@ -112,7 +161,7 @@ export function ToolTrace({ message, onToggle }: { message: ChatMessage; onToggl
   if (details.length === 0) return null
   const open = Boolean(message.toolPanelOpen)
   const active = message.status === 'pending'
-  const toolCount = details.filter((detail) => detail.kind !== 'note').length || details.length
+  const toolCount = details.filter((detail) => detail.kind === 'tool').length || details.length
   return (
     <div className={`tool-trace ${open ? 'open' : ''}`}>
       <button className="tool-trace-toggle" type="button" onClick={() => onToggle(message.id)}>
@@ -121,7 +170,7 @@ export function ToolTrace({ message, onToggle }: { message: ChatMessage; onToggl
         <small>{toolCount} 项</small>
       </button>
       {open && <div className="tool-trace-panel">
-        {details.map((detail, index) => <section className="tool-trace-item" key={`${detail.label}-${index}`}>
+        {details.map((detail, index) => <section className={`tool-trace-item ${detail.kind ?? 'tool'}`} key={`${detail.label}-${index}`}>
           <div className="tool-trace-title"><span>{detail.label}</span>{detail.status && <em>{detail.status}</em>}</div>
           <pre>{detail.body}</pre>
         </section>)}

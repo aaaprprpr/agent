@@ -381,6 +381,7 @@ def _stream_agent(request: RunRequest) -> Iterator[str]:
                         "state": event.get("state"),
                         "action": event.get("action"),
                         "reason": event.get("reason"),
+                        "agent_step": event.get("agent_step"),
                         "llm_call_index": event.get("llm_call_index"),
                         "tool_round_index": event.get("tool_round_index"),
                         "detail": event.get("detail"),
@@ -402,6 +403,7 @@ def _stream_agent(request: RunRequest) -> Iterator[str]:
                         "assistant_message_id": assistant_message_id,
                         "tool_calls": event.get("tool_calls", []),
                         "assistant_content": event.get("assistant_content", ""),
+                        "agent_step": event.get("agent_step"),
                     }
                 )
             elif event_type == "tool_done":
