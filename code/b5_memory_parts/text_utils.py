@@ -196,8 +196,23 @@ def _score_turn(turn: dict, query_text: str, newest_turn_index: int) -> float:
 
 def _score_turn_detail(turn: dict, query_text: str, newest_turn_index: int) -> dict:
     similarity = _text_similarity(query_text, _turn_search_text(turn))
+    labels = {item for item in _safe_list(turn.get("labels")) if isinstance(item, str)}
     current_task = float(turn.get("current_task_relevance") or 0.0)
     long_term = float(turn.get("long_term_value") or 0.0)
+    has_stable_signal = bool(
+        turn.get("has_explicit_fact")
+        or turn.get("has_decision")
+        or turn.get("has_user_correction")
+        or labels.intersection(LONG_TERM_LABELS)
+    )
+    if "category:noise" in labels:
+        current_task = min(current_task, 0.1)
+        long_term = min(long_term, 0.1)
+    elif "category:casual_chat" in labels and not has_stable_signal:
+        current_task = min(current_task, 0.25)
+        long_term = min(long_term, 0.25)
+    if turn.get("has_explicit_fact"):
+        long_term = max(long_term, 0.35)
     field_overlap = _field_overlap_score(query_text, _field_values(turn))
     tool_overlap = _tool_signal_score(query_text, _safe_list(turn.get("tool_refs")))
     signal = 0.0
@@ -214,7 +229,7 @@ def _score_turn_detail(turn: dict, query_text: str, newest_turn_index: int) -> d
         similarity * 1.6
         + field_overlap * 0.55
         + tool_overlap * 0.25
-        + current_task * 0.35
+        + current_task * 0.12
         + long_term * 0.45
         + signal
         + recency * 0.15
@@ -239,7 +254,10 @@ def _turn_context_role(turn: dict) -> str:
     labels = {item for item in _safe_list(turn.get("labels")) if isinstance(item, str)}
     current_task = float(turn.get("current_task_relevance") or 0.0)
     long_term = float(turn.get("long_term_value") or 0.0)
-    if labels.intersection(TASK_LABELS) or current_task >= 0.6:
+    if "category:casual_chat" in labels and not turn.get("has_explicit_fact"):
+        current_task = min(current_task, 0.25)
+        long_term = min(long_term, 0.25)
+    if labels.intersection(TASK_LABELS):
         return "task_related"
     if labels.intersection(LONG_TERM_LABELS) or long_term >= 0.65 or turn.get("has_decision") or turn.get("has_user_correction"):
         return "durable_memory"

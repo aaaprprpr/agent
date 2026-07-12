@@ -37,6 +37,9 @@ def _turn_payload(turn: dict) -> dict:
         "block_id": turn.get("block_id"),
         "score": _candidate_score(turn),
         "summary": _compact_text(str(turn.get("summary") or ""), 260),
+        "facts": [_compact_text(str(item), 160) for item in _safe_list(turn.get("facts"))[:4] if isinstance(item, str)],
+        "decisions": [_compact_text(str(item), 160) for item in _safe_list(turn.get("decisions"))[:3] if isinstance(item, str)],
+        "corrections": [_compact_text(str(item), 160) for item in _safe_list(turn.get("corrections"))[:3] if isinstance(item, str)],
         "keywords": _safe_list(turn.get("keywords"))[:8],
         "labels": _safe_list(turn.get("labels"))[:8],
         "has_explicit_fact": bool(turn.get("has_explicit_fact")),
@@ -116,7 +119,9 @@ def _rerank_messages(
         "You rerank B5 memory candidates. Return exactly one JSON object. "
         "Use only candidate ids. Do not create facts, summaries, tool outputs, paths, commands, or code. "
         "Summaries are only locators; exact facts will be loaded from source messages after selection. "
-        "Prefer candidates directly relevant to the current input, active task state, durable preferences, decisions, corrections, and explicit facts. "
+        "Use candidate facts, decisions, corrections, labels, source references, task state, and score breakdown to judge relevance and evidence value. "
+        "Do not apply hard-coded topic rules; choose the source ids that best support the current input and current task context. "
+        "When exact facts matter, select candidates that can load source messages or tool steps for verification. "
         "If uncertain, keep the strongest existing candidates instead of returning an empty selection."
     )
     user = (

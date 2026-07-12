@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import urllib.error
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Iterator
@@ -14,8 +16,11 @@ SERVER_HOST = "0.0.0.0"
 SERVER_PORT = 8012
 MAX_BATCH_ITEMS = 32
 DEFAULT_BATCH_SIZE = 8
+MAX_EMBEDDING_ITEMS = 64
+DEFAULT_EMBEDDING_BATCH_SIZE = 16
 
 DEFAULT_QWEN_MODEL = "qwen-plus"
+DEFAULT_QWEN_EMBEDDING_MODEL = "text-embedding-v4"
 DEFAULT_QWEN_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
 API_KEY: str | None = None
@@ -185,6 +190,26 @@ def _validate_batch_requests(payload: dict[str, Any]) -> tuple[list[dict[str, An
     return requests, _validate_batch_size(payload.get("batch_size"))
 
 
+def _validate_embedding_payload(payload: dict[str, Any]) -> tuple[list[str], int, str]:
+    raw_input = payload.get("texts")
+    if raw_input is None:
+        raw_input = payload.get("input")
+    if isinstance(raw_input, str):
+        texts = [raw_input]
+    elif isinstance(raw_input, list):
+        texts = [item for item in raw_input if isinstance(item, str)]
+        if len(texts) != len(raw_input):
+            raise ValueError("embedding input must contain only strings")
+    else:
+        raise ValueError("embedding input must be a string or string array")
+    if not texts or len(texts) > MAX_EMBEDDING_ITEMS:
+        raise ValueError(f"embedding input length must be between 1 and {MAX_EMBEDDING_ITEMS}")
+    model = payload.get("model")
+    if not isinstance(model, str) or not model.strip():
+        model = _env_first("QWEN_EMBEDDING_MODEL", "DASHSCOPE_EMBEDDING_MODEL", default=DEFAULT_QWEN_EMBEDDING_MODEL)
+    return texts, _validate_batch_size(payload.get("batch_size") or DEFAULT_EMBEDDING_BATCH_SIZE), str(model)
+
+
 def _message_content(content: Any) -> Any:
     if isinstance(content, str):
         return content
@@ -316,6 +341,61 @@ class QwenApiServer:
             "batch_size": batch_size,
         }
 
+    def embed_texts(self, texts: list[str], batch_size: int, model: str) -> dict[str, Any]:
+        api_key = _env_first("QWEN_API_KEY", "DASHSCOPE_API_KEY", "OPENAI_API_KEY")
+        if not api_key:
+            raise RuntimeError("missing QWEN_API_KEY or DASHSCOPE_API_KEY in .env or environment")
+        base_url = _env_first("QWEN_BASE_URL", "DASHSCOPE_BASE_URL", default=DEFAULT_QWEN_BASE_URL)
+        if not isinstance(base_url, str) or not base_url.strip():
+            raise RuntimeError("missing QWEN_BASE_URL or DASHSCOPE_BASE_URL")
+
+        embeddings: list[dict[str, Any]] = []
+        total_usage: dict[str, int] = {}
+        for start in range(0, len(texts), batch_size):
+            chunk = texts[start : start + batch_size]
+            data = json.dumps({"model": model, "input": chunk}, ensure_ascii=False).encode("utf-8")
+            request = urllib.request.Request(
+                base_url.rstrip("/") + "/embeddings",
+                data=data,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=120) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+            except urllib.error.HTTPError as exc:
+                detail = exc.read().decode("utf-8", errors="replace")
+                raise RuntimeError(f"embedding request failed with HTTP {exc.code}: {detail}") from exc
+            if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+                raise RuntimeError("embedding response missing data array")
+            for offset, item in enumerate(payload["data"]):
+                if not isinstance(item, dict) or not isinstance(item.get("embedding"), list):
+                    raise RuntimeError("embedding response item missing embedding")
+                raw_index = item.get("index")
+                index = int(raw_index) if isinstance(raw_index, int) else offset
+                embeddings.append(
+                    {
+                        "index": start + index,
+                        "embedding": item["embedding"],
+                    }
+                )
+            usage = payload.get("usage")
+            if isinstance(usage, dict):
+                for key, value in usage.items():
+                    if isinstance(value, int):
+                        total_usage[key] = total_usage.get(key, 0) + value
+        embeddings.sort(key=lambda item: item["index"])
+        return {
+            "status": "success",
+            "model": model,
+            "embeddings": embeddings,
+            "usage": total_usage,
+            "batch_size": batch_size,
+        }
+
 
 MODEL_SERVER = QwenApiServer()
 
@@ -325,7 +405,7 @@ def root() -> dict[str, Any]:
     return {
         "status": "ok",
         "service": "b4_qwen_api_llm",
-        "endpoints": ["/health", "/generate", "/generate_stream", "/generate_batch"],
+        "endpoints": ["/health", "/generate", "/generate_stream", "/generate_batch", "/embeddings"],
     }
 
 
@@ -335,6 +415,7 @@ def health() -> dict[str, Any]:
         "status": "ok",
         "service": "b4_qwen_api_llm",
         "model": _env_first("QWEN_MODEL", "DASHSCOPE_MODEL", default=DEFAULT_QWEN_MODEL),
+        "embedding_model": _env_first("QWEN_EMBEDDING_MODEL", "DASHSCOPE_EMBEDDING_MODEL", default=DEFAULT_QWEN_EMBEDDING_MODEL),
         "base_url": _env_first("QWEN_BASE_URL", "DASHSCOPE_BASE_URL", default=DEFAULT_QWEN_BASE_URL),
         "has_api_key": bool(_env_first("QWEN_API_KEY", "DASHSCOPE_API_KEY", "OPENAI_API_KEY")),
     }
@@ -360,6 +441,18 @@ def generate_batch(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     try:
         batch_requests, batch_size = _validate_batch_requests(payload)
         return MODEL_SERVER.generate_batch(batch_requests, batch_size)
+    except ValueError as exc:
+        raise _api_error(400, str(exc), "invalid_request_error") from exc
+    except Exception as exc:
+        raise _api_error(500, str(exc), "server_error") from exc
+
+
+@app.post("/embeddings")
+def embeddings(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    _check_auth(request)
+    try:
+        texts, batch_size, model = _validate_embedding_payload(payload)
+        return MODEL_SERVER.embed_texts(texts, batch_size, model)
     except ValueError as exc:
         raise _api_error(400, str(exc), "invalid_request_error") from exc
     except Exception as exc:

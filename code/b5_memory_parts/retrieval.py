@@ -37,6 +37,26 @@ from b5_memory_parts.text_utils import (
 from b5_memory_parts.vector_retrieval import apply_vector_scores, load_retrieval_settings
 
 
+def _public_rerank_status(value: object) -> dict:
+    if not isinstance(value, dict):
+        return {"status": "unknown"}
+    public_keys = (
+        "status",
+        "enabled",
+        "candidate_block_count",
+        "candidate_turn_count",
+        "invalid_block_ids",
+        "invalid_turn_ids",
+    )
+    return {key: value.get(key) for key in public_keys if key in value}
+
+
+def _public_memory_policy(policy: object) -> dict:
+    result = dict(policy) if isinstance(policy, dict) else {}
+    result["llm_rerank"] = _public_rerank_status(result.get("llm_rerank"))
+    return result
+
+
 def build_layered_memory_context(
     config_path: str,
     conversation_id: str,
@@ -147,8 +167,6 @@ def build_layered_memory_context(
         high_value = bool(item.pop("_high_value", False))
         vector_hit = float(item.get("vector_score") or 0.0) >= float(vector_settings.get("min_score") or 0.0)
         if float(item.get("score") or 0.0) <= 0.1 and not high_value and not vector_hit:
-            continue
-        if item.get("allow_drop") and float(item.get("score") or 0.0) < 0.35 and not high_value and not vector_hit:
             continue
         scored_turns.append(item)
     scored_turns.sort(key=lambda item: (item["score"], item.get("turn_index") or 0), reverse=True)
@@ -338,7 +356,7 @@ def _workspace_memory_from_layered_context(layered_context: dict) -> dict:
         return {"status": "not_requested"}
     return {
         "status": layered_context.get("status"),
-        "memory_policy": layered_context.get("memory_policy", {}),
+        "memory_policy": _public_memory_policy(layered_context.get("memory_policy", {})),
         "foreground_task": layered_context.get("foreground_task"),
         "paused_tasks": layered_context.get("paused_tasks", []),
         "recalled_blocks": layered_context.get("recalled_blocks", []),
@@ -354,7 +372,7 @@ def _workspace_memory_from_layered_context(layered_context: dict) -> dict:
         "loaded_message_ids": layered_context.get("loaded_message_ids", []),
         "loaded_tool_step_ids": layered_context.get("loaded_tool_step_ids", []),
         "vector_retrieval": layered_context.get("vector_retrieval"),
-        "llm_rerank": layered_context.get("llm_rerank"),
+        "llm_rerank": _public_rerank_status(layered_context.get("llm_rerank")),
         "retrieval_log": layered_context.get("retrieval_log"),
         "error": layered_context.get("error"),
     }
