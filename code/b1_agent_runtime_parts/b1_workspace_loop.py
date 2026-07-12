@@ -14,6 +14,7 @@ from .b1_prompting import (
     _workspace_answer_messages,
     _workspace_observation_messages,
     _workspace_planning_messages,
+    _workspace_stage_failure_answer_messages,
     _workspace_tool_messages,
 )
 from .b1_workspace import (
@@ -132,6 +133,8 @@ def _write_runtime_outputs(
 def _workspace_parse_failure(
     runtime: dict,
     execution_mode: str,
+    system_prompt: str,
+    model_file: Path,
     mode: str,
     output_dir: Path,
     started: float,
@@ -144,22 +147,82 @@ def _workspace_parse_failure(
     workspace: dict,
     stage: str,
     error: dict | None,
+    raw_text: str | None = None,
     all_tool_messages: list[dict] | None = None,
     tool_rounds: int = 0,
     streaming: bool = False,
 ) -> dict:
-    final_answer = "模型内部阶段输出解析失败，未生成有效回答。"
-    terminal_error = {
+    parse_error = {
         "type": "LLMStageParseError",
         "message": f"runtime stage failed to parse: {stage}",
         "stage": stage,
         "cause": error,
     }
-    final_control = {
-        "state": "failed",
-        "action": "finish",
-        "reason": "workspace stage parse failed",
-    }
+    warnings.append(f"workspace stage parse failed: {stage}")
+    _record_stage(
+        workspace,
+        "stage_parse_error",
+        {
+            "stage": stage,
+            "error": error,
+            "raw_text": raw_text,
+        },
+    )
+    llm_calls += 1
+    final_result = generate_ai_message(
+        str(model_file),
+        _workspace_stage_failure_answer_messages(system_prompt, workspace, stage, error, raw_text),
+        [],
+        mode,
+        str(output_dir / "llm_calls"),
+        f"workspace_{llm_calls:03d}_{stage}_failure_answering",
+        prompt_ready=True,
+    )
+    if not isinstance(final_result, dict) or not isinstance(final_result.get("ai_message"), dict):
+        raise ValueError("B4 result must contain an ai_message object")
+    final_ai_message = final_result["ai_message"]
+    final_answer = final_ai_message.get("content", "")
+    final_control = final_ai_message.get("control")
+    status = "success"
+    terminal_error = None
+    if final_result.get("status") != "success":
+        status = "llm_parse_error"
+        terminal_error = {
+            **parse_error,
+            "final_answer_error": final_result.get("error"),
+            "llm_call_index": llm_calls,
+        }
+    elif final_control and final_control.get("state") == "failed":
+        status = "agent_failed"
+        terminal_error = {
+            **parse_error,
+            "final_reason": final_control.get("reason", ""),
+            "llm_call_index": llm_calls,
+        }
+    workspace["final"] = {"answer": final_answer, "status": status}
+    _record_stage(
+        workspace,
+        "answering",
+        {
+            "content": final_answer,
+            "control": final_control,
+            "agent_step": final_ai_message.get("agent_step"),
+        },
+    )
+    messages.append(final_ai_message)
+    turns.append(
+        {
+            "turn_index": llm_calls,
+            "ai_message": final_ai_message,
+            "llm_prompt_messages": final_result.get("prompt_messages"),
+            "llm_status": final_result.get("status"),
+            "llm_error": final_result.get("error"),
+            "tool_messages": [],
+            "control": final_control,
+            "agent_step": final_ai_message.get("agent_step"),
+            "latency_ms": None,
+        }
+    )
     return _write_runtime_outputs(
         runtime,
         execution_mode,
@@ -170,7 +233,7 @@ def _workspace_parse_failure(
         messages,
         all_tool_messages or [],
         final_answer,
-        "llm_parse_error",
+        status,
         tool_rounds,
         llm_calls,
         turns,
@@ -293,6 +356,8 @@ def _run_workspace(
         return _workspace_parse_failure(
             runtime,
             execution_mode,
+            system_prompt,
+            model_file,
             mode,
             output_dir,
             started,
@@ -305,6 +370,7 @@ def _run_workspace(
             workspace,
             "planning",
             plan_result.get("error"),
+            plan_result.get("raw_text"),
         )
     plan = plan_result["json"]
     workspace["task"].update(
@@ -370,36 +436,28 @@ def _run_workspace(
         }
         messages.append(ai_message)
         if llm_status != "success":
-            final_answer = ai_message.get("content", "").strip() or "模型工具规划输出解析失败，未生成有效回答。"
-            status = "llm_parse_error"
-            terminal_error = {
-                "type": "LLMParseError",
-                "message": "B4 failed to parse tool planning output.",
-                "llm_call_index": llm_calls,
-                "cause": llm_error,
-            }
-            final_control = {"state": "failed", "action": "finish", "reason": "tool planning parse failed"}
             turn["latency_ms"] = round((perf_counter() - turn_start) * 1000, 3)
             turns.append(turn)
-            return _write_runtime_outputs(
+            return _workspace_parse_failure(
                 runtime,
                 execution_mode,
+                system_prompt,
+                model_file,
                 mode,
                 output_dir,
                 started,
                 selected_memory,
                 messages,
-                all_tool_messages,
-                final_answer,
-                status,
-                tool_rounds,
-                llm_calls,
                 turns,
-                final_control,
+                llm_calls,
                 warnings,
-                terminal_error,
                 memory_file,
                 workspace,
+                "tool_calling",
+                llm_error,
+                tool_result.get("raw_text"),
+                all_tool_messages,
+                tool_rounds,
             )
         tool_calls = ai_message.get("tool_calls", [])
         workspace["tools"]["last_tool_intent"] = ai_message.get("content", "")
@@ -445,6 +503,8 @@ def _run_workspace(
             return _workspace_parse_failure(
                 runtime,
                 execution_mode,
+                system_prompt,
+                model_file,
                 mode,
                 output_dir,
                 started,
@@ -457,6 +517,7 @@ def _run_workspace(
                 workspace,
                 "observation",
                 observation_result.get("error"),
+                observation_result.get("raw_text"),
                 all_tool_messages,
                 tool_rounds,
             )
@@ -646,6 +707,8 @@ def _run_workspace_stream(
         result = _workspace_parse_failure(
             runtime,
             execution_mode,
+            system_prompt,
+            model_file,
             mode,
             output_dir,
             started,
@@ -658,6 +721,7 @@ def _run_workspace_stream(
             workspace,
             "planning",
             plan_result.get("error"),
+            plan_result.get("raw_text"),
             streaming=True,
         )
         yield {"type": "done", "result": result}
@@ -740,36 +804,28 @@ def _run_workspace_stream(
         }
         messages.append(ai_message)
         if llm_status != "success":
-            final_answer = ai_message.get("content", "").strip() or "模型工具规划输出解析失败，未生成有效回答。"
-            status = "llm_parse_error"
-            terminal_error = {
-                "type": "LLMParseError",
-                "message": "B4 failed to parse tool planning output.",
-                "llm_call_index": llm_calls,
-                "cause": llm_error,
-            }
-            final_control = {"state": "failed", "action": "finish", "reason": "tool planning parse failed"}
             turn["latency_ms"] = round((perf_counter() - turn_start) * 1000, 3)
             turns.append(turn)
-            result = _write_runtime_outputs(
+            result = _workspace_parse_failure(
                 runtime,
                 execution_mode,
+                system_prompt,
+                model_file,
                 mode,
                 output_dir,
                 started,
                 selected_memory,
                 messages,
-                all_tool_messages,
-                final_answer,
-                status,
-                tool_rounds,
-                llm_calls,
                 turns,
-                final_control,
+                llm_calls,
                 warnings,
-                terminal_error,
                 memory_file,
                 workspace,
+                "tool_calling",
+                llm_error,
+                tool_result.get("raw_text"),
+                all_tool_messages,
+                tool_rounds,
                 streaming=True,
             )
             yield {"type": "done", "result": result}
@@ -837,6 +893,8 @@ def _run_workspace_stream(
             result = _workspace_parse_failure(
                 runtime,
                 execution_mode,
+                system_prompt,
+                model_file,
                 mode,
                 output_dir,
                 started,
@@ -849,6 +907,7 @@ def _run_workspace_stream(
                 workspace,
                 "observation",
                 observation_result.get("error"),
+                observation_result.get("raw_text"),
                 all_tool_messages,
                 tool_rounds,
                 streaming=True,

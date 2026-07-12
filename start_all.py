@@ -19,6 +19,8 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent
 BACKEND_DIR = PROJECT_ROOT / "backend"
 FRONTEND_DIR = PROJECT_ROOT / "frontend"
+QWEN_API_DIR = PROJECT_ROOT / "llm_backend" / "qwen_api"
+MODEL_CONFIG = PROJECT_ROOT / "configs" / "model.yaml"
 LOG_DIR = PROJECT_ROOT / "outputs" / "startup_logs"
 
 # Temporary campus-server tunnel settings.
@@ -121,6 +123,24 @@ def wait_for_url(name: str, url: str, timeout_seconds: float = 30.0) -> None:
     print(f"{name} started, but health check timed out: {url}", flush=True)
 
 
+def llm_source() -> str:
+    try:
+        import yaml
+    except ImportError as exc:
+        raise RuntimeError("missing dependency: run `pip install PyYAML` first") from exc
+    with MODEL_CONFIG.open("r", encoding="utf-8") as handle:
+        config = yaml.safe_load(handle) or {}
+    runtime = config.get("runtime", {}) if isinstance(config, dict) else {}
+    source = runtime.get("llm_source", "local") if isinstance(runtime, dict) else "local"
+    if source in {"local", "transformers"}:
+        return "local"
+    if source in {"fastapi", "api"}:
+        return "fastapi"
+    if source in {"qwen_api", "qwen", "dashscope"}:
+        return "qwen_api"
+    raise RuntimeError("configs/model.yaml runtime.llm_source must be local, fastapi, or qwen_api")
+
+
 def start_tunnel() -> TunnelRuntime | None:
     if http_ready(LLM_HEALTH_URL):
         print(f"LLM tunnel already ready: {LLM_HEALTH_URL}", flush=True)
@@ -193,6 +213,33 @@ def start_backend() -> ManagedProcess | None:
     return process
 
 
+def start_qwen_api_llm() -> ManagedProcess | None:
+    if http_ready(LLM_HEALTH_URL):
+        print(f"Qwen API LLM already ready: {LLM_HEALTH_URL}", flush=True)
+        return None
+    if is_port_open(LOCAL_LLM_HOST, LOCAL_LLM_PORT):
+        raise RuntimeError(f"local LLM port is already in use: {LOCAL_LLM_HOST}:{LOCAL_LLM_PORT}")
+    process = start_process(
+        "qwen api llm",
+        [sys.executable, "llm_fastapi_server.py"],
+        QWEN_API_DIR,
+        "qwen_api_llm.log",
+    )
+    wait_for_url("Qwen API LLM", LLM_HEALTH_URL, 30)
+    return process
+
+
+def start_llm_service() -> tuple[TunnelRuntime | None, ManagedProcess | None]:
+    source = llm_source()
+    print(f"LLM source: {source}", flush=True)
+    if source == "fastapi":
+        return start_tunnel(), None
+    if source == "qwen_api":
+        return None, start_qwen_api_llm()
+    print("local LLM source selected; no external LLM service started by start_all.py", flush=True)
+    return None, None
+
+
 def npm_command() -> str:
     return "npm.cmd" if os.name == "nt" else "npm"
 
@@ -235,7 +282,9 @@ def main() -> int:
     processes: list[ManagedProcess] = []
     tunnel: TunnelRuntime | None = None
     try:
-        tunnel = start_tunnel()
+        tunnel, llm_process = start_llm_service()
+        if llm_process is not None:
+            processes.append(llm_process)
         backend = start_backend()
         if backend is not None:
             processes.append(backend)

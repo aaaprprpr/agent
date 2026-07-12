@@ -162,7 +162,7 @@ def run_legacy_loop(
             "latency_ms": None,
         }
         if llm_status != "success":
-            final_answer = ai_message.get("content", "").strip() or "模型输出解析失败，未生成有效回答。"
+            final_answer = ai_message.get("content", "").strip() or str(llm_error or "")
             status = "llm_parse_error"
             terminal_error = {
                 "type": "LLMParseError",
@@ -424,7 +424,7 @@ def run_legacy_stream_loop(
             "latency_ms": None,
         }
         if llm_status != "success":
-            final_answer = ai_message.get("content", "").strip() or "模型输出解析失败，未生成有效回答。"
+            final_answer = ai_message.get("content", "").strip() or str(llm_error or "")
             status = "llm_parse_error"
             terminal_error = {
                 "type": "LLMParseError",

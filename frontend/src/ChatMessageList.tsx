@@ -1,6 +1,7 @@
 import type { ClipboardEvent, RefObject, UIEventHandler } from 'react'
 
 import { FileTypeIcon, formatSize } from './fileUtils'
+import { MarkdownMessage } from './MarkdownMessage'
 import { LoadingBubble, ToolTrace } from './ToolTrace'
 import type { ChatMessage } from './types'
 
@@ -43,7 +44,9 @@ export function ChatMessageList({
             )}
             {message.status === 'pending' && (!message.body || message.body === '...')
               ? <LoadingBubble />
-              : <p>{message.body}</p>}
+              : message.role === 'assistant'
+                ? <MarkdownMessage text={message.body} />
+                : <p>{message.body}</p>}
           </div>
         </article>
       ))}

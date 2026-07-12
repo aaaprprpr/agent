@@ -5,6 +5,7 @@ from pathlib import Path
 
 
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parents[1] / "outputs" / "format_converter_files"
+GENERATED_DIR_NAME = "generated_files"
 DEFAULT_FILENAMES = {"markdown": "converted.md", "json": "converted.json"}
 SUFFIXES = {"markdown": ".md", "json": ".json"}
 
@@ -26,7 +27,13 @@ def _parse_key_value_lines(text: str) -> dict[str, str]:
 
 
 def _safe_output_path(output_dir: str | None, output_filename: str | None, target_format: str) -> Path:
-    directory = Path(output_dir).resolve() if output_dir else DEFAULT_OUTPUT_DIR.resolve()
+    output_base = Path(output_dir).resolve() if output_dir else DEFAULT_OUTPUT_DIR.resolve()
+    directory = (output_base / GENERATED_DIR_NAME).resolve()
+    try:
+        directory.relative_to(output_base)
+    except ValueError as exc:
+        raise ValueError("generated file directory escapes output_dir") from exc
+    directory.mkdir(parents=True, exist_ok=True)
     raw_name = output_filename.strip() if isinstance(output_filename, str) and output_filename.strip() else DEFAULT_FILENAMES[target_format]
     name = Path(raw_name).name
     suffix = SUFFIXES[target_format]
@@ -68,4 +75,15 @@ def format_converter(
     else:
         raise ValueError("target_format must be markdown or json")
     generated_path = _write_output_file(formatted_text, output_dir, output_filename, target)
-    return {"formatted_text": formatted_text, "generated_file_path": str(generated_path)}
+    output_base = Path(output_dir).resolve() if output_dir else DEFAULT_OUTPUT_DIR.resolve()
+    return {
+        "formatted_text": formatted_text,
+        "generated_file_path": str(generated_path),
+        "relative_output_path": generated_path.relative_to(output_base).as_posix(),
+        "filename": generated_path.name,
+        "file_type": target,
+        "suffix": generated_path.suffix.lower(),
+        "num_chars": len(formatted_text),
+        "num_bytes": generated_path.stat().st_size,
+        "overwritten": False,
+    }

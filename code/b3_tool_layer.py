@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import importlib
 import inspect
 import json
 import sys
@@ -11,10 +10,17 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any
 
-from common.io_utils import append_jsonl, read_json, read_yaml, write_json
+from common.io_utils import append_jsonl, read_json, write_json
 from common.logging_utils import now_iso
 from common.path_utils import bootstrap_project_root, resolve_cli_path, resolve_from_file
 from common.schemas import make_skill_result, make_tool_message, normalize_tool_call
+from common.tool_config import (
+    INJECTED_PARAMETERS,
+    get_tool_definition,
+    load_tool_function,
+    load_tools_config,
+    resolve_toolset,
+)
 
 
 bootstrap_project_root()
@@ -37,34 +43,6 @@ PYTHON_TO_JSON_TYPES = {
     dict: "object",
     list: "array",
 }
-
-INJECTED_PARAMETERS = {"data_root", "output_dir", "allowed_roots", "default_root"}
-
-
-def _load_tools_config(tools_config: str | Path) -> tuple[Path, dict]:
-    config_path = Path(tools_config).resolve()
-    config = read_yaml(config_path)
-    if not isinstance(config, dict):
-        raise ValueError("tools.yaml must contain an object")
-    if not isinstance(config.get("tools"), dict) or not isinstance(config.get("toolsets"), dict):
-        raise ValueError("tools.yaml must define tools and toolsets")
-    return config_path, config
-
-
-def _resolve_toolset(config: dict, toolset: str | None) -> tuple[str, list[str]]:
-    selected = toolset or config.get("default_toolset")
-    if not isinstance(selected, str) or selected not in config["toolsets"]:
-        raise ValueError(f"toolset does not exist: {selected}")
-    names = config["toolsets"][selected]
-    if not isinstance(names, list) or not all(isinstance(name, str) for name in names):
-        raise ValueError(f"toolset {selected} must be a list of tool names")
-    return selected, names
-
-
-def _load_tool_function(tool: dict) -> Any:
-    module = importlib.import_module(tool["module"])
-    return getattr(module, tool["function"])
-
 
 def _annotation_to_json_type(annotation: Any, default: Any = inspect._empty) -> str:
     if annotation in PYTHON_TO_JSON_TYPES:
@@ -94,7 +72,7 @@ def _tool_with_inferred_schema(tool: dict) -> tuple[dict, dict]:
     if not isinstance(parameters, dict):
         parameters = {}
     try:
-        function = _load_tool_function(enriched)
+        function = load_tool_function(enriched)
         signature = inspect.signature(function)
         inference["code_signature"] = f"{enriched['module']}.{enriched['function']}{signature}"
         for name, parameter in signature.parameters.items():
@@ -143,22 +121,61 @@ def _parameter_schema(tool: dict) -> dict:
     }
 
 
+def _returns_summary(returns: dict) -> str:
+    parts = []
+    for name, definition in returns.items():
+        if not isinstance(definition, dict):
+            continue
+        description = definition.get("description", "")
+        if description:
+            parts.append(f"{name}: {description}")
+        else:
+            parts.append(name)
+    return "；".join(parts)
+
+
+def _tool_description_for_llm(tool: dict, returns: dict) -> str:
+    base = str(tool["description"]).strip()
+    summary = _returns_summary(returns)
+    result_contract = (
+        "工具执行结果会封装为 ToolMessage.content 中的 SkillResult JSON："
+        "status 表示 success/error；output 是业务结果；error 是失败原因；"
+        "summary 是简短摘要；sources 是读取或搜索来源；artifacts 是生成文件。"
+    )
+    if summary:
+        return f"{base}\n{result_contract}\n主要 output 字段：{summary}"
+    return f"{base}\n{result_contract}"
+
+
+def _skill_result_schema(returns: dict) -> dict:
+    return {
+        "type": "object",
+        "description": "ToolMessage.content 解析后的统一工具结果封装。",
+        "properties": {
+            "skill_name": {"type": "string", "description": "工具名称。"},
+            "status": {"type": "string", "description": "success 或 error。"},
+            "input": {"type": "object", "description": "实际传给工具的参数。"},
+            "output": {"type": "object", "description": "工具业务结果。", "properties": returns},
+            "error": {"type": "object", "description": "失败时的错误类型和错误消息。"},
+            "latency_ms": {"type": "number", "description": "工具执行耗时，单位毫秒。"},
+            "summary": {"type": "object", "description": "面向模型的简短摘要和计数字段。"},
+            "sources": {"type": "array", "description": "文件读取、搜索或表格分析涉及的来源路径。"},
+            "artifacts": {"type": "array", "description": "工具生成的文件。"},
+        },
+    }
+
+
 def get_tools_schema(
     tools_config: str,
     toolset: str,
     outdir: str | None = None,
 ) -> list[dict]:
-    _, config = _load_tools_config(tools_config)
-    selected, tool_names = _resolve_toolset(config, toolset)
+    _, config = load_tools_config(tools_config)
+    selected, tool_names = resolve_toolset(config, toolset)
     schema = []
     details = []
     for name in tool_names:
-        tool = config["tools"].get(name)
-        if not isinstance(tool, dict):
-            raise ValueError(f"toolset references missing tool: {name}")
-        for field in ("module", "function", "description", "returns"):
-            if field not in tool:
-                raise ValueError(f"tool {name} missing {field}")
+        tool = get_tool_definition(config, name)
         returns = tool["returns"]
         if not isinstance(returns, dict):
             raise ValueError(f"tool {name} returns must be an object")
@@ -168,9 +185,10 @@ def get_tools_schema(
                 "type": "function",
                 "function": {
                     "name": name,
-                    "description": tool["description"],
+                    "description": _tool_description_for_llm(tool, returns),
                     "parameters": _parameter_schema(enriched_tool),
                     "x-returns": {"type": "object", "properties": returns},
+                    "x-skill-result": _skill_result_schema(returns),
                 },
             }
         )
@@ -300,7 +318,7 @@ def _run_configured_tool(
     default_root: str,
     output_dir: Path | None,
 ) -> Any:
-    function = _load_tool_function(definition)
+    function = load_tool_function(definition)
     kwargs = dict(args)
     signature = inspect.signature(function)
     if "data_root" in signature.parameters:
@@ -357,8 +375,8 @@ def execute_tool_calls(
     toolset: str | None = None,
     outdir: str | None = None,
 ) -> list[dict]:
-    config_path, config = _load_tools_config(tools_config)
-    selected, allowed_tools = _resolve_toolset(config, toolset)
+    config_path, config = load_tools_config(tools_config)
+    selected, allowed_tools = resolve_toolset(config, toolset)
     if not isinstance(tool_calls, list):
         raise ValueError("tool_calls must be a list")
     data_root_setting = config.get("settings", {}).get("data_root", "../data")
@@ -391,7 +409,7 @@ def execute_tool_calls(
             if name not in allowed_tools or name not in config["tools"]:
                 result = _error_result(name, args, ValueError(f"tool is not available in {selected}: {name}"))
             else:
-                definition, _ = _tool_with_inferred_schema(config["tools"][name])
+                definition, _ = _tool_with_inferred_schema(get_tool_definition(config, name))
                 try:
                     _validate_args(args, definition)
                     key = _cache_key(name, args, tool_context)
@@ -483,7 +501,7 @@ def main(argv: list[str] | None = None) -> int:
         outdir = resolve_cli_path(args.outdir)
         if args.export_schema:
             if not args.toolset:
-                _, config = _load_tools_config(config_path)
+                _, config = load_tools_config(config_path)
                 args.toolset = config.get("default_toolset")
             get_tools_schema(str(config_path), args.toolset, str(outdir))
             print(outdir / "tools_schema.json")
