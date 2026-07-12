@@ -25,11 +25,12 @@ from b5_memory_parts.text_utils import (
     _history_query_text,
     _paused_tasks,
     _safe_list,
-    _score_block,
-    _score_turn,
+    _score_block_detail,
+    _score_turn_detail,
     _source_message_context,
     _source_tool_context,
     _task_query_text,
+    _turn_context_role,
     _unique_strings,
 )
 
@@ -71,10 +72,11 @@ def build_layered_memory_context(
     blocks = list_memory_blocks(db_path, conversation_id, status="active")
     scored_blocks = []
     for block in blocks:
-        score = _score_block(block, query_text, newest_turn_index)
-        if score > 0.05:
+        score_detail = _score_block_detail(block, query_text, newest_turn_index)
+        if score_detail["score"] > 0.05:
             item = dict(block)
-            item["score"] = score
+            item["score"] = score_detail["score"]
+            item["score_breakdown"] = score_detail
             scored_blocks.append(item)
     scored_blocks.sort(key=lambda item: (item["score"], item.get("end_turn_index") or 0), reverse=True)
     selected_blocks = scored_blocks[:MAX_RECALLED_BLOCKS]
@@ -98,16 +100,20 @@ def build_layered_memory_context(
 
     scored_turns = []
     for turn in by_turn_id.values():
-        score = _score_turn(turn, query_text, newest_turn_index)
+        score_detail = _score_turn_detail(turn, query_text, newest_turn_index)
         high_value = (
             bool(turn.get("has_decision"))
             or bool(turn.get("has_user_correction"))
             or float(turn.get("long_term_value") or 0.0) >= 0.7
         )
-        if score <= 0.1 and not high_value:
+        if score_detail["score"] <= 0.1 and not high_value:
+            continue
+        if turn.get("allow_drop") and score_detail["score"] < 0.35 and not high_value:
             continue
         item = dict(turn)
-        item["score"] = score
+        item["score"] = score_detail["score"]
+        item["score_breakdown"] = score_detail
+        item["context_role"] = _turn_context_role(item)
         scored_turns.append(item)
     scored_turns.sort(key=lambda item: (item["score"], item.get("turn_index") or 0), reverse=True)
     selected_turns = scored_turns[:MAX_RECALLED_TURNS]
@@ -161,11 +167,24 @@ def build_layered_memory_context(
             "recent_history_message_count": len(recent_history),
             "task_count": len(tasks),
             "query_chars": len(query_text),
+            "retrieval_features": [
+                "current_user_input",
+                "recent_history",
+                "task_memory",
+                "field_overlap",
+                "tool_overlap",
+                "long_term_value",
+                "current_task_relevance",
+                "time_recency",
+            ],
+            "vector_retrieval": "not_configured",
+            "llm_rerank": "not_configured",
         },
         candidate_blocks=[
             {
                 "block_id": block.get("id"),
                 "score": block.get("score"),
+                "score_breakdown": block.get("score_breakdown"),
                 "start_turn_index": block.get("start_turn_index"),
                 "end_turn_index": block.get("end_turn_index"),
             }
@@ -176,6 +195,8 @@ def build_layered_memory_context(
                 "turn_id": turn.get("turn_id"),
                 "turn_index": turn.get("turn_index"),
                 "score": turn.get("score"),
+                "score_breakdown": turn.get("score_breakdown"),
+                "context_role": turn.get("context_role"),
                 "source_message_ids": turn.get("source_message_ids"),
                 "source_tool_step_ids": turn.get("source_tool_step_ids"),
             }
@@ -197,6 +218,8 @@ def build_layered_memory_context(
             "exact_facts_require_source": True,
             "recent_history_is_raw": True,
             "older_history_is_recalled_only_when_selected": True,
+            "vector_retrieval": "not_configured",
+            "llm_rerank": "not_configured",
         },
         "foreground_task": _foreground_task(tasks),
         "paused_tasks": _paused_tasks(tasks)[:6],
@@ -274,6 +297,8 @@ def _error_layered_memory_context(conversation_id: str, normalized_history: list
             "exact_facts_require_source": True,
             "recent_history_is_raw": True,
             "older_history_is_recalled_only_when_selected": True,
+            "vector_retrieval": "not_configured",
+            "llm_rerank": "not_configured",
         },
         "foreground_task": None,
         "paused_tasks": [],

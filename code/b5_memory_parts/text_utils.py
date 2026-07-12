@@ -10,6 +10,9 @@ MAX_RECALLED_TURNS = 5
 MAX_SOURCE_SNIPPET_CHARS = 360
 MAX_TOOL_SNIPPET_CHARS = 280
 MAX_WORKSPACE_ITEM_CHARS = 420
+FIELD_PREFIXES = ("project:", "file:", "model:", "tool:", "task:")
+TASK_LABELS = {"category:task_state", "boundary:task_switch", "boundary:phase_complete", "boundary:task_complete"}
+LONG_TERM_LABELS = {"category:preference", "category:decision", "category:correction"}
 
 
 def _compact_text(value: str, limit: int = 1200) -> str:
@@ -37,6 +40,34 @@ def _unique_strings(values: list[Any], limit: int | None = None) -> list[str]:
         if limit is not None and len(result) >= limit:
             break
     return result
+
+
+def _field_values(payload: dict, prefixes: tuple[str, ...] = FIELD_PREFIXES) -> list[str]:
+    values = []
+    if not isinstance(payload, dict):
+        return values
+    candidates = [
+        *_safe_list(payload.get("keywords")),
+        *_safe_list(payload.get("labels")),
+    ]
+    for refs_key in ("tool_refs", "artifact_refs"):
+        for ref in _safe_list(payload.get(refs_key)):
+            if isinstance(ref, dict):
+                candidates.extend(str(value) for value in ref.values() if isinstance(value, str))
+    for item in candidates:
+        if not isinstance(item, str):
+            continue
+        stripped = item.strip()
+        lowered = stripped.casefold()
+        if any(lowered.startswith(prefix) for prefix in prefixes):
+            values.append(stripped)
+    return _unique_strings(values, 24)
+
+
+def _format_block_topic(keywords: list[str]) -> str:
+    scoped = [item for item in keywords if isinstance(item, str) and any(item.casefold().startswith(prefix) for prefix in FIELD_PREFIXES)]
+    selected = scoped[:4] if scoped else keywords[:6]
+    return ", ".join(selected) if selected else "general conversation"
 
 
 def _compact_jsonish(value: Any, limit: int = MAX_WORKSPACE_ITEM_CHARS) -> Any:
@@ -82,6 +113,39 @@ def _text_similarity(query_text: str, candidate_text: str) -> float:
     return SequenceMatcher(None, query, candidate).ratio()
 
 
+def _field_overlap_score(query_text: str, candidate_fields: list[str]) -> float:
+    query = _compact_text(query_text, 2400).casefold()
+    if not query or not candidate_fields:
+        return 0.0
+    hits = 0
+    for field in candidate_fields:
+        value = str(field).casefold().strip()
+        if not value:
+            continue
+        bare_value = value.split(":", 1)[1] if ":" in value else value
+        if bare_value and bare_value in query:
+            hits += 1
+    return min(1.0, hits / max(1, len(candidate_fields)))
+
+
+def _tool_signal_score(query_text: str, tool_refs: list[dict]) -> float:
+    tool_names = []
+    for ref in _safe_list(tool_refs):
+        if isinstance(ref, dict) and isinstance(ref.get("tool_name"), str):
+            tool_names.append(f"tool:{ref['tool_name']}")
+    return _field_overlap_score(query_text, _unique_strings(tool_names, 12))
+
+
+def _recency_score(index: Any, newest_turn_index: int) -> float:
+    if newest_turn_index <= 0:
+        return 0.0
+    try:
+        numeric_index = float(index or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    return min(1.0, max(0.0, numeric_index / newest_turn_index))
+
+
 def _block_search_text(block: dict) -> str:
     return "\n".join(
         str(item)
@@ -110,17 +174,32 @@ def _turn_search_text(turn: dict) -> str:
 
 
 def _score_block(block: dict, query_text: str, newest_turn_index: int) -> float:
+    return _score_block_detail(block, query_text, newest_turn_index)["score"]
+
+
+def _score_block_detail(block: dict, query_text: str, newest_turn_index: int) -> dict:
     similarity = _text_similarity(query_text, _block_search_text(block))
-    recency = 0.0
-    if newest_turn_index > 0:
-        recency = min(1.0, max(0.0, float(block.get("end_turn_index") or 0) / newest_turn_index))
-    return round(similarity * 2.0 + recency * 0.2, 4)
+    field_overlap = _field_overlap_score(query_text, _field_values(block))
+    recency = _recency_score(block.get("end_turn_index"), newest_turn_index)
+    score = similarity * 1.7 + field_overlap * 0.65 + recency * 0.2
+    return {
+        "score": round(score, 4),
+        "similarity": round(similarity, 4),
+        "field_overlap": round(field_overlap, 4),
+        "recency": round(recency, 4),
+    }
 
 
 def _score_turn(turn: dict, query_text: str, newest_turn_index: int) -> float:
+    return _score_turn_detail(turn, query_text, newest_turn_index)["score"]
+
+
+def _score_turn_detail(turn: dict, query_text: str, newest_turn_index: int) -> dict:
     similarity = _text_similarity(query_text, _turn_search_text(turn))
     current_task = float(turn.get("current_task_relevance") or 0.0)
     long_term = float(turn.get("long_term_value") or 0.0)
+    field_overlap = _field_overlap_score(query_text, _field_values(turn))
+    tool_overlap = _tool_signal_score(query_text, _safe_list(turn.get("tool_refs")))
     signal = 0.0
     if turn.get("has_decision"):
         signal += 0.35
@@ -128,12 +207,51 @@ def _score_turn(turn: dict, query_text: str, newest_turn_index: int) -> float:
         signal += 0.3
     if turn.get("has_explicit_fact"):
         signal += 0.2
-    recency = 0.0
-    if newest_turn_index > 0:
-        recency = min(1.0, max(0.0, float(turn.get("turn_index") or 0) / newest_turn_index))
+    recency = _recency_score(turn.get("turn_index"), newest_turn_index)
     noise = float(turn.get("noise_score") or 0.0)
     drop_penalty = 0.5 if turn.get("allow_drop") else 0.0
-    return round(similarity * 2.0 + current_task * 0.35 + long_term * 0.45 + signal + recency * 0.15 - noise - drop_penalty, 4)
+    score = (
+        similarity * 1.6
+        + field_overlap * 0.55
+        + tool_overlap * 0.25
+        + current_task * 0.35
+        + long_term * 0.45
+        + signal
+        + recency * 0.15
+        - noise
+        - drop_penalty
+    )
+    return {
+        "score": round(score, 4),
+        "similarity": round(similarity, 4),
+        "field_overlap": round(field_overlap, 4),
+        "tool_overlap": round(tool_overlap, 4),
+        "current_task": round(current_task, 4),
+        "long_term": round(long_term, 4),
+        "signal": round(signal, 4),
+        "recency": round(recency, 4),
+        "noise": round(noise, 4),
+        "drop_penalty": round(drop_penalty, 4),
+    }
+
+
+def _turn_context_role(turn: dict) -> str:
+    labels = {item for item in _safe_list(turn.get("labels")) if isinstance(item, str)}
+    current_task = float(turn.get("current_task_relevance") or 0.0)
+    long_term = float(turn.get("long_term_value") or 0.0)
+    if labels.intersection(TASK_LABELS) or current_task >= 0.6:
+        return "task_related"
+    if labels.intersection(LONG_TERM_LABELS) or long_term >= 0.65 or turn.get("has_decision") or turn.get("has_user_correction"):
+        return "durable_memory"
+    return "supporting_context"
+
+
+def _group_turns_by_context_role(turns: list[dict]) -> dict[str, list[dict]]:
+    groups = {"task_related": [], "durable_memory": [], "supporting_context": []}
+    for turn in turns:
+        role = _turn_context_role(turn)
+        groups[role].append(turn)
+    return groups
 
 
 def _list_text(title: str, values: Any, limit: int = 4) -> str | None:
@@ -272,23 +390,31 @@ def _build_memory_context_text(
             budget,
         )
 
-    if selected_turns:
-        _append_budgeted_line(lines, "\n[Recalled turns]", budget)
-    for turn in selected_turns:
-        source_ids = _safe_list(turn.get("source_message_ids"))
-        tool_ids = _safe_list(turn.get("source_tool_step_ids"))
-        _append_budgeted_line(
-            lines,
-            f"- turn {turn.get('turn_index')} ({turn.get('turn_id')}): {turn.get('summary')} | source_messages={source_ids} | source_tools={tool_ids}",
-            budget,
-        )
-        details = []
-        for field, label in (("decisions", "decisions"), ("corrections", "corrections"), ("facts", "facts")):
-            values = _unique_strings(_safe_list(turn.get(field)), 3)
-            if values:
-                details.append(f"{label}: {'; '.join(values)}")
-        if details:
-            _append_budgeted_line(lines, "  " + " | ".join(details), budget)
+    grouped_turns = _group_turns_by_context_role(selected_turns)
+    turn_sections = [
+        ("task_related", "\n[Task-related recalled turns]"),
+        ("durable_memory", "\n[Durable preferences, decisions, and corrections]"),
+        ("supporting_context", "\n[Supporting recalled turns]"),
+    ]
+    for group_key, heading in turn_sections:
+        turns = grouped_turns[group_key]
+        if turns:
+            _append_budgeted_line(lines, heading, budget)
+        for turn in turns:
+            source_ids = _safe_list(turn.get("source_message_ids"))
+            tool_ids = _safe_list(turn.get("source_tool_step_ids"))
+            _append_budgeted_line(
+                lines,
+                f"- turn {turn.get('turn_index')} ({turn.get('turn_id')}): {turn.get('summary')} | source_messages={source_ids} | source_tools={tool_ids}",
+                budget,
+            )
+            details = []
+            for field, label in (("decisions", "decisions"), ("corrections", "corrections"), ("facts", "facts")):
+                values = _unique_strings(_safe_list(turn.get(field)), 3)
+                if values:
+                    details.append(f"{label}: {'; '.join(values)}")
+            if details:
+                _append_budgeted_line(lines, "  " + " | ".join(details), budget)
 
     if source_messages:
         _append_budgeted_line(lines, "\n[Loaded source message snippets]", budget)

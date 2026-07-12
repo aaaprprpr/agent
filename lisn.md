@@ -12,6 +12,7 @@ python start_all.py
 
 做记忆，改bug
 改记忆模块
+优化记忆模块，优化轮级反思 prompt
 加对话终止按钮
 
 # -------------------------7.11------------------------------
@@ -27,7 +28,7 @@ python start_all.py
 
 # -------------------------7.12 B5 接入新版 B1 workspace------------------------------
 
-- 根据团队反馈重做 B5 到 B1 的接口：B5 新增 `prepare_workspace_memory_context`，统一返回 `recent_history_messages` 和 `workspace_memory`。
+- 重做 B5 到 B1 的接口：B5 新增 `prepare_workspace_memory_context`，统一返回 `recent_history_messages` 和 `workspace_memory`。
 - B1 不再隐式覆盖原始 runtime `history_messages`；`prompt_json` workspace 单独读取 B5 返回的近期原文，完整历史计数通过 `history_policy` 暴露。
 - 更早历史只通过 B5 召回结果进入 `workspace.memory.layered`，包含任务记忆、块/轮摘要、source message 和 source tool step 片段。
 - B5 反思输入已加入 B1 `workspace.trace`、任务状态、known facts、missing info、工具 observation 和 final 状态，使每轮记忆基于完整 Agent 轨迹。
@@ -152,3 +153,13 @@ tool/skill 第一批增强：
 - 原 `b5_memory_parts/layered.py` 过大，已继续拆为 `text_utils.py`、`retrieval.py`、`reflection.py`：分别负责文本压缩/评分/上下文格式化、分层召回与 workspace context、轮次反思和记忆落库。
 - 保留短 `layered.py` 作为内部兼容导出，避免误伤已有内部导入；删除重复的 `b5_memory_parts/cli.py`。
 - 本次只做结构调整，未启动项目、未跑测试、未跑训练。
+
+# -------------------------7.12 B5 记忆质量优化------------------------------
+
+- 优化轮级反思 prompt：明确区分任务状态、长期偏好、决定、用户纠正、闲聊和噪声；闲聊/噪声默认不得更新任务记忆。
+- 增加反思结果校验：限制分数范围，规范 labels，避免可丢弃内容被标为高价值，避免普通偏好误写为前台任务。
+- 改进 block 生成：从固定轮数阈值改为任务/话题边界、阶段/任务完成、上下文长度和最大轮数共同触发。
+- 增强召回评分：加入 field overlap、tool overlap、长期价值、当前任务相关度、显式事实/决定/纠正、时间衰减和噪声惩罚，并输出 `score_breakdown` 供排查。
+- 向量 RAG 和 LLM rerank 当前只标记为 `not_configured`，未用词法相似度伪装成向量召回，也未擅自增加运行前模型重排调用。
+- 继续优化召回上下文组装：按 `task_related`、`durable_memory`、`supporting_context` 分组进入上下文；低分且允许丢弃的轮次不进入召回上下文，但仍保留原始消息和数据库记录。
+- 修复偏好误入任务记忆：反思结果现在必须包含 `category:task_state` 才允许更新 `task_memory`；普通长期偏好会剥离任务边界标签和 `task:` 关键词，避免“回答简洁/少用表格”被写成前台任务。

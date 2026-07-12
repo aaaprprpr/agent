@@ -18,9 +18,21 @@ from b5_memory_parts.paths import _conversation_db_path, _safe_conversation_id
 from b5_memory_parts.text_utils import (
     _compact_jsonish,
     _compact_text,
+    _field_values,
+    _format_block_topic,
     _safe_list,
     _unique_strings,
 )
+
+MIN_BLOCK_TURNS = 3
+MAX_BLOCK_TURNS = 8
+MAX_BLOCK_SUMMARY_CHARS = 1400
+BOUNDARY_TOPIC_SHIFT = "boundary:topic_shift"
+BOUNDARY_TASK_SWITCH = "boundary:task_switch"
+BOUNDARY_TASK_COMPLETE = "boundary:task_complete"
+BOUNDARY_PHASE_COMPLETE = "boundary:phase_complete"
+NON_TASK_CATEGORIES = {"category:casual_chat", "category:noise", "category:preference"}
+TASK_BOUNDARY_LABELS = {BOUNDARY_TASK_SWITCH, BOUNDARY_TASK_COMPLETE, BOUNDARY_PHASE_COMPLETE}
 
 
 def _neutral_locator_summary() -> str:
@@ -69,6 +81,24 @@ def _safe_summary_items(value: Any) -> list:
         if compact:
             items.append(compact)
     return items
+
+
+def _bounded_score(value: Any, default: float = 0.0) -> float:
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        score = default
+    return min(1.0, max(0.0, score))
+
+
+def _safe_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    return default
+
+
+def _safe_labels(value: Any) -> list[str]:
+    return _unique_strings([item for item in _safe_list(value) if isinstance(item, str)], 20)
 
 
 def _tool_refs_from_steps(tool_steps: list[dict]) -> list[dict]:
@@ -214,11 +244,18 @@ def _memory_reflection_messages(
             "allow_compress": "boolean",
             "allow_drop": "boolean",
             "noise_score": "0..1",
-            "labels": ["short labels"],
+            "labels": [
+                "controlled labels such as category:task_state, category:preference, category:decision, "
+                "category:casual_chat, category:noise, boundary:topic_shift, boundary:task_switch, "
+                "boundary:phase_complete, boundary:task_complete"
+            ],
         },
         "turn_summary": {
             "summary": "short locator summary; never include exact paths, commands, code, parameters, or error text",
-            "keywords": [],
+            "keywords": [
+                "short retrieval keys. Prefer scoped keys when available: project:<name>, file:<name>, "
+                "model:<name>, tool:<name>, task:<id-or-title>"
+            ],
             "facts": [],
             "decisions": [],
             "corrections": [],
@@ -245,10 +282,30 @@ def _memory_reflection_messages(
         "Return exactly one JSON object matching the requested memory schema. "
         "Do not wrap it in an AIMessage. Do not output content, tool_calls, control, or agent_step. "
         "Summaries are only locators: do not copy exact file paths, commands, code, parameters, traceback text, or tool output values. "
-        "When exact facts are needed later, the system will load source messages and tool steps."
+        "When exact facts are needed later, the system will load source messages and tool steps. "
+        "Classify the turn by memory role: task state, durable preference, user decision/correction, casual chat, or low-value noise. "
+        "A preference can be long-term memory without being a task. Casual chat and random noise must not update task memory. "
+        "A task memory update is allowed only when the turn changes a concrete task goal, phase, constraint, file/resource, result, blocker, or next action. "
+        "A task_memory action other than no_change requires category:task_state; boundary labels alone are not enough. "
+        "Do not create a task just to remember a user preference. "
+        "Use boundary labels only when the completed turn clearly switches topics/tasks, completes a phase, or completes a task. "
+        "Do not infer a project, file, model, or task id unless it is present in the observation."
     )
     user = (
         "Return a JSON object with exactly these top-level keys: turn_tags, turn_summary, task_memory.\n\n"
+        "Classification rules:\n"
+        "- category:task_state: only when the turn changes an active task's goal, phase, constraints, files, results, blockers, or next actions.\n"
+        "- category:preference: durable user preference or stable requirement; store it as ordinary memory, not task progress unless it directly constrains a task.\n"
+        "- category:decision: user or agent made a durable decision that future turns may need.\n"
+        "- category:correction: user corrected previous content, assumptions, files, commands, or results.\n"
+        "- category:casual_chat: greeting, thanks, brief social exchange, or normal small talk.\n"
+        "- category:noise: random text, accidental input, empty intent, or content with no recoverable future use.\n"
+        "- task_memory.action must be no_change unless labels include category:task_state.\n"
+        "- Do not use boundary:task_switch, boundary:phase_complete, or boundary:task_complete for ordinary preferences.\n"
+        "- For category:casual_chat or category:noise, task_memory.action must be no_change unless the turn explicitly references an existing task.\n"
+        "- Use boundary:topic_shift or boundary:task_switch only when this turn clearly starts a new topic/task after previous task context.\n"
+        "- Use boundary:phase_complete or boundary:task_complete only when the completed turn itself closes a phase/task.\n"
+        "- keywords should include retrieval facets when explicitly present: project:<name>, file:<name>, model:<name>, tool:<name>, task:<id-or-title>.\n\n"
         "Memory schema:\n"
         + json.dumps(schema_hint, ensure_ascii=False, indent=2)
         + "\n\nCompleted turn observation:\n"
@@ -271,6 +328,21 @@ def _coerce_memory_decision(
     task = candidate.get("task_memory")
     if not isinstance(tags, dict) or not isinstance(summary, dict) or not isinstance(task, dict):
         raise ValueError("memory decision missing turn_tags, turn_summary, or task_memory")
+    tags = dict(tags)
+    tags["current_task_relevance"] = _bounded_score(tags.get("current_task_relevance"))
+    tags["long_term_value"] = _bounded_score(tags.get("long_term_value"))
+    tags["noise_score"] = _bounded_score(tags.get("noise_score"))
+    tags["has_explicit_fact"] = _safe_bool(tags.get("has_explicit_fact"))
+    tags["has_decision"] = _safe_bool(tags.get("has_decision"))
+    tags["has_user_correction"] = _safe_bool(tags.get("has_user_correction"))
+    tags["allow_compress"] = _safe_bool(tags.get("allow_compress"), True)
+    tags["allow_drop"] = _safe_bool(tags.get("allow_drop"))
+    tags["labels"] = _safe_labels(tags.get("labels"))
+    if tags["has_explicit_fact"] or tags["has_decision"] or tags["has_user_correction"] or tags["long_term_value"] >= 0.65:
+        tags["allow_drop"] = False
+    if tags["allow_drop"]:
+        tags["long_term_value"] = min(tags["long_term_value"], 0.3)
+        tags["current_task_relevance"] = min(tags["current_task_relevance"], 0.3)
     summary = dict(summary)
     summary_text = summary.get("summary")
     if isinstance(summary_text, str):
@@ -286,9 +358,23 @@ def _coerce_memory_decision(
     if not isinstance(summary.get("summary"), str) or not summary["summary"].strip():
         summary["summary"] = _neutral_locator_summary()
     task = dict(task)
-    task.setdefault("action", "no_change")
-    task.setdefault("status", "foreground")
+    action = task.get("action")
+    if action not in {"no_change", "update_foreground", "switch_task", "resume_task", "pause_task", "complete_task"}:
+        action = "no_change"
+    task["action"] = action
+    task_status = task.get("status")
+    task["status"] = task_status if task_status in {"foreground", "paused", "completed", "abandoned"} else "foreground"
     task.setdefault("source_turn_ids", [])
+    labels = set(tags["labels"])
+    has_task_state = "category:task_state" in labels
+    if not has_task_state:
+        task["action"] = "no_change"
+        tags["labels"] = [label for label in tags["labels"] if label not in TASK_BOUNDARY_LABELS]
+        summary["keywords"] = [item for item in summary["keywords"] if not item.lower().startswith("task:")]
+    elif labels.intersection(NON_TASK_CATEGORIES - {"category:preference"}):
+        task["action"] = "no_change"
+    if tags["noise_score"] >= 0.75 and tags["long_term_value"] <= 0.35 and tags["current_task_relevance"] <= 0.35:
+        task["action"] = "no_change"
     return {"source": "model", "turn_tags": tags, "turn_summary": summary, "task_memory": task}
 
 
@@ -350,21 +436,79 @@ def _apply_task_memory_decision(
     )
 
 
-def _maybe_create_memory_block(config_path: str, conversation_id: str, min_turns: int = 6) -> dict:
+def _summary_labels(summary: dict) -> set[str]:
+    return {item for item in _safe_list(summary.get("labels")) if isinstance(item, str)}
+
+
+def _summary_task_keys(summary: dict) -> set[str]:
+    return {
+        value
+        for value in _field_values(summary, prefixes=("task:",))
+        if isinstance(value, str) and value.strip()
+    }
+
+
+def _summary_text_size(summaries: list[dict]) -> int:
+    total = 0
+    for summary in summaries:
+        total += len(str(summary.get("summary") or ""))
+        total += sum(len(str(item)) for item in _safe_list(summary.get("keywords")))
+        total += sum(len(str(item)) for item in _safe_list(summary.get("facts")))
+        total += sum(len(str(item)) for item in _safe_list(summary.get("decisions")))
+    return total
+
+
+def _block_boundary_reason(summaries: list[dict]) -> str | None:
+    if len(summaries) >= MAX_BLOCK_TURNS:
+        return "max_turns"
+    if len(summaries) < MIN_BLOCK_TURNS:
+        return None
+    labels = _summary_labels(summaries[-1])
+    if BOUNDARY_TASK_COMPLETE in labels:
+        return "task_complete"
+    if BOUNDARY_PHASE_COMPLETE in labels:
+        return "phase_complete"
+    if _summary_text_size(summaries) >= MAX_BLOCK_SUMMARY_CHARS:
+        return "context_length"
+    return None
+
+
+def _select_block_summaries(summaries: list[dict]) -> tuple[list[dict], str | None]:
+    if not summaries:
+        return [], None
+    labels = _summary_labels(summaries[-1])
+    if labels.intersection({BOUNDARY_TOPIC_SHIFT, BOUNDARY_TASK_SWITCH}) and len(summaries) - 1 >= MIN_BLOCK_TURNS:
+        return summaries[:-1], "boundary_before_latest"
+    latest_task_keys = _summary_task_keys(summaries[-1])
+    previous_task_keys = set().union(*[_summary_task_keys(summary) for summary in summaries[:-1]]) if len(summaries) > 1 else set()
+    if latest_task_keys and previous_task_keys and latest_task_keys.isdisjoint(previous_task_keys) and len(summaries) - 1 >= MIN_BLOCK_TURNS:
+        return summaries[:-1], "task_key_change"
+    reason = _block_boundary_reason(summaries)
+    if reason:
+        return summaries, reason
+    return [], None
+
+
+def _maybe_create_memory_block(config_path: str, conversation_id: str) -> dict:
     db_path = _conversation_db_path(config_path)
-    turns = list_unblocked_conversation_turns(db_path, conversation_id, min_turns)
-    if len(turns) < min_turns:
+    turns = list_unblocked_conversation_turns(db_path, conversation_id)
+    if len(turns) < MIN_BLOCK_TURNS:
         return {"status": "skipped", "reason": "not enough turns"}
-    block_turns = turns[:min_turns]
-    start = block_turns[0]["turn_index"]
-    end = block_turns[-1]["turn_index"]
-    turn_ids = [turn["id"] for turn in block_turns]
+    turn_ids = [turn["id"] for turn in turns if isinstance(turn.get("id"), str)]
     summaries = list_turn_summaries(db_path, conversation_id, turn_ids=turn_ids)
     summaries.sort(key=lambda item: int(item.get("turn_index") or 0))
+    selected_summaries, boundary_reason = _select_block_summaries(summaries)
+    if not selected_summaries or boundary_reason is None:
+        return {"status": "skipped", "reason": "waiting for task/topic/length boundary"}
+    block_turn_ids = [summary["turn_id"] for summary in selected_summaries if isinstance(summary.get("turn_id"), str)]
+    if len(block_turn_ids) < MIN_BLOCK_TURNS:
+        return {"status": "skipped", "reason": "selected block is too small"}
+    start = int(selected_summaries[0].get("turn_index") or 0)
+    end = int(selected_summaries[-1].get("turn_index") or 0)
     keywords = _unique_strings(
         [
             keyword
-            for summary in summaries
+            for summary in selected_summaries
             for keyword in [
                 *_safe_list(summary.get("keywords")),
                 *_safe_list(summary.get("labels")),
@@ -373,27 +517,29 @@ def _maybe_create_memory_block(config_path: str, conversation_id: str, min_turns
         16,
     )
     representative = []
-    for summary in summaries[:4]:
+    for summary in selected_summaries[:4]:
         text = summary.get("summary")
         if isinstance(text, str) and text.strip():
             representative.append(f"turn {summary.get('turn_index')}: {_compact_text(text, 120)}")
-    topic_text = ", ".join(keywords[:6]) if keywords else "general conversation"
+    topic_text = _format_block_topic(keywords)
+    task_keys = _unique_strings([key for summary in selected_summaries for key in _summary_task_keys(summary)], 3)
     block = {
         "title": f"Turns {start}-{end}: {topic_text}",
         "summary": (
-            f"Block covering turns {start}-{end}. Topics: {topic_text}. "
+            f"Block covering turns {start}-{end}. Boundary: {boundary_reason}. Topics: {topic_text}. "
             + ("Representative turn summaries: " + " | ".join(representative) + ". " if representative else "")
             + "Use linked turn summaries first, then load original messages/tool steps for exact facts."
         ),
         "status": "active",
         "keywords": keywords,
-        "source": "derived_from_turn_summaries",
+        "task_id": task_keys[0].split(":", 1)[1].strip() if task_keys and ":" in task_keys[0] else None,
+        "source": f"derived_from_turn_summaries:{boundary_reason}",
     }
     return upsert_memory_block(
         db_path,
         conversation_id,
         block,
-        turn_ids,
+        block_turn_ids,
     )
 
 
