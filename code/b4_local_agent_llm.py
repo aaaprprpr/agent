@@ -16,7 +16,6 @@ from common.path_utils import resolve_cli_path, resolve_from_file
 from common.schemas import make_ai_message, validate_ai_message, validate_messages
 
 
-PARSE_ERROR_CONTENT = "模型输出解析失败，无法生成有效工具调用或最终回答。"
 _MODEL_CACHE: dict[tuple[str, ...], tuple[Any, Any]] = {}
 
 
@@ -327,9 +326,9 @@ def _parse_error_fallback_content(raw_text: str) -> str:
     if content:
         return content
     stripped = raw_text.strip()
-    if stripped and not stripped.startswith("{") and not stripped.startswith("["):
+    if stripped:
         return stripped[:1200]
-    return PARSE_ERROR_CONTENT
+    return "模型返回了空内容。"
 
 
 def _candidate_to_message(candidate: dict, has_tool_messages: bool = False) -> tuple[dict, dict]:
@@ -562,98 +561,6 @@ def _load_model_bundle(
     return processor, model
 
 
-def _build_prompt_messages(messages: list[dict], tools_schema: list[dict]) -> list[dict]:
-    """Standalone B4 fallback for prompt_json mode.
-
-    The integrated Agent path builds model-facing prompt messages in B1 and
-    calls B4 with prompt_ready=True. This fallback keeps B4 independently
-    runnable for module demos and tests.
-    """
-    prompt_messages = deepcopy(messages)
-    format_instruction = (
-        "本段是模型输出协议，不是用户任务内容。\n"
-        "你必须只返回一个 JSON 对象，不能输出 JSON 之外的任何文字、Markdown、代码块或反引号。\n"
-        '第一个输出字符必须是 "{"，最后一个输出字符必须是 "}"。\n\n'
-        "JSON 顶层键必须且只能包含：\n"
-        "- content：字符串。写给用户看的自然语言内容；请求工具时可简要说明下一步，但不能包含工具调用 JSON。\n"
-        "- tool_calls：数组。需要调用工具时填写；不调用工具或结束时必须为 []。\n"
-        "- control：对象，且只能包含 state、action、reason。\n"
-        "- agent_step：对象，描述本轮 ReAct 中间状态，且只能包含 phase、plan、observation、known_facts、missing_info、next_step。\n\n"
-        "control 取值规则：\n"
-        "- 请求工具：control.action 为 call_tools，control.state 为 acting 或 replanning，tool_calls 不能为空。\n"
-        "- 正常结束：control.action 为 finish，control.state 为 completed，tool_calls 必须为 []。\n"
-        "- 无法继续：control.action 为 finish，control.state 为 failed，tool_calls 必须为 []，reason 必须写明具体原因。\n\n"
-        "agent_step 取值规则：\n"
-        "- phase 使用 plan、action、observation 或 final。\n"
-        "- 请求工具时，写明计划和本次工具目的；收到工具消息后，必须先概括 observation，再决定下一步。\n"
-        "- known_facts 只写已经确认的事实；missing_info 写仍缺少的信息；next_step 写下一步决策。\n"
-        "- 如果工具结果足以回答，phase 使用 final，content 给出最终回答；不要只说“已获得工具结果”。\n\n"
-        "工具决策规则：\n"
-        "- 需要运行时、本地、上传文件、外部、搜索、计算等信息时，从本轮可用工具结构中选择匹配工具。\n"
-        "- 工具结构中存在匹配能力时，不要声称该能力不可用。\n"
-        "- 最新消息如果是工具结果，应先判断结果是否足够；足够则完成，不足则继续规划或失败结束。\n"
-        "- 工具结果之后结束时，不要重复之前的工具调用。\n\n"
-        "示例，完成任务：\n"
-        '{"content":"这是最终回答。","tool_calls":[],"control":{"state":"completed","action":"finish","reason":"任务已完成"},'
-        '"agent_step":{"phase":"final","plan":"已完成必要步骤","observation":"已有足够信息回答用户",'
-        '"known_facts":["示例事实"],"missing_info":[],"next_step":"给出最终回答"}}\n\n'
-        "示例，请求工具：\n"
-        '{"content":"我先读取相关文件。","tool_calls":[{"id":"call_001","name":"file_reader",'
-        '"args":{"path":"docs/agent_intro.txt","max_chars":2000}}],"control":'
-        '{"state":"acting","action":"call_tools","reason":"需要读取文件内容"},'
-        '"agent_step":{"phase":"action","plan":"先获取文件原文，再总结要点","observation":"尚未获得文件内容",'
-        '"known_facts":[],"missing_info":["文件内容"],"next_step":"调用 file_reader"}}\n\n'
-        "示例，无法继续：\n"
-        '{"content":"继续处理前，我需要用户提供具体文件名。","tool_calls":[],"control":'
-        '{"state":"failed","action":"finish","reason":"缺少必要文件名"},'
-        '"agent_step":{"phase":"final","plan":"需要读取文件但缺少路径","observation":"当前信息不足",'
-        '"known_facts":[],"missing_info":["具体文件名"],"next_step":"请求用户补充信息"}}'
-    )
-    envelope_reminder = (
-        "只输出符合协议的 JSON 对象。"
-        '顶层键只能是 "content"、"tool_calls"、"control"、"agent_step"。'
-        "请求工具时使用 call_tools；结束时使用 finish 且 tool_calls 为 []。"
-        "收到工具结果后必须先在 agent_step.observation 中观察结果，再决定继续工具或最终回答。"
-        "不要在 JSON 外输出任何文字，不要把工具调用写进 content。"
-    )
-    system_instruction = (
-        "\n\n本轮可用工具结构如下。仅在任务需要工具时使用，工具名和参数必须来自该结构：\n"
-        + json.dumps(tools_schema, ensure_ascii=False)
-        + "\n"
-        + format_instruction
-    )
-    if prompt_messages and prompt_messages[0].get("role") == "system":
-        prompt_messages[0]["content"] += system_instruction
-    else:
-        prompt_messages.insert(0, {"role": "system", "content": system_instruction.strip()})
-
-    for message in reversed(prompt_messages):
-        if message.get("role") == "user":
-            message["content"] += "\n\n" + envelope_reminder
-            break
-    if prompt_messages[-1].get("role") == "tool":
-        prompt_messages.append(
-            {
-                "role": "user",
-                "content": (
-                    envelope_reminder
-                    + " 最新工具消息已经包含工具结果。必须在 agent_step.observation 中概括工具结果、有效事实和缺口；"
-                    "足够则 completed 并给最终回答，不足则 replanning 继续调用工具，无法继续则 failed 并说明原因。"
-                ),
-            }
-        )
-    for message in prompt_messages:
-        images = message.pop("images", [])
-        if not images:
-            continue
-        text_content = message.get("content", "")
-        message["content"] = [
-            *({"type": "image", "url": image_url} for image_url in images),
-            {"type": "text", "text": text_content},
-        ]
-    return prompt_messages
-
-
 def _format_prompt_images(prompt_messages: list[dict]) -> list[dict]:
     formatted = deepcopy(prompt_messages)
     for message in formatted:
@@ -669,7 +576,12 @@ def _format_prompt_images(prompt_messages: list[dict]) -> list[dict]:
 
 
 def _prompt_messages_for_model(messages: list[dict], tools_schema: list[dict], prompt_ready: bool) -> list[dict]:
-    prompt_messages = deepcopy(messages) if prompt_ready else _build_prompt_messages(messages, tools_schema)
+    if prompt_ready:
+        prompt_messages = deepcopy(messages)
+    else:
+        from b1_agent_runtime_parts.b1_prompting import build_llm_prompt_messages
+
+        prompt_messages = build_llm_prompt_messages(messages, tools_schema)
     return _format_prompt_images(prompt_messages)
 
 
@@ -932,6 +844,7 @@ def generate_ai_message(
         "ai_message": ai_message,
         "status": status,
         "error": error,
+        "raw_text": raw_text,
         "prompt_messages": prompt_messages,
     }
 
@@ -1098,6 +1011,7 @@ def stream_ai_message(
             "ai_message": ai_message,
             "status": status,
             "error": error,
+            "raw_text": raw_text,
             "prompt_messages": prompt_messages,
         },
     }

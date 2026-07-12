@@ -12,65 +12,23 @@ from .b1_workspace import (
 
 
 def build_llm_prompt_messages(messages: list[dict], tools_schema: list[dict]) -> list[dict]:
-    """Build the complete model-facing prompt for one Agent loop step.
-
-    The runtime owns message flow. B4 may keep a standalone fallback, but the
-    integrated Agent path should disclose tools and protocol here before calling B4.
-    """
+    """Build the model-facing prompt for the legacy one-loop Agent path."""
     if not isinstance(tools_schema, list):
         raise ValueError("tools_schema must be an array")
     prompt_messages = deepcopy(messages)
     protocol_instruction = (
-        "本段是模型输出协议，不是用户任务内容。\n"
-        "你必须只返回一个 JSON 对象，不能输出 JSON 之外的任何文字、Markdown、代码块或反引号。\n"
-        '第一个输出字符必须是 "{"，最后一个输出字符必须是 "}"。\n\n'
-        "JSON 顶层键必须且只能包含：\n"
-        "- content：字符串。写给用户看的自然语言内容；请求工具时可简要说明下一步，但不能包含工具调用 JSON。\n"
-        "- tool_calls：数组。需要调用工具时填写；不调用工具或结束时必须为 []。\n"
-        "- control：对象，且只能包含 state、action、reason。\n\n"
-        "- agent_step：对象，描述本轮 ReAct 中间状态，且只能包含 phase、plan、observation、known_facts、missing_info、next_step。\n\n"
-        "control 取值规则：\n"
-        "- 请求工具：control.action 为 call_tools，control.state 为 acting 或 replanning，tool_calls 不能为空。\n"
-        "- 正常结束：control.action 为 finish，control.state 为 completed，tool_calls 必须为 []。\n"
-        "- 无法继续：control.action 为 finish，control.state 为 failed，tool_calls 必须为 []，reason 必须写明具体原因。\n\n"
-        "agent_step 取值规则：\n"
-        "- phase 使用 plan、action、observation 或 final。\n"
-        "- 第一次理解任务时，写清 plan；请求工具时，phase 通常为 action，并写明本次工具调用目的。\n"
-        "- 收到工具消息后，必须先写 observation：概括工具返回了什么、是否足够、还缺什么。\n"
-        "- known_facts 只写已经由上下文或工具确认的事实；missing_info 写仍缺少的信息；next_step 写下一步决策。\n"
-        "- 如果工具结果足以回答，phase 使用 final，content 给出最终回答；不要只说“已获得工具结果”。\n\n"
-        "工具决策规则：\n"
-        "- 需要运行时、本地、上传文件、外部、搜索、计算等信息时，从本轮可用工具结构中选择匹配工具。\n"
-        "- 工具结构中存在匹配能力时，不要声称该能力不可用。\n"
-        "- 最新消息如果是工具结果，应先判断结果是否足够；足够则完成，不足则继续规划或失败结束。\n"
-        "- 工具结果之后结束时，不要重复之前的工具调用。\n\n"
-        "示例，完成任务：\n"
-        '{"content":"这是最终回答。","tool_calls":[],"control":{"state":"completed","action":"finish","reason":"任务已完成"},'
-        '"agent_step":{"phase":"final","plan":"已完成必要步骤","observation":"已有足够信息回答用户",'
-        '"known_facts":["示例事实"],"missing_info":[],"next_step":"给出最终回答"}}\n\n'
-        "示例，请求工具：\n"
-        '{"content":"我先读取相关文件。","tool_calls":[{"id":"call_001","name":"file_reader",'
-        '"args":{"path":"docs/agent_intro.txt","max_chars":2000}}],"control":'
-        '{"state":"acting","action":"call_tools","reason":"需要读取文件内容"},'
-        '"agent_step":{"phase":"action","plan":"先获取文件原文，再总结要点","observation":"尚未获得文件内容",'
-        '"known_facts":[],"missing_info":["文件内容"],"next_step":"调用 file_reader"}}\n\n'
-        "示例，无法继续：\n"
-        '{"content":"继续处理前，我需要用户提供具体文件名。","tool_calls":[],"control":'
-        '{"state":"failed","action":"finish","reason":"缺少必要文件名"},'
-        '"agent_step":{"phase":"final","plan":"需要读取文件但缺少路径","observation":"当前信息不足",'
-        '"known_facts":[],"missing_info":["具体文件名"],"next_step":"请求用户补充信息"}}'
-    )
-    output_reminder = (
-        "只输出符合协议的 JSON 对象。"
-        '顶层键只能是 "content"、"tool_calls"、"control"、"agent_step"。'
-        "请求工具时使用 call_tools；结束时使用 finish 且 tool_calls 为 []。"
-        "收到工具结果后必须先在 agent_step.observation 中观察结果，再决定继续工具或最终回答。"
-        "不要在 JSON 外输出任何文字，不要把工具调用写进 content。"
+        "输出协议：只返回一个 JSON 对象，不要输出 Markdown 或 JSON 之外的文字。\n"
+        '顶层键只能是 "content"、"tool_calls"、"control"、"agent_step"。\n'
+        'content 是给用户看的自然语言；tool_calls 是工具调用数组；control 只包含 "state"、"action"、"reason"；'
+        'agent_step 只包含 "phase"、"plan"、"observation"、"known_facts"、"missing_info"、"next_step"。\n'
+        '需要工具时：control.action="call_tools"，control.state 为 "acting" 或 "replanning"，tool_calls 非空。\n'
+        '结束时：control.action="finish"，control.state 为 "completed" 或 "failed"，tool_calls=[]。\n'
+        "工具名和参数必须来自本轮可用工具结构；不要创造工具。"
     )
     tool_disclosure = (
-        "\n\n本轮可用工具结构如下。仅在任务需要工具时使用，工具名和参数必须来自该结构：\n"
+        "\n\n本轮可用工具结构：\n"
         + json.dumps(tools_schema, ensure_ascii=False)
-        + "\n"
+        + "\n\n"
         + protocol_instruction
     )
     if prompt_messages and prompt_messages[0].get("role") == "system":
@@ -78,19 +36,11 @@ def build_llm_prompt_messages(messages: list[dict], tools_schema: list[dict]) ->
     else:
         prompt_messages.insert(0, {"role": "system", "content": tool_disclosure.strip()})
 
-    for message in reversed(prompt_messages):
-        if message.get("role") == "user":
-            message["content"] += "\n\n" + output_reminder
-            break
     if prompt_messages[-1].get("role") == "tool":
         prompt_messages.append(
             {
                 "role": "user",
-                "content": (
-                    output_reminder
-                    + " 最新工具消息已经包含工具结果。必须在 agent_step.observation 中概括工具结果、有效事实和仍需信息；"
-                    "足够则 completed 并给最终回答，不足则 replanning 继续调用工具，无法继续则 failed 并说明原因。"
-                ),
+                "content": "根据最新工具结果继续处理，并仍按上面的 JSON 协议输出。",
             }
         )
     return prompt_messages
@@ -291,6 +241,55 @@ def _workspace_answer_messages(system_prompt: str, workspace: dict) -> list[dict
                 "只输出 AIMessage JSON 对象，顶层键只能是 content、tool_calls、control、agent_step。\n"
                 "必须满足：tool_calls=[]，control.action=finish，control.state 为 completed 或 failed，"
                 "agent_step.phase=final。\n\n"
+                f"本轮状态如下：\n{_json_block(payload)}"
+            ),
+        },
+    ]
+
+
+def _workspace_stage_failure_answer_messages(
+    system_prompt: str,
+    workspace: dict,
+    failed_stage: str,
+    error: dict | None,
+    raw_text: str | None = None,
+) -> list[dict]:
+    payload = {
+        "user_input": workspace["input"]["user_input"],
+        "history_messages": workspace["input"].get("history_messages", []),
+        "workspace_memory": workspace["memory"],
+        "task": workspace["task"],
+        "accepted_evidence": workspace["tools"].get("accepted_evidence", []),
+        "rejected_evidence": workspace["tools"].get("rejected_evidence", []),
+        "known_facts": workspace["draft"].get("known_facts", []),
+        "missing_info": workspace["draft"].get("missing_info", []),
+        "tool_attempts": _tool_attempts_summary(workspace),
+        "observations": workspace["tools"].get("observations", []),
+        "runtime_issue": {
+            "failed_stage": failed_stage,
+            "error": error,
+            "raw_model_output": raw_text,
+        },
+    }
+    return [
+        {
+            "role": "system",
+            "content": (
+                system_prompt
+                + "\n\n你正在生成最终回复。"
+                "本轮内部某个阶段的结构化输出没有通过解析，但你仍然需要基于用户目标、已有证据和运行时问题给出面向用户的回复。"
+                "不要泄露工具 JSON、内部阶段名、内部状态结构或调度过程。"
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                "根据本轮状态生成最终回答。\n"
+                "如果已有工具结果或证据足够完成用户任务，就直接完成。"
+                "如果信息不足或运行时问题导致无法完成，说明真实原因和下一步需要什么。"
+                "不要使用固定兜底文案，不要编造已经完成的文件、下载、读取、搜索或写入结果。\n"
+                "只输出 AIMessage JSON 对象，顶层键只能是 content、tool_calls、control、agent_step。\n"
+                "必须满足：tool_calls=[]，control.action=finish，control.state 为 completed 或 failed，agent_step.phase=final。\n\n"
                 f"本轮状态如下：\n{_json_block(payload)}"
             ),
         },
