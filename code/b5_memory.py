@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
@@ -13,10 +13,16 @@ from common.conversation_store import (
     delete_conversation,
     init_store,
     list_conversations,
+    list_conversation_turns,
     list_unblocked_conversation_turns,
     list_messages,
+    list_memory_blocks,
+    list_messages_by_ids,
     list_task_memories,
     list_tool_steps,
+    list_tool_steps_by_ids,
+    list_turn_summaries,
+    record_memory_retrieval,
     record_tool_step,
     upsert_conversation_turn,
     upsert_memory_block,
@@ -30,6 +36,13 @@ from common.logging_utils import now_iso
 from common.identifiers import validate_conversation_id
 from common.path_utils import resolve_cli_path, resolve_from_file
 from common.schemas import normalize_history_messages
+
+
+RECENT_CONTEXT_TURNS = 4
+MAX_RECALLED_BLOCKS = 3
+MAX_RECALLED_TURNS = 5
+MAX_SOURCE_SNIPPET_CHARS = 360
+MAX_TOOL_SNIPPET_CHARS = 280
 
 
 def _memory_paths(config_path: str | Path) -> dict[str, Path | int]:
@@ -210,29 +223,36 @@ def list_conversation_tasks(config_path: str, conversation_id: str, status: str 
 
 
 def _compact_text(value: str, limit: int = 1200) -> str:
-    compact = re.sub(r"\s+", " ", value).strip()
+    compact = " ".join(str(value).split())
     if len(compact) <= limit:
         return compact
     return compact[:limit].rstrip() + "..."
-
-
-def _contains_any(text: str, words: list[str]) -> bool:
-    lowered = text.lower()
-    return any(word.lower() in lowered for word in words)
 
 
 def _safe_list(value: Any) -> list:
     return value if isinstance(value, list) else []
 
 
-def _looks_like_exact_payload(value: str) -> bool:
-    return bool(
-        re.search(
-            r"([A-Za-z]:\\|[/\\][\w .-]+[/\\]|```|Traceback|Exception|Error:|"
-            r"\bpython\s+|\bnpm\s+|\bgit\s+|&&|\|\||#include\s*<|def\s+\w+\(|function\s+\w+\()",
-            value,
-            re.I,
-        )
+def _unique_strings(values: list[Any], limit: int | None = None) -> list[str]:
+    result = []
+    seen = set()
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        item = value.strip()
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        result.append(item)
+        if limit is not None and len(result) >= limit:
+            break
+    return result
+
+
+def _neutral_locator_summary() -> str:
+    return (
+        "Memory reflection was unavailable for this turn. "
+        "Use the linked source messages and tool steps for all facts, paths, commands, code, errors, and outputs."
     )
 
 
@@ -244,7 +264,7 @@ def _safe_summary_items(value: Any) -> list:
         if not isinstance(item, str):
             continue
         compact = _compact_text(item, 180)
-        if compact and not _looks_like_exact_payload(compact):
+        if compact:
             items.append(compact)
     return items
 
@@ -284,7 +304,7 @@ def _artifact_refs_from_steps(tool_steps: list[dict]) -> list[dict]:
     return refs
 
 
-def _heuristic_memory_decision(
+def _neutral_memory_decision(
     raw_user_input: str,
     final_answer: str,
     trace: dict,
@@ -292,43 +312,20 @@ def _heuristic_memory_decision(
     source_tool_step_ids: list[str],
     tool_steps: list[dict],
 ) -> dict:
-    text = f"{raw_user_input}\n{final_answer}"
-    tool_count = len(tool_steps)
-    has_decision = _contains_any(text, ["决定", "确定", "采用", "不要", "禁止", "必须", "改成", "保留"])
-    has_correction = _contains_any(text, ["不对", "错了", "纠正", "不是", "应该", "重新"])
-    has_fact = bool(re.search(r"[A-Za-z]:\\|/|\.py|\.md|\.txt|\.json|\.yaml|\.docx|报错|error|trace|commit", text, re.I))
-    task_like = _contains_any(
-        text,
-        ["项目", "模块", "实现", "修复", "计划", "任务", "开发", "代码", "前端", "后端", "数据库", "memory", "agent", "b5"],
-    )
-    noise = 0.8 if _compact_text(raw_user_input) in {"你好", "您好", "hi", "hello", "ok", "好的", "谢谢"} else 0.1
     tags = {
-        "current_task_relevance": 0.8 if task_like else 0.2,
-        "long_term_value": 0.8 if has_decision or has_correction else (0.6 if has_fact or tool_count else 0.2),
-        "has_explicit_fact": has_fact,
-        "has_decision": has_decision,
-        "has_user_correction": has_correction,
+        "current_task_relevance": 0.5,
+        "long_term_value": 0.5,
+        "has_explicit_fact": False,
+        "has_decision": False,
+        "has_user_correction": False,
         "allow_compress": True,
-        "allow_drop": noise > 0.7 and not has_fact and not has_decision and not has_correction,
-        "noise_score": noise,
-        "labels": [
-            label
-            for label, enabled in {
-                "task_like": task_like,
-                "tool_used": tool_count > 0,
-                "decision": has_decision,
-                "user_correction": has_correction,
-                "explicit_fact": has_fact,
-            }.items()
-            if enabled
-        ],
+        "allow_drop": False,
+        "noise_score": 0.0,
+        "labels": ["model_reflection_unavailable"],
     }
     summary = {
-        "summary": (
-            "This turn records the user request and the agent response. "
-            "Use the linked source messages and tool steps for exact paths, parameters, commands, code, errors, and outputs."
-        ),
-        "keywords": [label for label in tags["labels"]],
+        "summary": _neutral_locator_summary(),
+        "keywords": [],
         "facts": [],
         "decisions": [],
         "corrections": [],
@@ -337,13 +334,12 @@ def _heuristic_memory_decision(
         "source_message_ids": source_message_ids,
         "source_tool_step_ids": source_tool_step_ids,
     }
-    task_action = "update_foreground" if task_like and (has_decision or tool_count or "任务" in text) else "no_change"
     task_memory = {
-        "action": task_action,
+        "action": "no_change",
         "status": "foreground",
-        "title": _compact_text(raw_user_input, 40) or "当前任务",
-        "objective": _compact_text(raw_user_input, 160),
-        "phase": "in_progress",
+        "title": "",
+        "objective": "",
+        "phase": "",
         "completed_items": [],
         "pending_items": [],
         "constraints": [],
@@ -355,7 +351,7 @@ def _heuristic_memory_decision(
         "confidence": 0.35,
     }
     return {
-        "source": "heuristic",
+        "source": "neutral_fallback",
         "turn_tags": tags,
         "turn_summary": summary,
         "task_memory": task_memory,
@@ -473,11 +469,8 @@ def _coerce_memory_decision(
         raise ValueError("memory decision missing turn_tags, turn_summary, or task_memory")
     summary = dict(summary)
     summary_text = summary.get("summary")
-    if isinstance(summary_text, str) and _looks_like_exact_payload(summary_text):
-        summary["summary"] = (
-            "This turn may contain exact operational details. "
-            "Use the linked source messages and tool steps for exact paths, commands, code, errors, and outputs."
-        )
+    if isinstance(summary_text, str):
+        summary["summary"] = _compact_text(summary_text, 360)
     summary["keywords"] = _safe_summary_items(summary.get("keywords"))
     summary["facts"] = _safe_summary_items(summary.get("facts"))
     summary["decisions"] = _safe_summary_items(summary.get("decisions"))
@@ -487,7 +480,7 @@ def _coerce_memory_decision(
     summary["source_message_ids"] = source_message_ids
     summary["source_tool_step_ids"] = source_tool_step_ids
     if not isinstance(summary.get("summary"), str) or not summary["summary"].strip():
-        raise ValueError("turn_summary.summary must be non-empty")
+        summary["summary"] = _neutral_locator_summary()
     task = dict(task)
     task.setdefault("action", "no_change")
     task.setdefault("status", "foreground")
@@ -559,28 +552,459 @@ def _apply_task_memory_decision(
 
 
 def _maybe_create_memory_block(config_path: str, conversation_id: str, min_turns: int = 6) -> dict:
-    turns = list_unblocked_conversation_turns(_conversation_db_path(config_path), conversation_id, min_turns)
+    db_path = _conversation_db_path(config_path)
+    turns = list_unblocked_conversation_turns(db_path, conversation_id, min_turns)
     if len(turns) < min_turns:
         return {"status": "skipped", "reason": "not enough turns"}
     block_turns = turns[:min_turns]
     start = block_turns[0]["turn_index"]
     end = block_turns[-1]["turn_index"]
+    turn_ids = [turn["id"] for turn in block_turns]
+    summaries = list_turn_summaries(db_path, conversation_id, turn_ids=turn_ids)
+    summaries.sort(key=lambda item: int(item.get("turn_index") or 0))
+    keywords = _unique_strings(
+        [
+            keyword
+            for summary in summaries
+            for keyword in [
+                *_safe_list(summary.get("keywords")),
+                *_safe_list(summary.get("labels")),
+            ]
+        ],
+        16,
+    )
+    representative = []
+    for summary in summaries[:4]:
+        text = summary.get("summary")
+        if isinstance(text, str) and text.strip():
+            representative.append(f"turn {summary.get('turn_index')}: {_compact_text(text, 120)}")
+    topic_text = ", ".join(keywords[:6]) if keywords else "general conversation"
     block = {
-        "title": f"Turns {start}-{end}",
+        "title": f"Turns {start}-{end}: {topic_text}",
         "summary": (
-            f"Block covering turns {start}-{end}. Use linked turn summaries first, "
-            "then load original messages/tool steps for exact facts."
+            f"Block covering turns {start}-{end}. Topics: {topic_text}. "
+            + ("Representative turn summaries: " + " | ".join(representative) + ". " if representative else "")
+            + "Use linked turn summaries first, then load original messages/tool steps for exact facts."
         ),
         "status": "active",
-        "keywords": [],
-        "source": "heuristic",
+        "keywords": keywords,
+        "source": "derived_from_turn_summaries",
     }
     return upsert_memory_block(
-        _conversation_db_path(config_path),
+        db_path,
         conversation_id,
         block,
-        [turn["id"] for turn in block_turns],
+        turn_ids,
     )
+
+
+def _task_query_text(tasks: list[dict]) -> str:
+    parts = []
+    for task in tasks[:4]:
+        parts.extend(
+            [
+                task.get("title"),
+                task.get("objective"),
+                task.get("phase"),
+                " ".join(_safe_list(task.get("completed_items"))),
+                " ".join(_safe_list(task.get("pending_items"))),
+                " ".join(_safe_list(task.get("constraints"))),
+                " ".join(_safe_list(task.get("active_files"))),
+                " ".join(_safe_list(task.get("next_actions"))),
+            ]
+        )
+    return "\n".join(item for item in parts if isinstance(item, str) and item.strip())
+
+
+def _history_query_text(history_messages: list[dict], message_limit: int = 6) -> str:
+    recent = history_messages[-message_limit:]
+    return "\n".join(_compact_text(message.get("content", ""), 220) for message in recent)
+
+
+def _text_similarity(query_text: str, candidate_text: str) -> float:
+    query = _compact_text(query_text, 1600).casefold()
+    candidate = _compact_text(candidate_text, 1600).casefold()
+    if not query or not candidate:
+        return 0.0
+    return SequenceMatcher(None, query, candidate).ratio()
+
+
+def _block_search_text(block: dict) -> str:
+    return "\n".join(
+        str(item)
+        for item in [
+            block.get("title"),
+            block.get("summary"),
+            " ".join(_safe_list(block.get("keywords"))),
+        ]
+        if item
+    )
+
+
+def _turn_search_text(turn: dict) -> str:
+    return "\n".join(
+        str(item)
+        for item in [
+            turn.get("summary"),
+            " ".join(_safe_list(turn.get("keywords"))),
+            " ".join(_safe_list(turn.get("facts"))),
+            " ".join(_safe_list(turn.get("decisions"))),
+            " ".join(_safe_list(turn.get("corrections"))),
+            " ".join(_safe_list(turn.get("labels"))),
+        ]
+        if item
+    )
+
+
+def _score_block(block: dict, query_text: str, newest_turn_index: int) -> float:
+    similarity = _text_similarity(query_text, _block_search_text(block))
+    recency = 0.0
+    if newest_turn_index > 0:
+        recency = min(1.0, max(0.0, float(block.get("end_turn_index") or 0) / newest_turn_index))
+    return round(similarity * 2.0 + recency * 0.2, 4)
+
+
+def _score_turn(turn: dict, query_text: str, newest_turn_index: int) -> float:
+    similarity = _text_similarity(query_text, _turn_search_text(turn))
+    current_task = float(turn.get("current_task_relevance") or 0.0)
+    long_term = float(turn.get("long_term_value") or 0.0)
+    signal = 0.0
+    if turn.get("has_decision"):
+        signal += 0.35
+    if turn.get("has_user_correction"):
+        signal += 0.3
+    if turn.get("has_explicit_fact"):
+        signal += 0.2
+    recency = 0.0
+    if newest_turn_index > 0:
+        recency = min(1.0, max(0.0, float(turn.get("turn_index") or 0) / newest_turn_index))
+    noise = float(turn.get("noise_score") or 0.0)
+    drop_penalty = 0.5 if turn.get("allow_drop") else 0.0
+    return round(similarity * 2.0 + current_task * 0.35 + long_term * 0.45 + signal + recency * 0.15 - noise - drop_penalty, 4)
+
+
+def _list_text(title: str, values: Any, limit: int = 4) -> str | None:
+    items = _unique_strings(_safe_list(values), limit)
+    if not items:
+        return None
+    return f"{title}: " + "; ".join(items)
+
+
+def _clip_source_text(value: Any, limit: int) -> str:
+    if isinstance(value, str):
+        text = value
+    else:
+        text = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    compact = _compact_text(text, limit)
+    return compact
+
+
+def _append_budgeted_line(lines: list[str], line: str, budget: dict) -> None:
+    if budget["remaining"] <= 0:
+        return
+    text = str(line).rstrip()
+    if not text:
+        return
+    required = len(text) + 1
+    if required > budget["remaining"]:
+        if budget["remaining"] <= 8:
+            return
+        text = text[: budget["remaining"] - 4].rstrip() + "..."
+        required = len(text) + 1
+        budget["truncated"] = True
+    lines.append(text)
+    budget["remaining"] -= required
+
+
+def _build_memory_context_text(
+    *,
+    tasks: list[dict],
+    selected_blocks: list[dict],
+    selected_turns: list[dict],
+    source_messages: list[dict],
+    source_tool_steps: list[dict],
+    legacy_docs: list[dict],
+    max_chars: int,
+) -> tuple[str, bool]:
+    has_context = bool(tasks or selected_blocks or selected_turns or source_messages or source_tool_steps or legacy_docs)
+    if not has_context:
+        return "", False
+    lines: list[str] = []
+    budget = {"remaining": max(800, int(max_chars)), "truncated": False}
+    _append_budgeted_line(lines, "[B5 layered memory context]", budget)
+    _append_budgeted_line(
+        lines,
+        "Use this memory as historical context only. Current user input has priority. Summaries locate sources; exact facts must come from source snippets or current tool results.",
+        budget,
+    )
+    foreground = [task for task in tasks if task.get("status") == "foreground"]
+    paused = [task for task in tasks if task.get("status") == "paused"]
+    if foreground or paused:
+        _append_budgeted_line(lines, "\n[Task memory]", budget)
+    for task in foreground[:1]:
+        _append_budgeted_line(
+            lines,
+            f"- foreground task {task.get('id')}: {task.get('title')} | objective={task.get('objective') or ''} | phase={task.get('phase') or ''}",
+            budget,
+        )
+        for optional in (
+            _list_text("completed", task.get("completed_items")),
+            _list_text("pending", task.get("pending_items")),
+            _list_text("constraints", task.get("constraints")),
+            _list_text("active files", task.get("active_files")),
+            _list_text("next", task.get("next_actions")),
+        ):
+            if optional:
+                _append_budgeted_line(lines, f"  {optional}", budget)
+    for task in paused[:3]:
+        _append_budgeted_line(
+            lines,
+            f"- paused task {task.get('id')}: {task.get('title')} | phase={task.get('phase') or ''}",
+            budget,
+        )
+
+    if selected_blocks:
+        _append_budgeted_line(lines, "\n[Recalled blocks]", budget)
+    for block in selected_blocks:
+        _append_budgeted_line(
+            lines,
+            f"- block {block.get('id')} turns {block.get('start_turn_index')}-{block.get('end_turn_index')}: {block.get('summary')}",
+            budget,
+        )
+
+    if selected_turns:
+        _append_budgeted_line(lines, "\n[Recalled turns]", budget)
+    for turn in selected_turns:
+        source_ids = _safe_list(turn.get("source_message_ids"))
+        tool_ids = _safe_list(turn.get("source_tool_step_ids"))
+        _append_budgeted_line(
+            lines,
+            f"- turn {turn.get('turn_index')} ({turn.get('turn_id')}): {turn.get('summary')} | source_messages={source_ids} | source_tools={tool_ids}",
+            budget,
+        )
+        details = []
+        for field, label in (("decisions", "decisions"), ("corrections", "corrections"), ("facts", "facts")):
+            values = _unique_strings(_safe_list(turn.get(field)), 3)
+            if values:
+                details.append(f"{label}: {'; '.join(values)}")
+        if details:
+            _append_budgeted_line(lines, "  " + " | ".join(details), budget)
+
+    if source_messages:
+        _append_budgeted_line(lines, "\n[Loaded source message snippets]", budget)
+    for message in source_messages:
+        _append_budgeted_line(
+            lines,
+            f"- message {message.get('id')} role={message.get('role')} order={message.get('message_order')}: {_clip_source_text(message.get('content'), MAX_SOURCE_SNIPPET_CHARS)}",
+            budget,
+        )
+
+    if source_tool_steps:
+        _append_budgeted_line(lines, "\n[Loaded source tool snippets]", budget)
+    for step in source_tool_steps:
+        payload = {
+            "input": step.get("input"),
+            "output": step.get("output"),
+            "error": step.get("error"),
+        }
+        _append_budgeted_line(
+            lines,
+            f"- tool_step {step.get('id')} name={step.get('tool_name')} status={step.get('status')}: {_clip_source_text(payload, MAX_TOOL_SNIPPET_CHARS)}",
+            budget,
+        )
+
+    if legacy_docs:
+        _append_budgeted_line(lines, "\n[Selected legacy memory documents]", budget)
+    for doc in legacy_docs:
+        _append_budgeted_line(
+            lines,
+            f"- {doc.get('memory_id')} {doc.get('title')}: {_clip_source_text(doc.get('content'), MAX_SOURCE_SNIPPET_CHARS)}",
+            budget,
+        )
+    return "\n".join(lines).strip(), bool(budget["truncated"])
+
+
+def build_layered_memory_context(
+    config_path: str,
+    conversation_id: str,
+    current_user_input: str,
+    history_messages: list[dict],
+    selected_memory: dict | None = None,
+    outdir: str | None = None,
+) -> dict:
+    """Build layered memory context for a future context assembler.
+
+    Recent raw messages are returned separately and are never summarized here.
+    Older history is recalled through block -> turn -> source-message/tool-step
+    references so the model can use summaries for locating, not as final facts.
+    """
+    conversation_id = _safe_conversation_id(conversation_id)
+    normalized_history = normalize_history_messages(history_messages)
+    recent_history = normalized_history[-RECENT_CONTEXT_TURNS * 2 :]
+    paths = _memory_paths(config_path)
+    db_path = _conversation_db_path(config_path)
+    max_chars = int(paths["max_chars"])
+    tasks = list_conversation_tasks(config_path, conversation_id)
+    turns = list_conversation_turns(db_path, conversation_id)
+    newest_turn_index = max([int(turn.get("turn_index") or 0) for turn in turns], default=0)
+    recent_turn_ids = {turn["id"] for turn in turns[-RECENT_CONTEXT_TURNS:] if isinstance(turn.get("id"), str)}
+    query_text = "\n".join(
+        item
+        for item in [
+            current_user_input,
+            _history_query_text(normalized_history),
+            _task_query_text(tasks),
+        ]
+        if isinstance(item, str) and item.strip()
+    )
+
+    blocks = list_memory_blocks(db_path, conversation_id, status="active")
+    scored_blocks = []
+    for block in blocks:
+        score = _score_block(block, query_text, newest_turn_index)
+        if score > 0.05:
+            item = dict(block)
+            item["score"] = score
+            scored_blocks.append(item)
+    scored_blocks.sort(key=lambda item: (item["score"], item.get("end_turn_index") or 0), reverse=True)
+    selected_blocks = scored_blocks[:MAX_RECALLED_BLOCKS]
+
+    block_ids = [block["id"] for block in selected_blocks if isinstance(block.get("id"), str)]
+    candidate_turns = list_turn_summaries(db_path, conversation_id, block_ids=block_ids) if block_ids else []
+    all_old_candidates = list_turn_summaries(
+        db_path,
+        conversation_id,
+        exclude_turn_ids=list(recent_turn_ids),
+        limit=40,
+    )
+    by_turn_id: dict[str, dict] = {}
+    for turn in [*candidate_turns, *all_old_candidates]:
+        turn_id = turn.get("turn_id")
+        if not isinstance(turn_id, str) or turn_id in recent_turn_ids:
+            continue
+        existing = by_turn_id.get(turn_id)
+        if existing is None or (turn.get("block_id") and not existing.get("block_id")):
+            by_turn_id[turn_id] = turn
+
+    scored_turns = []
+    for turn in by_turn_id.values():
+        score = _score_turn(turn, query_text, newest_turn_index)
+        high_value = (
+            bool(turn.get("has_decision"))
+            or bool(turn.get("has_user_correction"))
+            or float(turn.get("long_term_value") or 0.0) >= 0.7
+        )
+        if score <= 0.1 and not high_value:
+            continue
+        item = dict(turn)
+        item["score"] = score
+        scored_turns.append(item)
+    scored_turns.sort(key=lambda item: (item["score"], item.get("turn_index") or 0), reverse=True)
+    selected_turns = scored_turns[:MAX_RECALLED_TURNS]
+
+    source_message_ids = _unique_strings(
+        [
+            source_id
+            for turn in selected_turns
+            for source_id in _safe_list(turn.get("source_message_ids"))
+        ],
+        MAX_RECALLED_TURNS * 2,
+    )
+    source_tool_step_ids = _unique_strings(
+        [
+            source_id
+            for turn in selected_turns
+            for source_id in _safe_list(turn.get("source_tool_step_ids"))
+        ],
+        MAX_RECALLED_TURNS * 4,
+    )
+    source_messages = list_messages_by_ids(db_path, source_message_ids)
+    source_tool_steps = list_tool_steps_by_ids(db_path, source_tool_step_ids)
+
+    legacy_docs = []
+    if isinstance(selected_memory, dict):
+        legacy_docs = [
+            doc
+            for doc in _safe_list(selected_memory.get("selected_memory_docs"))
+            if isinstance(doc, dict) and isinstance(doc.get("content"), str)
+        ]
+
+    context_text, truncated = _build_memory_context_text(
+        tasks=tasks,
+        selected_blocks=selected_blocks,
+        selected_turns=selected_turns,
+        source_messages=source_messages,
+        source_tool_steps=source_tool_steps,
+        legacy_docs=legacy_docs,
+        max_chars=max_chars,
+    )
+    memory_messages = [{"role": "system", "content": context_text}] if context_text else []
+    retrieval_log = record_memory_retrieval(
+        db_path,
+        conversation_id,
+        current_user_input,
+        query_context={
+            "recent_context_turns": RECENT_CONTEXT_TURNS,
+            "history_message_count": len(normalized_history),
+            "recent_history_message_count": len(recent_history),
+            "task_count": len(tasks),
+            "query_chars": len(query_text),
+        },
+        candidate_blocks=[
+            {
+                "block_id": block.get("id"),
+                "score": block.get("score"),
+                "start_turn_index": block.get("start_turn_index"),
+                "end_turn_index": block.get("end_turn_index"),
+            }
+            for block in selected_blocks
+        ],
+        selected_turns=[
+            {
+                "turn_id": turn.get("turn_id"),
+                "turn_index": turn.get("turn_index"),
+                "score": turn.get("score"),
+                "source_message_ids": turn.get("source_message_ids"),
+                "source_tool_step_ids": turn.get("source_tool_step_ids"),
+            }
+            for turn in selected_turns
+        ],
+        loaded_message_ids=[message.get("id") for message in source_messages],
+    )
+    result = {
+        "status": "success",
+        "conversation_id": conversation_id,
+        "recent_context_turns": RECENT_CONTEXT_TURNS,
+        "history_message_count": len(normalized_history),
+        "recent_history_message_count": len(recent_history),
+        "recent_history_messages": recent_history,
+        "memory_messages": memory_messages,
+        "context_chars": len(context_text),
+        "max_context_chars": max_chars,
+        "truncated": truncated,
+        "tasks": tasks,
+        "candidate_blocks": selected_blocks,
+        "selected_turns": selected_turns,
+        "loaded_message_ids": [message.get("id") for message in source_messages],
+        "loaded_tool_step_ids": [step.get("id") for step in source_tool_steps],
+        "retrieval_log": retrieval_log,
+    }
+    if outdir:
+        output_dir = Path(outdir)
+        write_json(result, output_dir / "layered_memory_context.json")
+        append_jsonl(
+            {
+                "timestamp": now_iso(),
+                "operation": "build_layered_context",
+                "status": "success",
+                "conversation_id": conversation_id,
+                "selected_block_count": len(selected_blocks),
+                "selected_turn_count": len(selected_turns),
+                "context_chars": len(context_text),
+            },
+            output_dir / "memory_log.jsonl",
+        )
+    return result
 
 
 def record_completed_turn_memory(
@@ -635,7 +1059,7 @@ def record_completed_turn_memory(
         except Exception as exc:
             reflection_error = {"type": type(exc).__name__, "message": str(exc)}
     if decision is None:
-        decision = _heuristic_memory_decision(
+        decision = _neutral_memory_decision(
             raw_user_input,
             final_answer,
             trace,
@@ -647,13 +1071,13 @@ def record_completed_turn_memory(
         _conversation_db_path(config_path),
         turn_id,
         decision["turn_tags"],
-        source=decision.get("source", "heuristic"),
+        source=decision.get("source", "neutral_fallback"),
     )
     summary_result = upsert_turn_summary(
         _conversation_db_path(config_path),
         turn_id,
         decision["turn_summary"],
-        source=decision.get("source", "heuristic"),
+        source=decision.get("source", "neutral_fallback"),
     )
     task_result = _apply_task_memory_decision(config_path, conversation_id, turn_id, decision["task_memory"])
     block_result = _maybe_create_memory_block(config_path, conversation_id)
@@ -664,7 +1088,7 @@ def record_completed_turn_memory(
         "summary": summary_result,
         "task_memory": task_result,
         "memory_block": block_result,
-        "decision_source": decision.get("source", "heuristic"),
+        "decision_source": decision.get("source", "neutral_fallback"),
         "reflection_error": reflection_error,
     }
 
