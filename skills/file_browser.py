@@ -9,7 +9,7 @@ from skills.file_reader import SUPPORTED_SUFFIXES as FILE_READER_SUFFIXES
 
 MAX_ENTRIES_LIMIT = 500
 MAX_DEPTH_LIMIT = 8
-TABLE_SUFFIXES = {".csv", ".tsv"}
+TABLE_SUFFIXES = {".csv", ".tsv", ".xlsx"}
 
 
 def _modified_time(path: Path) -> str | None:

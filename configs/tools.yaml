@@ -41,7 +41,7 @@ tools:
   calculator:
     module: skills.calculator
     function: calculator
-    description: 只用于计算明确的算术表达式，例如加减乘除、括号和幂运算。不要用于代码执行、单位换算、统计表格、符号推导或自然语言推理。
+    description: 计算明确的算术表达式，例如加减乘除、括号和幂运算。适合用户给出具体表达式并需要精确数值结果的场景；复杂表格统计优先使用 table_analyzer。
     parameters:
       expression:
         type: string
@@ -55,7 +55,7 @@ tools:
   current_time:
     module: skills.current_time
     function: current_time
-    description: 获取当前日期、时间、星期、时间戳或指定时区时间。用户询问“现在几点”“今天日期”“当前时间”等实时问题时使用；默认不传 timezone 表示本地时间。
+    description: 获取当前日期、时间、星期、时间戳或指定时区时间。适合回答“现在几点”“今天日期”“当前时间”等需要实时钟表信息的问题；默认不传 timezone 表示本地时间。
     parameters:
       timezone:
         type: string
@@ -357,9 +357,9 @@ tools:
   table_analyzer:
     module: skills.table_analyzer
     function: table_analyzer
-    description: 分析已有的本地 CSV 或 TSV 表格文件，返回行列数、列名、预览、缺失值和可选数值统计。不用于生成表格文件；生成 CSV/TSV 应使用 table_file_writer。不支持 xlsx。
+    description: 分析已有的本地 CSV、TSV 或 XLSX 表格文件，返回行列数、列名、预览、缺失值和可选数值统计。XLSX 默认分析第一张工作表。不用于生成表格文件；生成 CSV/TSV 应使用 table_file_writer。
     parameters:
-      path: {type: string, description: 相对于数据目录的表格路径，或允许工作区根目录下的别名路径。}
+      path: {type: string, description: 相对于数据目录的 .csv、.tsv 或 .xlsx 表格路径，或允许工作区根目录下的别名路径。}
       max_rows_preview: {type: integer, description: 预览行数。}
       describe: {type: boolean, description: 是否计算数值统计信息。}
     required: [path]
@@ -367,6 +367,8 @@ tools:
       path: {type: string, description: 规范化后的表格路径；如果不在数据目录下，会包含根目录别名。}
       relative_path: {type: string, description: 相对匹配根目录的路径。}
       root_alias: {type: string, description: 匹配到的允许根目录别名。}
+      suffix: {type: string, description: 表格文件后缀。}
+      parser: {type: string, description: 使用的解析器；xlsx 时为第一张工作表路径。}
       num_rows: {type: integer, description: 数据行数。}
       num_columns: {type: integer, description: 列数。}
       columns: {type: array, description: 列名。}

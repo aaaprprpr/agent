@@ -3,7 +3,7 @@
     "type": "function",
     "function": {
       "name": "calculator",
-      "description": "只用于计算明确的算术表达式，例如加减乘除、括号和幂运算。不要用于代码执行、单位换算、统计表格、符号推导或自然语言推理。\n工具执行结果会封装为 ToolMessage.content 中的 SkillResult JSON：status 表示 success/error；output 是业务结果；error 是失败原因；summary 是简短摘要；sources 是读取或搜索来源；artifacts 是生成文件。\n主要 output 字段：result: 计算结果。",
+      "description": "计算明确的算术表达式，例如加减乘除、括号和幂运算。适合用户给出具体表达式并需要精确数值结果的场景；复杂表格统计优先使用 table_analyzer。\n工具执行结果会封装为 ToolMessage.content 中的 SkillResult JSON：status 表示 success/error；output 是业务结果；error 是失败原因；summary 是简短摘要；sources 是读取或搜索来源；artifacts 是生成文件。\n主要 output 字段：result: 计算结果。",
       "parameters": {
         "type": "object",
         "properties": {
@@ -80,7 +80,7 @@
     "type": "function",
     "function": {
       "name": "current_time",
-      "description": "获取当前日期、时间、星期、时间戳或指定时区时间。用户询问“现在几点”“今天日期”“当前时间”等实时问题时使用；默认不传 timezone 表示本地时间。\n工具执行结果会封装为 ToolMessage.content 中的 SkillResult JSON：status 表示 success/error；output 是业务结果；error 是失败原因；summary 是简短摘要；sources 是读取或搜索来源；artifacts 是生成文件。\n主要 output 字段：timezone: 解析后的时区标签。；iso: 当前时间的标准时间格式。；date: 当前日期。；time: 当前钟表时间。；weekday: 星期名称。；weekday_index: 星期序号，周一为 1。；utc_offset: 协调世界时偏移，格式为正负小时分钟。；unix_timestamp: Unix 时间戳。；local_time: 当前本地时区时间。；utc_time: 当前协调世界时。",
+      "description": "获取当前日期、时间、星期、时间戳或指定时区时间。适合回答“现在几点”“今天日期”“当前时间”等需要实时钟表信息的问题；默认不传 timezone 表示本地时间。\n工具执行结果会封装为 ToolMessage.content 中的 SkillResult JSON：status 表示 success/error；output 是业务结果；error 是失败原因；summary 是简短摘要；sources 是读取或搜索来源；artifacts 是生成文件。\n主要 output 字段：timezone: 解析后的时区标签。；iso: 当前时间的标准时间格式。；date: 当前日期。；time: 当前钟表时间。；weekday: 星期名称。；weekday_index: 星期序号，周一为 1。；utc_offset: 协调世界时偏移，格式为正负小时分钟。；unix_timestamp: Unix 时间戳。；local_time: 当前本地时区时间。；utc_time: 当前协调世界时。",
       "parameters": {
         "type": "object",
         "properties": {
@@ -1884,13 +1884,13 @@
     "type": "function",
     "function": {
       "name": "table_analyzer",
-      "description": "分析已有的本地 CSV 或 TSV 表格文件，返回行列数、列名、预览、缺失值和可选数值统计。不用于生成表格文件；生成 CSV/TSV 应使用 table_file_writer。不支持 xlsx。\n工具执行结果会封装为 ToolMessage.content 中的 SkillResult JSON：status 表示 success/error；output 是业务结果；error 是失败原因；summary 是简短摘要；sources 是读取或搜索来源；artifacts 是生成文件。\n主要 output 字段：path: 规范化后的表格路径；如果不在数据目录下，会包含根目录别名。；relative_path: 相对匹配根目录的路径。；root_alias: 匹配到的允许根目录别名。；num_rows: 数据行数。；num_columns: 列数。；columns: 列名。；preview: 前几行预览。；column_profiles: 按列统计的缺失值和唯一值信息。；describe: 按列统计的数值信息。",
+      "description": "分析已有的本地 CSV、TSV 或 XLSX 表格文件，返回行列数、列名、预览、缺失值和可选数值统计。XLSX 默认分析第一张工作表。不用于生成表格文件；生成 CSV/TSV 应使用 table_file_writer。\n工具执行结果会封装为 ToolMessage.content 中的 SkillResult JSON：status 表示 success/error；output 是业务结果；error 是失败原因；summary 是简短摘要；sources 是读取或搜索来源；artifacts 是生成文件。\n主要 output 字段：path: 规范化后的表格路径；如果不在数据目录下，会包含根目录别名。；relative_path: 相对匹配根目录的路径。；root_alias: 匹配到的允许根目录别名。；suffix: 表格文件后缀。；parser: 使用的解析器；xlsx 时为第一张工作表路径。；num_rows: 数据行数。；num_columns: 列数。；columns: 列名。；preview: 前几行预览。；column_profiles: 按列统计的缺失值和唯一值信息。；describe: 按列统计的数值信息。",
       "parameters": {
         "type": "object",
         "properties": {
           "path": {
             "type": "string",
-            "description": "相对于数据目录的表格路径，或允许工作区根目录下的别名路径。"
+            "description": "相对于数据目录的 .csv、.tsv 或 .xlsx 表格路径，或允许工作区根目录下的别名路径。"
           },
           "max_rows_preview": {
             "type": "integer",
@@ -1920,6 +1920,14 @@
           "root_alias": {
             "type": "string",
             "description": "匹配到的允许根目录别名。"
+          },
+          "suffix": {
+            "type": "string",
+            "description": "表格文件后缀。"
+          },
+          "parser": {
+            "type": "string",
+            "description": "使用的解析器；xlsx 时为第一张工作表路径。"
           },
           "num_rows": {
             "type": "integer",
@@ -1978,6 +1986,14 @@
               "root_alias": {
                 "type": "string",
                 "description": "匹配到的允许根目录别名。"
+              },
+              "suffix": {
+                "type": "string",
+                "description": "表格文件后缀。"
+              },
+              "parser": {
+                "type": "string",
+                "description": "使用的解析器；xlsx 时为第一张工作表路径。"
               },
               "num_rows": {
                 "type": "integer",
