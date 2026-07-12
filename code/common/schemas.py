@@ -103,7 +103,17 @@ def _skill_result_summary(status: str, output: dict | None, error: dict | None) 
     if not isinstance(output, dict):
         return {"status": status, "message": ""}
     counts = {}
-    for key in ("num_rows", "num_columns", "num_chars", "num_bytes", "line_count", "slide_count"):
+    for key in (
+        "num_rows",
+        "num_columns",
+        "num_chars",
+        "num_bytes",
+        "size_bytes",
+        "line_count",
+        "slide_count",
+        "entry_count",
+        "child_count",
+    ):
         value = output.get(key)
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             counts[key] = value
@@ -126,6 +136,11 @@ def _skill_result_message(output: dict) -> str:
     if isinstance(output.get("text"), str):
         text = output["text"].strip().replace("\n", " ")
         return text[:180]
+    if isinstance(output.get("entries"), list):
+        return f"{len(output['entries'])} entries"
+    if "exists" in output and isinstance(output.get("path"), str):
+        status = "exists" if output.get("exists") else "missing"
+        return f"{output['path']} {status}"
     if "result" in output:
         return str(output["result"])
     if isinstance(output.get("time"), str) and isinstance(output.get("date"), str):

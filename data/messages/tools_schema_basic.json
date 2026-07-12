@@ -226,8 +226,343 @@
   {
     "type": "function",
     "function": {
+      "name": "directory_list",
+      "description": "列出允许工作区内某个目录的文件和子目录，类似 ls。用于探路、确认上传文件名、查看目录下有哪些文件；不读取文件正文。若已经知道准确文件路径并需要内容，应使用 file_reader。\n工具执行结果会封装为 ToolMessage.content 中的 SkillResult JSON：status 表示 success/error；output 是业务结果；error 是失败原因；summary 是简短摘要；sources 是读取或搜索来源；artifacts 是生成文件。\n主要 output 字段：path: 被列出的路径。；relative_path: 相对匹配根目录的路径。；root_alias: 匹配到的允许根目录别名。；kind: path 的类型：directory、file、other。；recursive: 是否递归。；max_depth: 最大递归深度。；entry_count: 返回条目数量。；truncated: 是否因为 max_entries 截断。；entries: 文件或目录条目，包含 name、path、relative_path、kind、suffix、size_bytes、modified_time。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "要列出的目录或文件路径。默认 . 表示 data 根目录；可使用 uploads/...、outputs:...、code:... 等允许根目录路径。"
+          },
+          "recursive": {
+            "type": "boolean",
+            "description": "是否递归列出子目录。默认 false。"
+          },
+          "max_depth": {
+            "type": "integer",
+            "description": "递归时的最大深度，默认 1，最大 8。"
+          },
+          "file_types": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "可选文件后缀过滤，例如 [\"txt\",\"md\",\"docx\"]；目录仍会显示，便于继续探路。"
+          },
+          "include_hidden": {
+            "type": "boolean",
+            "description": "是否包含以点开头的隐藏路径。默认 false。"
+          },
+          "max_entries": {
+            "type": "integer",
+            "description": "最多返回条目数，默认 100，最大 500。"
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "x-returns": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "被列出的路径。"
+          },
+          "relative_path": {
+            "type": "string",
+            "description": "相对匹配根目录的路径。"
+          },
+          "root_alias": {
+            "type": "string",
+            "description": "匹配到的允许根目录别名。"
+          },
+          "kind": {
+            "type": "string",
+            "description": "path 的类型：directory、file、other。"
+          },
+          "recursive": {
+            "type": "boolean",
+            "description": "是否递归。"
+          },
+          "max_depth": {
+            "type": "integer",
+            "description": "最大递归深度。"
+          },
+          "entry_count": {
+            "type": "integer",
+            "description": "返回条目数量。"
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "是否因为 max_entries 截断。"
+          },
+          "entries": {
+            "type": "array",
+            "description": "文件或目录条目，包含 name、path、relative_path、kind、suffix、size_bytes、modified_time。"
+          }
+        }
+      },
+      "x-skill-result": {
+        "type": "object",
+        "description": "ToolMessage.content 解析后的统一工具结果封装。",
+        "properties": {
+          "skill_name": {
+            "type": "string",
+            "description": "工具名称。"
+          },
+          "status": {
+            "type": "string",
+            "description": "success 或 error。"
+          },
+          "input": {
+            "type": "object",
+            "description": "实际传给工具的参数。"
+          },
+          "output": {
+            "type": "object",
+            "description": "工具业务结果。",
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "被列出的路径。"
+              },
+              "relative_path": {
+                "type": "string",
+                "description": "相对匹配根目录的路径。"
+              },
+              "root_alias": {
+                "type": "string",
+                "description": "匹配到的允许根目录别名。"
+              },
+              "kind": {
+                "type": "string",
+                "description": "path 的类型：directory、file、other。"
+              },
+              "recursive": {
+                "type": "boolean",
+                "description": "是否递归。"
+              },
+              "max_depth": {
+                "type": "integer",
+                "description": "最大递归深度。"
+              },
+              "entry_count": {
+                "type": "integer",
+                "description": "返回条目数量。"
+              },
+              "truncated": {
+                "type": "boolean",
+                "description": "是否因为 max_entries 截断。"
+              },
+              "entries": {
+                "type": "array",
+                "description": "文件或目录条目，包含 name、path、relative_path、kind、suffix、size_bytes、modified_time。"
+              }
+            }
+          },
+          "error": {
+            "type": "object",
+            "description": "失败时的错误类型和错误消息。"
+          },
+          "latency_ms": {
+            "type": "number",
+            "description": "工具执行耗时，单位毫秒。"
+          },
+          "summary": {
+            "type": "object",
+            "description": "面向模型的简短摘要和计数字段。"
+          },
+          "sources": {
+            "type": "array",
+            "description": "文件读取、搜索或表格分析涉及的来源路径。"
+          },
+          "artifacts": {
+            "type": "array",
+            "description": "工具生成的文件。"
+          }
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "file_stat",
+      "description": "检查允许工作区内某个路径是否存在及其类型，类似 stat。用于读取前确认路径、判断是文件还是目录、查看后缀和大小；不读取文件正文。\n工具执行结果会封装为 ToolMessage.content 中的 SkillResult JSON：status 表示 success/error；output 是业务结果；error 是失败原因；summary 是简短摘要；sources 是读取或搜索来源；artifacts 是生成文件。\n主要 output 字段：path: 被检查路径。；relative_path: 相对匹配根目录的路径。；root_alias: 匹配到的允许根目录别名。；exists: 路径是否存在。；kind: 类型：file、directory、other、missing。；suffix: 文件后缀；非文件为空。；size_bytes: 文件大小；仅文件存在时返回。；modified_time: 修改时间；存在时返回。；child_count: 目录的直接子项数量；仅目录存在时返回。；readable_by_file_reader: 该文件是否可用 file_reader 读取。；analyzable_by_table_analyzer: 该文件是否可用 table_analyzer 分析。；parent_exists: 路径不存在时，父目录是否存在。；parent_path: 路径不存在时的父目录路径。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "要检查的文件或目录路径，可使用 uploads/...、outputs:...、code:... 等允许根目录路径。"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "x-returns": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "被检查路径。"
+          },
+          "relative_path": {
+            "type": "string",
+            "description": "相对匹配根目录的路径。"
+          },
+          "root_alias": {
+            "type": "string",
+            "description": "匹配到的允许根目录别名。"
+          },
+          "exists": {
+            "type": "boolean",
+            "description": "路径是否存在。"
+          },
+          "kind": {
+            "type": "string",
+            "description": "类型：file、directory、other、missing。"
+          },
+          "suffix": {
+            "type": "string",
+            "description": "文件后缀；非文件为空。"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "description": "文件大小；仅文件存在时返回。"
+          },
+          "modified_time": {
+            "type": "string",
+            "description": "修改时间；存在时返回。"
+          },
+          "child_count": {
+            "type": "integer",
+            "description": "目录的直接子项数量；仅目录存在时返回。"
+          },
+          "readable_by_file_reader": {
+            "type": "boolean",
+            "description": "该文件是否可用 file_reader 读取。"
+          },
+          "analyzable_by_table_analyzer": {
+            "type": "boolean",
+            "description": "该文件是否可用 table_analyzer 分析。"
+          },
+          "parent_exists": {
+            "type": "boolean",
+            "description": "路径不存在时，父目录是否存在。"
+          },
+          "parent_path": {
+            "type": "string",
+            "description": "路径不存在时的父目录路径。"
+          }
+        }
+      },
+      "x-skill-result": {
+        "type": "object",
+        "description": "ToolMessage.content 解析后的统一工具结果封装。",
+        "properties": {
+          "skill_name": {
+            "type": "string",
+            "description": "工具名称。"
+          },
+          "status": {
+            "type": "string",
+            "description": "success 或 error。"
+          },
+          "input": {
+            "type": "object",
+            "description": "实际传给工具的参数。"
+          },
+          "output": {
+            "type": "object",
+            "description": "工具业务结果。",
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "被检查路径。"
+              },
+              "relative_path": {
+                "type": "string",
+                "description": "相对匹配根目录的路径。"
+              },
+              "root_alias": {
+                "type": "string",
+                "description": "匹配到的允许根目录别名。"
+              },
+              "exists": {
+                "type": "boolean",
+                "description": "路径是否存在。"
+              },
+              "kind": {
+                "type": "string",
+                "description": "类型：file、directory、other、missing。"
+              },
+              "suffix": {
+                "type": "string",
+                "description": "文件后缀；非文件为空。"
+              },
+              "size_bytes": {
+                "type": "integer",
+                "description": "文件大小；仅文件存在时返回。"
+              },
+              "modified_time": {
+                "type": "string",
+                "description": "修改时间；存在时返回。"
+              },
+              "child_count": {
+                "type": "integer",
+                "description": "目录的直接子项数量；仅目录存在时返回。"
+              },
+              "readable_by_file_reader": {
+                "type": "boolean",
+                "description": "该文件是否可用 file_reader 读取。"
+              },
+              "analyzable_by_table_analyzer": {
+                "type": "boolean",
+                "description": "该文件是否可用 table_analyzer 分析。"
+              },
+              "parent_exists": {
+                "type": "boolean",
+                "description": "路径不存在时，父目录是否存在。"
+              },
+              "parent_path": {
+                "type": "string",
+                "description": "路径不存在时的父目录路径。"
+              }
+            }
+          },
+          "error": {
+            "type": "object",
+            "description": "失败时的错误类型和错误消息。"
+          },
+          "latency_ms": {
+            "type": "number",
+            "description": "工具执行耗时，单位毫秒。"
+          },
+          "summary": {
+            "type": "object",
+            "description": "面向模型的简短摘要和计数字段。"
+          },
+          "sources": {
+            "type": "array",
+            "description": "文件读取、搜索或表格分析涉及的来源路径。"
+          },
+          "artifacts": {
+            "type": "array",
+            "description": "工具生成的文件。"
+          }
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
       "name": "file_reader",
-      "description": "读取允许工作区内已有文件的内容。支持 txt、md、json、jsonl、csv、tsv、yaml、py、log、docx、pptx 等文本或 Office Open XML 文件；不支持图片、PDF、旧版 doc/ppt 或扫描件。路径默认相对于 data，也可使用 uploads/...、outputs/... 等允许根目录路径。若返回 truncated=true，只表示读取了部分内容，不能声称已读完整文件。\n工具执行结果会封装为 ToolMessage.content 中的 SkillResult JSON：status 表示 success/error；output 是业务结果；error 是失败原因；summary 是简短摘要；sources 是读取或搜索来源；artifacts 是生成文件。\n主要 output 字段：content: 文件内容。；num_chars: 返回的字符数。；source: 规范化后的路径；如果不在数据目录下，会包含根目录别名。；relative_path: 相对匹配根目录的路径。；root_alias: 匹配到的允许根目录别名。；suffix: 文件后缀。；line_count: 文件总行数。；line_start: 本次返回内容的起始行。；line_end: 本次返回内容的结束行。；parser: 使用的解析器。；document_type: 文档类型。；slide_count: 演示文件的页数；仅适用时返回。；truncated: 内容是否被截断。",
+      "description": "读取一个已知路径文件的正文，类似 cat。支持 txt、md、json、jsonl、csv、tsv、yaml、py、log、docx、pptx；不支持图片、PDF、旧版 doc/ppt、xlsx 或扫描件。不知道文件名时先用 directory_list；只知道关键词时先用 local_file_search。若返回 truncated=true，只表示读取了部分内容，不能声称已读完整文件。\n工具执行结果会封装为 ToolMessage.content 中的 SkillResult JSON：status 表示 success/error；output 是业务结果；error 是失败原因；summary 是简短摘要；sources 是读取或搜索来源；artifacts 是生成文件。\n主要 output 字段：content: 文件内容。；num_chars: 返回的字符数。；source: 规范化后的路径；如果不在数据目录下，会包含根目录别名。；relative_path: 相对匹配根目录的路径。；root_alias: 匹配到的允许根目录别名。；suffix: 文件后缀。；line_count: 文件总行数。；line_start: 本次返回内容的起始行。；line_end: 本次返回内容的结束行。；parser: 使用的解析器。；document_type: 文档类型。；slide_count: 演示文件的页数；仅适用时返回。；truncated: 内容是否被截断。",
       "parameters": {
         "type": "object",
         "properties": {
@@ -1437,7 +1772,7 @@
     "type": "function",
     "function": {
       "name": "local_file_search",
-      "description": "在允许工作区内按关键词搜索本地文本类文件，用于找到可能相关的文件路径和片段。此工具不读取完整文件内容；找到目标路径后通常应继续使用 file_reader。不能用于网页、互联网、实时新闻或当前外部信息。\n工具执行结果会封装为 ToolMessage.content 中的 SkillResult JSON：status 表示 success/error；output 是业务结果；error 是失败原因；summary 是简短摘要；sources 是读取或搜索来源；artifacts 是生成文件。\n主要 output 字段：query_terms: 从 query 中解析出的搜索词。；root_alias: 搜索目录匹配到的允许根目录别名。；results: 按相关度排序的路径、片段和分数。",
+      "description": "在允许工作区内按关键词搜索本地文本类文件，类似 grep。用于根据关键词找到可能相关的文件路径和片段；不读取完整正文。列目录用 directory_list；读取确定文件用 file_reader。不能用于网页、互联网、实时新闻或当前外部信息。\n工具执行结果会封装为 ToolMessage.content 中的 SkillResult JSON：status 表示 success/error；output 是业务结果；error 是失败原因；summary 是简短摘要；sources 是读取或搜索来源；artifacts 是生成文件。\n主要 output 字段：query_terms: 从 query 中解析出的搜索词。；root_alias: 搜索目录匹配到的允许根目录别名。；results: 按相关度排序的路径、片段和分数。",
       "parameters": {
         "type": "object",
         "properties": {

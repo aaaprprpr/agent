@@ -22,6 +22,8 @@ toolsets:
   basic_tools:
     - calculator
     - current_time
+    - directory_list
+    - file_stat
     - file_reader
     - text_file_writer
     - markdown_file_writer
@@ -71,10 +73,70 @@ tools:
       local_time: {type: string, description: 当前本地时区时间。}
       utc_time: {type: string, description: 当前协调世界时。}
 
+  directory_list:
+    module: skills.file_browser
+    function: directory_list
+    description: 列出允许工作区内某个目录的文件和子目录，类似 ls。用于探路、确认上传文件名、查看目录下有哪些文件；不读取文件正文。若已经知道准确文件路径并需要内容，应使用 file_reader。
+    parameters:
+      path:
+        type: string
+        description: 要列出的目录或文件路径。默认 . 表示 data 根目录；可使用 uploads/...、outputs:...、code:... 等允许根目录路径。
+      recursive:
+        type: boolean
+        description: 是否递归列出子目录。默认 false。
+      max_depth:
+        type: integer
+        description: 递归时的最大深度，默认 1，最大 8。
+      file_types:
+        type: array
+        items: {type: string}
+        description: 可选文件后缀过滤，例如 ["txt","md","docx"]；目录仍会显示，便于继续探路。
+      include_hidden:
+        type: boolean
+        description: 是否包含以点开头的隐藏路径。默认 false。
+      max_entries:
+        type: integer
+        description: 最多返回条目数，默认 100，最大 500。
+    required: []
+    returns:
+      path: {type: string, description: 被列出的路径。}
+      relative_path: {type: string, description: 相对匹配根目录的路径。}
+      root_alias: {type: string, description: 匹配到的允许根目录别名。}
+      kind: {type: string, description: path 的类型：directory、file、other。}
+      recursive: {type: boolean, description: 是否递归。}
+      max_depth: {type: integer, description: 最大递归深度。}
+      entry_count: {type: integer, description: 返回条目数量。}
+      truncated: {type: boolean, description: 是否因为 max_entries 截断。}
+      entries: {type: array, description: 文件或目录条目，包含 name、path、relative_path、kind、suffix、size_bytes、modified_time。}
+
+  file_stat:
+    module: skills.file_browser
+    function: file_stat
+    description: 检查允许工作区内某个路径是否存在及其类型，类似 stat。用于读取前确认路径、判断是文件还是目录、查看后缀和大小；不读取文件正文。
+    parameters:
+      path:
+        type: string
+        description: 要检查的文件或目录路径，可使用 uploads/...、outputs:...、code:... 等允许根目录路径。
+    required: [path]
+    returns:
+      path: {type: string, description: 被检查路径。}
+      relative_path: {type: string, description: 相对匹配根目录的路径。}
+      root_alias: {type: string, description: 匹配到的允许根目录别名。}
+      exists: {type: boolean, description: 路径是否存在。}
+      kind: {type: string, description: 类型：file、directory、other、missing。}
+      suffix: {type: string, description: 文件后缀；非文件为空。}
+      size_bytes: {type: integer, description: 文件大小；仅文件存在时返回。}
+      modified_time: {type: string, description: 修改时间；存在时返回。}
+      child_count: {type: integer, description: 目录的直接子项数量；仅目录存在时返回。}
+      readable_by_file_reader: {type: boolean, description: 该文件是否可用 file_reader 读取。}
+      analyzable_by_table_analyzer: {type: boolean, description: 该文件是否可用 table_analyzer 分析。}
+      parent_exists: {type: boolean, description: 路径不存在时，父目录是否存在。}
+      parent_path: {type: string, description: 路径不存在时的父目录路径。}
+
   file_reader:
     module: skills.file_reader
     function: file_reader
-    description: 读取允许工作区内已有文件的内容。支持 txt、md、json、jsonl、csv、tsv、yaml、py、log、docx、pptx 等文本或 Office Open XML 文件；不支持图片、PDF、旧版 doc/ppt 或扫描件。路径默认相对于 data，也可使用 uploads/...、outputs/... 等允许根目录路径。若返回 truncated=true，只表示读取了部分内容，不能声称已读完整文件。
+    description: 读取一个已知路径文件的正文，类似 cat。支持 txt、md、json、jsonl、csv、tsv、yaml、py、log、docx、pptx；不支持图片、PDF、旧版 doc/ppt、xlsx 或扫描件。不知道文件名时先用 directory_list；只知道关键词时先用 local_file_search。若返回 truncated=true，只表示读取了部分内容，不能声称已读完整文件。
     parameters:
       path:
         type: string
@@ -255,7 +317,7 @@ tools:
   local_file_search:
     module: skills.local_file_search
     function: local_file_search
-    description: 在允许工作区内按关键词搜索本地文本类文件，用于找到可能相关的文件路径和片段。此工具不读取完整文件内容；找到目标路径后通常应继续使用 file_reader。不能用于网页、互联网、实时新闻或当前外部信息。
+    description: 在允许工作区内按关键词搜索本地文本类文件，类似 grep。用于根据关键词找到可能相关的文件路径和片段；不读取完整正文。列目录用 directory_list；读取确定文件用 file_reader。不能用于网页、互联网、实时新闻或当前外部信息。
     parameters:
       query: {type: string, description: 搜索关键词。}
       root_dir: {type: string, description: 相对于数据目录的目录，或允许工作区根目录下的别名路径。}
