@@ -322,6 +322,16 @@ def _streaming_content_prefix(raw_text: str) -> str:
     return _partial_json_string(raw_text, value_start)
 
 
+def _parse_error_fallback_content(raw_text: str) -> str:
+    content = _streaming_content_prefix(raw_text).strip()
+    if content:
+        return content
+    stripped = raw_text.strip()
+    if stripped and not stripped.startswith("{") and not stripped.startswith("["):
+        return stripped[:1200]
+    return PARSE_ERROR_CONTENT
+
+
 def _candidate_to_message(candidate: dict, has_tool_messages: bool = False) -> tuple[dict, dict]:
     if not isinstance(candidate, dict):
         raise ValueError("model output JSON must be an object")
@@ -332,6 +342,15 @@ def _candidate_to_message(candidate: dict, has_tool_messages: bool = False) -> t
     raw_tool_calls = candidate.get("tool_calls", [])
     normalized_control = None
     raw_control = candidate.get("control")
+    if (not raw_tool_calls) and isinstance(raw_control, dict) and isinstance(raw_control.get("tool_calls"), list):
+        raw_tool_calls = raw_control.get("tool_calls", [])
+    if isinstance(raw_tool_calls, list):
+        raw_tool_calls = [
+            {**call, "args": call.get("arguments")}
+            if isinstance(call, dict) and "args" not in call and "arguments" in call
+            else call
+            for call in raw_tool_calls
+        ]
     if isinstance(raw_control, dict):
         action = raw_control.get("action")
         if action not in {"call_tools", "finish"}:
@@ -889,7 +908,7 @@ def generate_ai_message(
             error = None
         except Exception as exc:
             parsed_candidate = None
-            ai_message = make_ai_message(PARSE_ERROR_CONTENT, [])
+            ai_message = make_ai_message(_parse_error_fallback_content(raw_text), [])
             status = "error"
             error = {"type": type(exc).__name__, "message": str(exc)}
     else:
@@ -1053,7 +1072,7 @@ def stream_ai_message(
             if source == "local" and ai_message["content"]:
                 yield {"type": "delta", "text": ai_message["content"]}
         except Exception as exc:
-            ai_message = make_ai_message(PARSE_ERROR_CONTENT, [])
+            ai_message = make_ai_message(_parse_error_fallback_content(raw_text), [])
             status = "error"
             error = {"type": type(exc).__name__, "message": str(exc)}
     else:

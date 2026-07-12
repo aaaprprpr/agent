@@ -5,18 +5,26 @@ import sys
 from copy import deepcopy
 from pathlib import Path
 from time import perf_counter
-from typing import Iterator
+from typing import Callable, Iterator
 
 from common.io_utils import read_json, read_text
 from common.path_utils import resolve_cli_path, resolve_from_file
 
-from b1_fixture import _load_fixture_inputs
-from b1_legacy_loop import run_legacy_loop, run_legacy_stream_loop
-from b1_llm_bridge import generate_ai_message, generate_json_object, stream_ai_message
-from b1_prompting import build_llm_prompt_messages
-from b1_runtime_input import _default_llm_mode, _runtime_base_file, _validate_runtime_input
-from b1_workspace import _prepare_workspace_runtime_context
-from b1_workspace_loop import _run_workspace, _run_workspace_stream
+from b1_agent_runtime_parts.b1_fixture import _load_fixture_inputs
+from b1_agent_runtime_parts.b1_legacy_loop import run_legacy_loop, run_legacy_stream_loop
+from b1_agent_runtime_parts.b1_llm_bridge import (
+    generate_ai_message,
+    generate_json_object,
+    stream_ai_message,
+)
+from b1_agent_runtime_parts.b1_prompting import build_llm_prompt_messages
+from b1_agent_runtime_parts.b1_runtime_input import (
+    _default_llm_mode,
+    _runtime_base_file,
+    _validate_runtime_input,
+)
+from b1_agent_runtime_parts.b1_workspace import _prepare_workspace_runtime_context
+from b1_agent_runtime_parts.b1_workspace_loop import _run_workspace, _run_workspace_stream
 
 
 def run(
@@ -107,6 +115,7 @@ def run_stream(
     outdir: str,
     llm_mode: str | None = None,
     runtime_base: str | Path | None = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> Iterator[dict]:
     """Run the Agent loop and yield UI-safe streaming events.
 
@@ -161,6 +170,7 @@ def run_stream(
             mode,
             output_dir,
             started,
+            should_cancel,
         )
         return
     yield from run_legacy_stream_loop(
@@ -176,6 +186,7 @@ def run_stream(
         mode,
         output_dir,
         started,
+        should_cancel,
     )
 
 

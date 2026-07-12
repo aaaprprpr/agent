@@ -18,6 +18,7 @@ export function Composer({
   onRemoveAttachment,
   onSend,
   isRunning,
+  isStopping,
   onStop,
 }: {
   attachments: Attachment[]
@@ -25,6 +26,7 @@ export function Composer({
   draft: string
   canSend: boolean
   isRunning: boolean
+  isStopping: boolean
   inputRef: RefObject<HTMLTextAreaElement | null>
   fileRef: RefObject<HTMLInputElement | null>
   onDraftChange: (value: string) => void
@@ -34,7 +36,7 @@ export function Composer({
   onSend: () => void
   onStop: () => void
 }) {
-  const actionLabel = isRunning ? '终止回答' : '发送'
+  const actionLabel = isStopping ? '正在终止' : isRunning ? '终止回答' : '发送'
 
   return (
     <section className="composer-wrap">
@@ -64,10 +66,10 @@ export function Composer({
           <button
             className={`send-button ${isRunning ? 'stop' : ''}`}
             type="button"
-            disabled={!isRunning && !canSend}
+            disabled={isStopping || (!isRunning && !canSend)}
             aria-label={actionLabel}
             title={actionLabel}
-            onClick={isRunning ? onStop : onSend}
+            onClick={isRunning && !isStopping ? onStop : onSend}
           >
             {isRunning ? <Square size={14} fill="currentColor" aria-hidden="true" /> : <ArrowUp size={18} aria-hidden="true" />}
           </button>

@@ -46,19 +46,22 @@ function App() {
   const [draft, setDraft] = useState('')
   const [dragActive, setDragActive] = useState(false)
   const [runningConversationIds, setRunningConversationIds] = useState<Set<string>>(() => new Set())
+  const [cancellingConversationIds, setCancellingConversationIds] = useState<Set<string>>(() => new Set())
   const [isLoadingHistory, setIsLoadingHistory] = useState(false)
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
   const fileRef = useRef<HTMLInputElement | null>(null)
   const conversationRef = useRef<HTMLElement | null>(null)
   const currentConversationIdRef = useRef<string | null>(null)
   const runningConversationIdsRef = useRef<Set<string>>(new Set())
+  const cancellingConversationIdsRef = useRef<Set<string>>(new Set())
   const abortControllersRef = useRef<Map<string, AbortController>>(new Map())
   const stickToBottomRef = useRef(true)
   const [showScrollBottom, setShowScrollBottom] = useState(false)
 
   const isCurrentConversationRunning = currentConversationId ? runningConversationIds.has(currentConversationId) : false
+  const isCurrentConversationStopping = currentConversationId ? cancellingConversationIds.has(currentConversationId) : false
   const hasPendingMessage = messages.some((message) => message.status === 'pending')
-  const canSend = draft.trim().length > 0 && !isCurrentConversationRunning && !hasPendingMessage
+  const canSend = draft.trim().length > 0 && !isCurrentConversationRunning && !isCurrentConversationStopping && !hasPendingMessage
 
   function setActiveConversation(conversationId: string | null) {
     currentConversationIdRef.current = conversationId
@@ -83,12 +86,33 @@ function App() {
     })
   }
 
+  function setConversationCancelling(conversationId: string, cancelling: boolean) {
+    setCancellingConversationIds((current) => {
+      const next = new Set(current)
+      if (cancelling) {
+        next.add(conversationId)
+      } else {
+        next.delete(conversationId)
+      }
+      cancellingConversationIdsRef.current = next
+      return next
+    })
+  }
+
   function stopConversation(conversationId: string | null = currentConversationIdRef.current) {
     if (!conversationId || !runningConversationIdsRef.current.has(conversationId)) return
+    if (cancellingConversationIdsRef.current.has(conversationId)) return
+    setConversationCancelling(conversationId, true)
     void fetch(`${API_BASE}/api/conversations/${encodeURIComponent(conversationId)}/cancel`, {
       method: 'POST',
-    }).catch(() => undefined)
-    abortControllersRef.current.get(conversationId)?.abort()
+    }).then(async (response) => {
+      const payload = await response.json().catch(() => null)
+      if (!response.ok || !payload?.cancel_requested) {
+        abortControllersRef.current.get(conversationId)?.abort()
+      }
+    }).catch(() => {
+      abortControllersRef.current.get(conversationId)?.abort()
+    })
   }
 
   function updateHistoryMessages(conversationId: string, nextMessages: ChatMessage[], memoryReady?: boolean) {
@@ -298,6 +322,7 @@ function App() {
     setDraft('')
     setAttachments([])
     setConversationRunning(conversationId, true)
+    setConversationCancelling(conversationId, false)
     const abortController = new AbortController()
     abortControllersRef.current.set(conversationId, abortController)
     requestAnimationFrame(() => {
@@ -358,9 +383,12 @@ function App() {
       }
       if (event.type === 'state') {
         const phase = typeof event.agent_step?.phase === 'string' ? event.agent_step.phase : ''
-        if (phase === 'plan' || phase === 'observation') {
+        if (phase === 'observation') {
           const toolDetails = toolDetailsFromAgentStep(event.agent_step)
-          if (toolDetails.length > 0) {
+          const hasToolTrace = currentMessages.some(
+            (message) => message.id === activeAssistantId && (message.toolDetails?.length ?? 0) > 0,
+          )
+          if (hasToolTrace && toolDetails.length > 0) {
             applyMessageState(
               currentMessages.map((message): ChatMessage =>
                 message.id === activeAssistantId
@@ -514,6 +542,7 @@ function App() {
       updateHistoryMessages(conversationId, failedMessages)
     } finally {
       abortControllersRef.current.delete(conversationId)
+      setConversationCancelling(conversationId, false)
       setConversationRunning(conversationId, false)
     }
   }
@@ -622,7 +651,7 @@ function App() {
                 type="button"
                 aria-label={`删除对话 ${item.title}`}
                 title="删除对话"
-                disabled={runningConversationIds.has(item.id)}
+                disabled={runningConversationIds.has(item.id) || cancellingConversationIds.has(item.id)}
                 onClick={() => {
                   void deleteConversation(item.id)
                 }}
@@ -666,6 +695,7 @@ function App() {
           onRemoveAttachment={(id) => setAttachments((current) => current.filter((item) => item.id !== id))}
           onSend={handleSend}
           isRunning={isCurrentConversationRunning}
+          isStopping={isCurrentConversationStopping}
           onStop={() => stopConversation(currentConversationId)}
         />
       </section>

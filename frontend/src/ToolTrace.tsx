@@ -45,10 +45,10 @@ function agentStepBody(step: Record<string, unknown>) {
   const facts = stringList(step.known_facts)
   const missing = stringList(step.missing_info)
   const next = typeof step.next_step === 'string' ? step.next_step.trim() : ''
-  if (plan) lines.push(`计划：${plan}`)
-  if (observation) lines.push(`观察：${observation}`)
-  if (facts.length > 0) lines.push(`已知：${facts.join('；')}`)
-  if (missing.length > 0) lines.push(`缺口：${missing.join('；')}`)
+  if (plan) lines.push(`处理：${plan}`)
+  if (observation) lines.push(`结果：${observation}`)
+  if (facts.length > 0) lines.push(`依据：${facts.join('；')}`)
+  if (missing.length > 0) lines.push(`还需要：${missing.join('；')}`)
   if (next) lines.push(`下一步：${next}`)
   return lines.join('\n')
 }
@@ -59,7 +59,7 @@ export function toolDetailsFromAgentStep(step?: Record<string, unknown>) {
   if (!body) return []
   const phase = typeof step.phase === 'string' ? step.phase : ''
   const label = phase === 'final' || phase === 'observation' ? '观察' : '思考'
-  return [{ label, body, status: phase || 'info', kind: 'agent' as const }]
+  return [{ label, body, kind: 'agent' as const }]
 }
 
 function compactToolStepInput(value: unknown) {

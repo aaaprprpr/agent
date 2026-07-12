@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from copy import deepcopy
 
-from b1_workspace import (
+from .b1_workspace import (
     _memory_overview,
     _tool_attempts_summary,
     _workspace_history_messages,
@@ -14,8 +14,8 @@ from b1_workspace import (
 def build_llm_prompt_messages(messages: list[dict], tools_schema: list[dict]) -> list[dict]:
     """Build the complete model-facing prompt for one Agent loop step.
 
-    B1 owns message flow. B4 may keep a standalone fallback, but the integrated
-    Agent path should disclose tools and protocol here before calling B4.
+    The runtime owns message flow. B4 may keep a standalone fallback, but the
+    integrated Agent path should disclose tools and protocol here before calling B4.
     """
     if not isinstance(tools_schema, list):
         raise ValueError("tools_schema must be an array")
@@ -88,7 +88,7 @@ def build_llm_prompt_messages(messages: list[dict], tools_schema: list[dict]) ->
                 "role": "user",
                 "content": (
                     output_reminder
-                    + " 最新工具消息已经包含工具结果。必须在 agent_step.observation 中概括工具结果、有效事实和缺口；"
+                    + " 最新工具消息已经包含工具结果。必须在 agent_step.observation 中概括工具结果、有效事实和仍需信息；"
                     "足够则 completed 并给最终回答，不足则 replanning 继续调用工具，无法继续则 failed 并说明原因。"
                 ),
             }
@@ -125,8 +125,8 @@ def _stage_messages(system_prompt: str, stage_name: str, instruction: str, paylo
             "role": "system",
             "content": (
                 system_prompt
-                + "\n\n你现在处在 B1 运行时工作区的一个内部阶段。"
-                "只完成本阶段的信息整理或决策，不直接替用户执行其他阶段。"
+                + "\n\n你正在处理本轮对话的一个内部步骤。"
+                "只完成当前步骤要求，不要在最终回答或中间说明里提到模块名、内部架构、调度器等实现细节。"
             ),
         },
         {
@@ -134,7 +134,7 @@ def _stage_messages(system_prompt: str, stage_name: str, instruction: str, paylo
             "content": (
                 f"阶段：{stage_name}\n"
                 f"{instruction}\n\n"
-                "工作区输入如下：\n"
+                "本轮状态如下：\n"
                 f"{_json_block(payload)}\n\n"
                 "只能输出一个 JSON 对象，不能输出 Markdown、代码块或 JSON 之外的文字。"
             ),
@@ -166,10 +166,13 @@ def _workspace_planning_messages(
         system_prompt,
         "planning",
         (
-            "理解用户本轮任务，整理目标、约束、已知事实和缺失信息。"
-            "如果需要工具，next_stage 写 tool_calling；如果可以直接回答，写 answering；"
-            "如果无法推进，写 failed。不要调用工具。"
+            "判断用户本轮到底要什么，并决定是否需要工具。"
+            "打招呼、闲聊、普通问答、让你记住一句话或数字时，通常直接 answering；"
+            "记忆会由系统在对话结束后保存，不存在也不得创造 memory_writer、memory_write、save_memory 等工具。"
+            "只有需要读取文件、搜索网页、获取当前时间、计算、写真实文件、分析表格或格式转换时，才写 tool_calling。"
+            "如果可以直接回答，next_stage 写 answering；如果确实无法推进，写 failed。不要调用工具。"
             "JSON 键：user_goal、requirements、plan、known_facts、missing_info、next_stage、reason。"
+            "known_facts 和 missing_info 只写和用户目标直接相关的信息，不要列工具清单、内部模块或实现细节。"
         ),
         payload,
     )
@@ -198,22 +201,25 @@ def _workspace_tool_messages(
             "role": "system",
             "content": (
                 system_prompt
-                + "\n\n你现在是 B1 工作区的工具动作规划阶段。"
-                "进入本阶段表示当前任务需要一个可执行工具动作。"
-                "必须根据用户目标、缺失信息、已有工具尝试和工具 schema 决定下一步。"
+                + "\n\n你正在决定是否执行一个真实可用的工具动作。"
+                "只能使用本轮提供的工具 schema 中明确存在的工具名；不得创造工具。"
+                "如果没有合适工具，结束并说明原因，不要输出不存在的工具调用。"
                 "不要输出最终答案，不要把工具结果当成已经存在的信息。"
             ),
         },
         {
             "role": "user",
             "content": (
-                "根据工作区状态选择下一步工具动作。\n"
+                "根据本轮状态选择下一步工具动作。\n"
                 "只输出 AIMessage JSON 对象，顶层键只能是 content、tool_calls、control、agent_step。\n"
-                "正常情况必须返回至少一个 tool_call：control.action=call_tools，tool_calls 填写要调用的工具。\n"
+                "tool_calls 必须是顶层字段，不能放在 control 内；control 里只能有 state、action、reason。\n"
+                "如果确实需要工具，返回至少一个 tool_call：control.action=call_tools，tool_calls 填写要调用的工具。\n"
+                "tool_calls[*].name 必须逐字匹配 available_tools_schema 中已有工具名。\n"
+                "如果用户只是让你记住信息、打招呼或普通对话，不要调用工具，返回 finish/completed。\n"
                 "如果已有失败尝试，必须根据失败原因调整工具、参数或路径；不要无变化地重复同一调用。\n"
-                "如果确认没有任何可用工具能推进任务，才允许返回 control.action=finish、control.state=failed、tool_calls=[]，并在 reason 写清能力缺口。\n"
+                "如果确认没有任何可用工具能推进任务，返回 control.action=finish、control.state=failed、tool_calls=[]，并在 reason 写清原因。\n"
                 "不能用 content 代替工具调用；content 只写极短工具前说明，不能写最终答案、完整代码、文件内容或完成声明。\n\n"
-                f"工作区状态如下：\n{_json_block(payload)}"
+                f"本轮状态如下：\n{_json_block(payload)}"
             ),
         },
     ]
@@ -243,7 +249,7 @@ def _workspace_observation_messages(
             "必须以 ToolMessage 的 status、output、error 为依据：status=success 只表示工具执行成功，不等于任务完成；"
             "status=error 的结果不能作为事实证据，只能作为失败原因。"
             "把可用于最终回答的内容放入 accepted_evidence 和 known_facts；"
-            "无效、错误或偏题的信息放入 rejected_evidence；仍缺的信息放入 missing_info。"
+            "无效、错误或偏题的信息放入 rejected_evidence；仍需要的信息放入 missing_info。"
             "如果失败原因已经表明没有工具能力或目标文件不存在，应主动结束到 answering/failed，而不是反复调用同一工具。"
             "下一步由你决定：需要继续工具写 tool_calling；足以回答写 answering；无法推进写 failed。"
             "JSON 键：observation、accepted_evidence、rejected_evidence、known_facts、missing_info、next_stage、reason。"
@@ -270,22 +276,22 @@ def _workspace_answer_messages(system_prompt: str, workspace: dict) -> list[dict
             "role": "system",
             "content": (
                 system_prompt
-                + "\n\n你现在是 B1 工作区的最终回答阶段。"
-                "只面向用户输出最终答案。不要泄露工具 JSON、内部阶段名、工作区结构或调度过程。"
+                + "\n\n你正在生成最终回复。"
+                "只面向用户输出最终答案。不要泄露工具 JSON、内部阶段名、内部状态结构或调度过程。"
             ),
         },
         {
             "role": "user",
             "content": (
-                "根据工作区中的用户任务、可用证据和已知事实生成最终回答。\n"
-                "如果信息不足，直接说明缺口；不要编造。"
+                "根据用户任务、可用证据和已知事实生成最终回答。\n"
+                "如果信息不足，直接说明还需要什么；不要编造。"
                 "只有 accepted_evidence 或成功工具结果中明确出现的信息，才能声明为已经完成。"
                 "没有成功的 file_writer 结果时，不得说文件已生成；没有下载接口或下载工具时，不得说已经可以直接下载；"
                 "没有成功 file_reader/search/calculator 等结果时，不得声称已经读取、搜索或计算完成。\n"
                 "只输出 AIMessage JSON 对象，顶层键只能是 content、tool_calls、control、agent_step。\n"
                 "必须满足：tool_calls=[]，control.action=finish，control.state 为 completed 或 failed，"
                 "agent_step.phase=final。\n\n"
-                f"工作区状态如下：\n{_json_block(payload)}"
+                f"本轮状态如下：\n{_json_block(payload)}"
             ),
         },
     ]

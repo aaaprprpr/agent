@@ -3,22 +3,23 @@ from __future__ import annotations
 from copy import deepcopy
 from pathlib import Path
 from time import perf_counter
-from typing import Iterator
+from typing import Callable, Iterator
 
 from common.io_utils import append_jsonl, write_json, write_text
 from common.logging_utils import now_iso
 from common.schemas import make_ai_message
 
-from b1_llm_bridge import generate_ai_message, generate_json_object, stream_ai_message
-from b1_prompting import (
+from .b1_llm_bridge import generate_ai_message, generate_json_object, stream_ai_message
+from .b1_prompting import (
     _workspace_answer_messages,
     _workspace_observation_messages,
     _workspace_planning_messages,
     _workspace_tool_messages,
 )
-from b1_workspace import (
+from .b1_workspace import (
     _agent_step_from_observation,
     _agent_step_from_plan,
+    _as_string_list,
     _merge_unique,
     _record_no_tool_action,
     _record_stage,
@@ -150,7 +151,7 @@ def _workspace_parse_failure(
     final_answer = "模型内部阶段输出解析失败，未生成有效回答。"
     terminal_error = {
         "type": "LLMStageParseError",
-        "message": f"B1 workspace stage failed to parse: {stage}",
+        "message": f"runtime stage failed to parse: {stage}",
         "stage": stage,
         "cause": error,
     }
@@ -179,6 +180,65 @@ def _workspace_parse_failure(
         memory_file,
         workspace,
         streaming,
+    )
+
+
+def _cancel_requested(should_cancel: Callable[[], bool] | None) -> bool:
+    return bool(should_cancel and should_cancel())
+
+
+def _workspace_cancelled_result(
+    runtime: dict,
+    execution_mode: str,
+    mode: str,
+    output_dir: Path,
+    started: float,
+    selected_memory: dict,
+    messages: list[dict],
+    all_tool_messages: list[dict],
+    partial_answer: str,
+    tool_rounds: int,
+    llm_calls: int,
+    turns: list[dict],
+    warnings: list[str],
+    memory_file: Path | None,
+    workspace: dict,
+) -> dict:
+    final_answer = partial_answer.strip() or "已终止回答。"
+    final_control = {
+        "state": "failed",
+        "action": "finish",
+        "reason": "user cancelled",
+    }
+    workspace["final"] = {"answer": final_answer, "status": "cancelled"}
+    _record_stage(
+        workspace,
+        "cancelled",
+        {
+            "content": final_answer,
+            "control": final_control,
+        },
+    )
+    return _write_runtime_outputs(
+        runtime,
+        execution_mode,
+        mode,
+        output_dir,
+        started,
+        selected_memory,
+        messages,
+        all_tool_messages,
+        final_answer,
+        "cancelled",
+        tool_rounds,
+        llm_calls,
+        turns,
+        final_control,
+        warnings,
+        None,
+        memory_file,
+        workspace,
+        streaming=True,
     )
 
 
@@ -520,6 +580,7 @@ def _run_workspace_stream(
     mode: str,
     output_dir: Path,
     started: float,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> Iterator[dict]:
     from b3_tool_layer import execute_tool_calls
 
@@ -545,6 +606,32 @@ def _run_workspace_stream(
     status = "success"
     terminal_error = None
     final_control = None
+
+    def cancelled_done(partial_answer: str = "") -> dict:
+        return {
+            "type": "done",
+            "result": _workspace_cancelled_result(
+                runtime,
+                execution_mode,
+                mode,
+                output_dir,
+                started,
+                selected_memory,
+                messages,
+                all_tool_messages,
+                partial_answer,
+                tool_rounds,
+                llm_calls,
+                turns,
+                warnings,
+                memory_file,
+                workspace,
+            ),
+        }
+
+    if _cancel_requested(should_cancel):
+        yield cancelled_done()
+        return
 
     llm_calls += 1
     plan_result = generate_json_object(
@@ -574,6 +661,9 @@ def _run_workspace_stream(
             streaming=True,
         )
         yield {"type": "done", "result": result}
+        return
+    if _cancel_requested(should_cancel):
+        yield cancelled_done()
         return
     plan = plan_result["json"]
     workspace["task"].update(
@@ -618,6 +708,9 @@ def _run_workspace_stream(
 
     next_stage = workspace["task"]["stage"]
     while next_stage == "tool_calling":
+        if _cancel_requested(should_cancel):
+            yield cancelled_done()
+            return
         llm_calls += 1
         turn_start = perf_counter()
         tool_result = generate_ai_message(
@@ -683,6 +776,9 @@ def _run_workspace_stream(
             return
         control = ai_message.get("control", {})
         yield {"type": "state", **control, "agent_step": ai_message.get("agent_step"), "llm_call_index": llm_calls}
+        if _cancel_requested(should_cancel):
+            yield cancelled_done()
+            return
         tool_calls = ai_message.get("tool_calls", [])
         workspace["tools"]["last_tool_intent"] = ai_message.get("content", "")
         _record_stage(
@@ -706,6 +802,9 @@ def _run_workspace_stream(
             "agent_step": ai_message.get("agent_step"),
             "llm_call_index": llm_calls,
         }
+        if _cancel_requested(should_cancel):
+            yield cancelled_done()
+            return
         tool_messages = execute_tool_calls(
             tool_calls,
             str(tools_file),
@@ -721,6 +820,9 @@ def _run_workspace_stream(
         turn["latency_ms"] = round((perf_counter() - turn_start) * 1000, 3)
         turns.append(turn)
         yield {"type": "tool_done", "tool_messages": tool_messages, "llm_call_index": llm_calls}
+        if _cancel_requested(should_cancel):
+            yield cancelled_done()
+            return
 
         llm_calls += 1
         observation_result = generate_json_object(
@@ -752,6 +854,9 @@ def _run_workspace_stream(
                 streaming=True,
             )
             yield {"type": "done", "result": result}
+            return
+        if _cancel_requested(should_cancel):
+            yield cancelled_done()
             return
         observation = observation_result["json"]
         _merge_unique(workspace["tools"]["accepted_evidence"], observation.get("accepted_evidence"))
@@ -792,8 +897,13 @@ def _run_workspace_stream(
             "llm_call_index": llm_calls,
         }
 
+    if _cancel_requested(should_cancel):
+        yield cancelled_done()
+        return
+
     llm_calls += 1
     final_result = None
+    final_chunks: list[str] = []
     for event in stream_ai_message(
         str(model_file),
         _workspace_answer_messages(system_prompt, workspace),
@@ -803,12 +913,20 @@ def _run_workspace_stream(
         f"workspace_{llm_calls:03d}_answering",
         prompt_ready=True,
     ):
+        if _cancel_requested(should_cancel):
+            yield cancelled_done("".join(final_chunks))
+            return
         if not isinstance(event, dict):
             continue
         if event.get("type") == "delta":
-            yield {"type": "delta", "text": str(event.get("text", "")), "llm_call_index": llm_calls}
+            text = str(event.get("text", ""))
+            final_chunks.append(text)
+            yield {"type": "delta", "text": text, "llm_call_index": llm_calls}
         elif event.get("type") == "done":
             final_result = event.get("result")
+    if _cancel_requested(should_cancel):
+        yield cancelled_done("".join(final_chunks))
+        return
     if not isinstance(final_result, dict) or not isinstance(final_result.get("ai_message"), dict):
         raise ValueError("B4 stream result must contain an ai_message object")
     final_ai_message = final_result["ai_message"]

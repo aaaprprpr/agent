@@ -10,6 +10,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import warnings
 import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
@@ -128,6 +129,12 @@ def start_tunnel() -> TunnelRuntime | None:
         raise RuntimeError(f"local LLM port is already in use: {LOCAL_LLM_HOST}:{LOCAL_LLM_PORT}")
 
     try:
+        try:
+            from cryptography.utils import CryptographyDeprecationWarning
+
+            warnings.filterwarnings("ignore", category=CryptographyDeprecationWarning, module=r"paramiko\..*")
+        except Exception:
+            pass
         import paramiko
     except ImportError as exc:
         raise RuntimeError("missing dependency: run `pip install paramiko` first") from exc

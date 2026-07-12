@@ -3,14 +3,89 @@ from __future__ import annotations
 from copy import deepcopy
 from pathlib import Path
 from time import perf_counter
-from typing import Iterator
+from typing import Callable, Iterator
 
 from common.io_utils import append_jsonl, write_json, write_text
 from common.logging_utils import now_iso
 
-from b1_fixture import _fixture_tool_messages
-from b1_llm_bridge import generate_ai_message, stream_ai_message
-from b1_prompting import build_llm_prompt_messages
+from .b1_fixture import _fixture_tool_messages
+from .b1_llm_bridge import generate_ai_message, stream_ai_message
+from .b1_prompting import build_llm_prompt_messages
+
+
+def _cancel_requested(should_cancel: Callable[[], bool] | None) -> bool:
+    return bool(should_cancel and should_cancel())
+
+
+def _legacy_cancelled_result(
+    runtime: dict,
+    execution_mode: str,
+    mode: str,
+    output_dir: Path,
+    started: float,
+    selected_memory: dict,
+    messages: list[dict],
+    all_tool_messages: list[dict],
+    partial_answer: str,
+    tool_rounds: int,
+    llm_calls: int,
+    turns: list[dict],
+    warnings: list[str],
+) -> dict:
+    final_answer = partial_answer.strip() or "已终止回答。"
+    final_control = {
+        "state": "failed",
+        "action": "finish",
+        "reason": "user cancelled",
+    }
+    write_json(messages, output_dir / "messages.json")
+    if execution_mode == "integrated":
+        write_json(all_tool_messages, output_dir / "tool_messages.json")
+    write_text(final_answer.strip() + "\n", output_dir / "final_answer.md")
+    trace = {
+        "conversation_id": runtime["conversation_id"],
+        "execution_mode": execution_mode,
+        "status": "cancelled",
+        "toolset": runtime["toolset"],
+        "tool_rounds_used": tool_rounds,
+        "llm_call_count": llm_calls,
+        "final_state": final_control["state"],
+        "finish_reason": final_control["reason"],
+        "turns": turns,
+        "final_answer_path": "final_answer.md",
+        "memory_save": {"requested": runtime["save_memory"], "status": "skipped", "reason": "cancelled"},
+        "warnings": warnings,
+        "error": None,
+    }
+    write_json(trace, output_dir / "trace.json")
+    result = {
+        "conversation_id": runtime["conversation_id"],
+        "execution_mode": execution_mode,
+        "status": "cancelled",
+        "final_answer": final_answer,
+        "messages_path": str(output_dir / "messages.json"),
+        "trace_path": str(output_dir / "trace.json"),
+        "final_answer_path": str(output_dir / "final_answer.md"),
+        "selected_memory": selected_memory,
+        "saved_memory": None,
+        "elapsed_ms": round((perf_counter() - started) * 1000, 3),
+    }
+    if execution_mode == "integrated":
+        append_jsonl(
+            {
+                "timestamp": now_iso(),
+                "conversation_id": runtime["conversation_id"],
+                "execution_mode": execution_mode,
+                "status": "cancelled",
+                "llm_mode": mode,
+                "tool_rounds_used": tool_rounds,
+                "llm_call_count": llm_calls,
+                "elapsed_ms": result["elapsed_ms"],
+                "streaming": True,
+            },
+            output_dir / "runtime_log.jsonl",
+        )
+    return result
 
 
 def run_legacy_loop(
@@ -232,6 +307,7 @@ def run_legacy_stream_loop(
     mode: str,
     output_dir: Path,
     started: float,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> Iterator[dict]:
     current_user_message = {"role": "user", "content": runtime["user_input"]}
     if runtime["input_images"]:
@@ -252,8 +328,29 @@ def run_legacy_stream_loop(
     final_control = None
     if selected_memory.get("status") in {"partial", "error"}:
         warnings.append("memory selection completed with errors")
+    partial_chunks: list[str] = []
 
     while True:
+        if _cancel_requested(should_cancel):
+            yield {
+                "type": "done",
+                "result": _legacy_cancelled_result(
+                    runtime,
+                    execution_mode,
+                    mode,
+                    output_dir,
+                    started,
+                    selected_memory,
+                    messages,
+                    all_tool_messages,
+                    "".join(partial_chunks),
+                    tool_rounds,
+                    llm_calls,
+                    turns,
+                    warnings,
+                ),
+            }
+            return
         llm_calls += 1
         turn_start = perf_counter()
         if execution_mode == "fixture":
@@ -280,6 +377,7 @@ def run_legacy_stream_loop(
                 if not isinstance(event, dict):
                     continue
                 if event.get("type") == "delta":
+                    partial_chunks.append(str(event.get("text", "")))
                     yield {
                         "type": "delta",
                         "text": str(event.get("text", "")),
@@ -287,6 +385,26 @@ def run_legacy_stream_loop(
                     }
                 elif event.get("type") == "done":
                     llm_result = event.get("result")
+                if _cancel_requested(should_cancel):
+                    yield {
+                        "type": "done",
+                        "result": _legacy_cancelled_result(
+                            runtime,
+                            execution_mode,
+                            mode,
+                            output_dir,
+                            started,
+                            selected_memory,
+                            messages,
+                            all_tool_messages,
+                            "".join(partial_chunks),
+                            tool_rounds,
+                            llm_calls,
+                            turns,
+                            warnings,
+                        ),
+                    }
+                    return
             if not isinstance(llm_result, dict) or not isinstance(llm_result.get("ai_message"), dict):
                 raise ValueError("B4 stream result must contain an ai_message object")
             ai_message = llm_result["ai_message"]
@@ -325,6 +443,26 @@ def run_legacy_stream_loop(
             break
         control = ai_message["control"]
         yield {"type": "state", **control, "agent_step": ai_message.get("agent_step"), "llm_call_index": llm_calls}
+        if _cancel_requested(should_cancel):
+            yield {
+                "type": "done",
+                "result": _legacy_cancelled_result(
+                    runtime,
+                    execution_mode,
+                    mode,
+                    output_dir,
+                    started,
+                    selected_memory,
+                    messages,
+                    all_tool_messages,
+                    "".join(partial_chunks),
+                    tool_rounds,
+                    llm_calls,
+                    turns,
+                    warnings,
+                ),
+            }
+            return
         tool_calls = ai_message.get("tool_calls", [])
         if control["action"] == "finish":
             final_control = control
@@ -346,6 +484,26 @@ def run_legacy_stream_loop(
             "agent_step": ai_message.get("agent_step"),
             "llm_call_index": llm_calls,
         }
+        if _cancel_requested(should_cancel):
+            yield {
+                "type": "done",
+                "result": _legacy_cancelled_result(
+                    runtime,
+                    execution_mode,
+                    mode,
+                    output_dir,
+                    started,
+                    selected_memory,
+                    messages,
+                    all_tool_messages,
+                    "".join(partial_chunks),
+                    tool_rounds,
+                    llm_calls,
+                    turns,
+                    warnings,
+                ),
+            }
+            return
         if execution_mode == "fixture":
             tool_messages = _fixture_tool_messages(
                 tool_calls,
