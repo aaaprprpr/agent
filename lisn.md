@@ -10,8 +10,9 @@ python start_all.py
 
 # -------------------------7.12------------------------------
 
-做记忆系统，改bug
-
+做记忆，改bug
+改记忆模块
+加对话终止按钮
 
 # -------------------------7.11------------------------------
 
@@ -144,3 +145,10 @@ tool/skill 第一批增强：
 - B5 历史上下文过滤 `cancelled` 消息，避免已终止回答污染下一轮模型输入。
 - 将 `code/b5_memory.py` 拆为兼容门面，内部实现移动到 `code/b5_memory_parts/paths.py`、`conversation_api.py`、`layered.py`、`legacy.py`、`cli.py`；公开导入接口保持 `from b5_memory import ...` 不变。
 - 按要求未启动项目、未跑训练、未跑测试；需要由你本地执行前后端联调验证终止按钮实际效果。
+
+# -------------------------7.12 B5 拆分结构修正------------------------------
+
+- 根据团队反馈修正 B5 拆分方式：`b5_memory.py` 不再只是空兼容门面，恢复 CLI 解析和入口分派职责，继续保持 `from b5_memory import ...` 公共接口不变。
+- 原 `b5_memory_parts/layered.py` 过大，已继续拆为 `text_utils.py`、`retrieval.py`、`reflection.py`：分别负责文本压缩/评分/上下文格式化、分层召回与 workspace context、轮次反思和记忆落库。
+- 保留短 `layered.py` 作为内部兼容导出，避免误伤已有内部导入；删除重复的 `b5_memory_parts/cli.py`。
+- 本次只做结构调整，未启动项目、未跑测试、未跑训练。
