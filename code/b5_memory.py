@@ -43,6 +43,7 @@ MAX_RECALLED_BLOCKS = 3
 MAX_RECALLED_TURNS = 5
 MAX_SOURCE_SNIPPET_CHARS = 360
 MAX_TOOL_SNIPPET_CHARS = 280
+MAX_WORKSPACE_ITEM_CHARS = 420
 
 
 def _memory_paths(config_path: str | Path) -> dict[str, Path | int]:
@@ -256,6 +257,46 @@ def _neutral_locator_summary() -> str:
     )
 
 
+def _compact_jsonish(value: Any, limit: int = MAX_WORKSPACE_ITEM_CHARS) -> Any:
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return _compact_text(value, limit)
+    if isinstance(value, list):
+        return [_compact_jsonish(item, limit) for item in value[:8]]
+    if isinstance(value, dict):
+        return {str(key): _compact_jsonish(item, limit) for key, item in list(value.items())[:16]}
+    return _compact_text(str(value), limit)
+
+
+def _workspace_snapshot(trace: dict) -> dict:
+    workspace = trace.get("workspace") if isinstance(trace, dict) and isinstance(trace.get("workspace"), dict) else {}
+    if not workspace:
+        return {}
+    tools = workspace.get("tools") if isinstance(workspace.get("tools"), dict) else {}
+    draft = workspace.get("draft") if isinstance(workspace.get("draft"), dict) else {}
+    stages = []
+    for entry in _safe_list(workspace.get("trace"))[-8:]:
+        if not isinstance(entry, dict):
+            continue
+        stages.append(
+            {
+                "phase": entry.get("phase"),
+                "payload": _compact_jsonish(entry.get("payload")),
+            }
+        )
+    return {
+        "task": _compact_jsonish(workspace.get("task") if isinstance(workspace.get("task"), dict) else {}),
+        "known_facts": _compact_jsonish(draft.get("known_facts", [])),
+        "missing_info": _compact_jsonish(draft.get("missing_info", [])),
+        "accepted_evidence": _compact_jsonish(tools.get("accepted_evidence", [])),
+        "rejected_evidence": _compact_jsonish(tools.get("rejected_evidence", [])),
+        "observations": _compact_jsonish(tools.get("observations", [])),
+        "final": _compact_jsonish(workspace.get("final") if isinstance(workspace.get("final"), dict) else {}),
+        "stages": stages,
+    }
+
+
 def _safe_summary_items(value: Any) -> list:
     items = []
     if not isinstance(value, list):
@@ -389,6 +430,7 @@ def _memory_reflection_messages(
         "user_input": _compact_text(raw_user_input, 1800),
         "final_answer": _compact_text(final_answer, 1800),
         "trace": compact_trace,
+        "workspace": _workspace_snapshot(trace),
         "tool_steps": compact_tools,
         "existing_tasks": [
             {
@@ -439,17 +481,18 @@ def _memory_reflection_messages(
     }
     system = (
         "You are the B5 memory reflector. Decide what should be remembered from one completed Agent turn. "
-        "Return exactly one AIMessage JSON object. The AIMessage content must itself be a valid JSON object string "
-        "matching the requested memory schema. Do not call tools. "
+        "Return exactly one JSON object matching the requested memory schema. "
+        "Do not wrap it in an AIMessage. Do not output content, tool_calls, control, or agent_step. "
         "Summaries are only locators: do not copy exact file paths, commands, code, parameters, traceback text, or tool output values. "
         "When exact facts are needed later, the system will load source messages and tool steps."
     )
     user = (
+        "Return a JSON object with exactly these top-level keys: turn_tags, turn_summary, task_memory.\n\n"
         "Memory schema:\n"
         + json.dumps(schema_hint, ensure_ascii=False, indent=2)
         + "\n\nCompleted turn observation:\n"
         + json.dumps(observation, ensure_ascii=False, indent=2)
-        + "\n\nReturn AIMessage JSON now. Use tool_calls=[] and control.action=finish."
+        + "\n\nReturn the memory JSON object now."
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
@@ -503,24 +546,19 @@ def _reflect_memory_with_model(
     mode = llm_mode or "prompt_json"
     if mode != "prompt_json":
         raise ValueError("memory reflection model is only enabled in prompt_json mode")
-    from b4_local_agent_llm import generate_ai_message
+    from b4_local_agent_llm import generate_json_object
 
-    result = generate_ai_message(
+    result = generate_json_object(
         model_config,
         _memory_reflection_messages(raw_user_input, final_answer, trace, tool_steps, existing_tasks),
-        [],
         mode,
         artifact_dir,
         "memory_reflection",
-        prompt_ready=False,
+        prompt_ready=True,
     )
-    if result.get("status") != "success":
+    if result.get("status") != "success" or not isinstance(result.get("json"), dict):
         raise ValueError(f"memory reflection failed: {result.get('error')}")
-    ai_message = result.get("ai_message") if isinstance(result.get("ai_message"), dict) else {}
-    content = ai_message.get("content")
-    if not isinstance(content, str):
-        raise ValueError("memory reflection content must be a JSON string")
-    return _coerce_memory_decision(json.loads(content), source_message_ids, source_tool_step_ids, tool_steps)
+    return _coerce_memory_decision(result["json"], source_message_ids, source_tool_step_ids, tool_steps)
 
 
 def _apply_task_memory_decision(
@@ -697,6 +735,53 @@ def _clip_source_text(value: Any, limit: int) -> str:
         text = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
     compact = _compact_text(text, limit)
     return compact
+
+
+def _source_message_context(messages: list[dict]) -> list[dict]:
+    result = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        result.append(
+            {
+                "message_id": message.get("id"),
+                "role": message.get("role"),
+                "message_order": message.get("message_order"),
+                "created_at": message.get("created_at"),
+                "content": _clip_source_text(message.get("content"), MAX_SOURCE_SNIPPET_CHARS),
+            }
+        )
+    return result
+
+
+def _source_tool_context(tool_steps: list[dict]) -> list[dict]:
+    result = []
+    for step in tool_steps:
+        if not isinstance(step, dict):
+            continue
+        result.append(
+            {
+                "tool_step_id": step.get("id"),
+                "tool_name": step.get("tool_name"),
+                "status": step.get("status"),
+                "created_at": step.get("created_at"),
+                "input": _compact_jsonish(step.get("input"), MAX_TOOL_SNIPPET_CHARS),
+                "output": _compact_jsonish(step.get("output"), MAX_TOOL_SNIPPET_CHARS),
+                "error": _compact_jsonish(step.get("error"), MAX_TOOL_SNIPPET_CHARS),
+            }
+        )
+    return result
+
+
+def _foreground_task(tasks: list[dict]) -> dict | None:
+    for task in tasks:
+        if isinstance(task, dict) and task.get("status") == "foreground":
+            return task
+    return None
+
+
+def _paused_tasks(tasks: list[dict]) -> list[dict]:
+    return [task for task in tasks if isinstance(task, dict) and task.get("status") == "paused"]
 
 
 def _append_budgeted_line(lines: list[str], line: str, budget: dict) -> None:
@@ -920,6 +1005,8 @@ def build_layered_memory_context(
     )
     source_messages = list_messages_by_ids(db_path, source_message_ids)
     source_tool_steps = list_tool_steps_by_ids(db_path, source_tool_step_ids)
+    source_message_context = _source_message_context(source_messages)
+    source_tool_context = _source_tool_context(source_tool_steps)
 
     legacy_docs = []
     if isinstance(selected_memory, dict):
@@ -979,10 +1066,23 @@ def build_layered_memory_context(
         "recent_history_message_count": len(recent_history),
         "recent_history_messages": recent_history,
         "memory_messages": memory_messages,
+        "memory_policy": {
+            "current_input_priority": True,
+            "summaries_are_locators": True,
+            "exact_facts_require_source": True,
+            "recent_history_is_raw": True,
+            "older_history_is_recalled_only_when_selected": True,
+        },
+        "foreground_task": _foreground_task(tasks),
+        "paused_tasks": _paused_tasks(tasks)[:6],
         "context_chars": len(context_text),
         "max_context_chars": max_chars,
         "truncated": truncated,
         "tasks": tasks,
+        "recalled_blocks": selected_blocks,
+        "recalled_turns": selected_turns,
+        "source_messages": source_message_context,
+        "source_tool_steps": source_tool_context,
         "candidate_blocks": selected_blocks,
         "selected_turns": selected_turns,
         "loaded_message_ids": [message.get("id") for message in source_messages],
@@ -1004,6 +1104,128 @@ def build_layered_memory_context(
             },
             output_dir / "memory_log.jsonl",
         )
+    return result
+
+
+def _workspace_memory_from_layered_context(layered_context: dict) -> dict:
+    if not isinstance(layered_context, dict):
+        return {"status": "not_requested"}
+    return {
+        "status": layered_context.get("status"),
+        "memory_policy": layered_context.get("memory_policy", {}),
+        "foreground_task": layered_context.get("foreground_task"),
+        "paused_tasks": layered_context.get("paused_tasks", []),
+        "recalled_blocks": layered_context.get("recalled_blocks", []),
+        "recalled_turns": layered_context.get("recalled_turns", []),
+        "source_messages": layered_context.get("source_messages", []),
+        "source_tool_steps": layered_context.get("source_tool_steps", []),
+        "recent_context_turns": layered_context.get("recent_context_turns"),
+        "history_message_count": layered_context.get("history_message_count"),
+        "recent_history_message_count": layered_context.get("recent_history_message_count"),
+        "context_chars": layered_context.get("context_chars"),
+        "max_context_chars": layered_context.get("max_context_chars"),
+        "truncated": layered_context.get("truncated"),
+        "loaded_message_ids": layered_context.get("loaded_message_ids", []),
+        "loaded_tool_step_ids": layered_context.get("loaded_tool_step_ids", []),
+        "retrieval_log": layered_context.get("retrieval_log"),
+        "error": layered_context.get("error"),
+    }
+
+
+def _error_layered_memory_context(conversation_id: str, normalized_history: list[dict], exc: Exception) -> dict:
+    recent_history = normalized_history[-RECENT_CONTEXT_TURNS * 2 :]
+    return {
+        "status": "error",
+        "conversation_id": conversation_id,
+        "error": {"type": type(exc).__name__, "message": str(exc)},
+        "recent_context_turns": RECENT_CONTEXT_TURNS,
+        "history_message_count": len(normalized_history),
+        "recent_history_message_count": len(recent_history),
+        "recent_history_messages": recent_history,
+        "memory_messages": [],
+        "memory_policy": {
+            "current_input_priority": True,
+            "summaries_are_locators": True,
+            "exact_facts_require_source": True,
+            "recent_history_is_raw": True,
+            "older_history_is_recalled_only_when_selected": True,
+        },
+        "foreground_task": None,
+        "paused_tasks": [],
+        "context_chars": 0,
+        "max_context_chars": 0,
+        "truncated": False,
+        "tasks": [],
+        "recalled_blocks": [],
+        "recalled_turns": [],
+        "source_messages": [],
+        "source_tool_steps": [],
+        "candidate_blocks": [],
+        "selected_turns": [],
+        "loaded_message_ids": [],
+        "loaded_tool_step_ids": [],
+        "retrieval_log": None,
+    }
+
+
+def prepare_workspace_memory_context(
+    config_path: str,
+    conversation_id: str,
+    current_user_input: str,
+    history_messages: list[dict],
+    selected_memory: dict | None = None,
+    outdir: str | None = None,
+) -> dict:
+    """Prepare the explicit B5 context package consumed by B1 workspace mode.
+
+    B1 should keep the original runtime history intact. This package separately
+    provides recent raw history and structured memory for the workspace.
+    """
+    conversation_id = _safe_conversation_id(conversation_id)
+    normalized_history = normalize_history_messages(history_messages)
+    try:
+        layered_context = build_layered_memory_context(
+            config_path,
+            conversation_id,
+            current_user_input,
+            normalized_history,
+            selected_memory,
+            outdir,
+        )
+    except Exception as exc:
+        layered_context = _error_layered_memory_context(conversation_id, normalized_history, exc)
+
+    recent_history = layered_context.get("recent_history_messages")
+    if not isinstance(recent_history, list):
+        recent_history = normalized_history[-RECENT_CONTEXT_TURNS * 2 :]
+    recent_history = normalize_history_messages(recent_history)
+    workspace_memory = _workspace_memory_from_layered_context(layered_context)
+    result = {
+        "status": workspace_memory.get("status"),
+        "conversation_id": conversation_id,
+        "history_message_count": len(normalized_history),
+        "recent_history_message_count": len(recent_history),
+        "recent_history_messages": recent_history,
+        "workspace_memory": workspace_memory,
+        "layered_memory_context": layered_context,
+    }
+    if outdir:
+        try:
+            output_dir = Path(outdir)
+            write_json(result, output_dir / "workspace_memory_context.json")
+            append_jsonl(
+                {
+                    "timestamp": now_iso(),
+                    "operation": "prepare_workspace_memory_context",
+                    "status": result["status"],
+                    "conversation_id": conversation_id,
+                    "recent_history_message_count": len(recent_history),
+                    "context_chars": workspace_memory.get("context_chars"),
+                },
+                output_dir / "memory_log.jsonl",
+            )
+        except Exception as exc:
+            result["artifact_write_error"] = {"type": type(exc).__name__, "message": str(exc)}
     return result
 
 
