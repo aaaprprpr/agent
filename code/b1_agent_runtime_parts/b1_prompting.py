@@ -304,7 +304,7 @@ def _workspace_answer_messages(system_prompt: str, workspace: dict) -> list[dict
             "content": (
                 system_prompt
                 + "\n\n你正在生成最终回复。"
-                "只面向用户输出最终答案。不要泄露工具 JSON、内部阶段名、内部状态结构或调度过程。"
+                "只面向用户输出最终答案。不要泄露工具 JSON、内部阶段名、内部状态结构、调度过程、解析异常或内部错误细节。"
             ),
         },
         {
@@ -314,6 +314,7 @@ def _workspace_answer_messages(system_prompt: str, workspace: dict) -> list[dict
                 "如果信息不足，直接说明还需要什么；不要编造。"
                 "只有 accepted_evidence 或成功工具结果中明确出现的信息，才能声明为已经完成。"
                 "没有成功的写文件工具结果时，不得说文件已生成；没有下载接口或下载工具时，不得说已经可以直接下载；"
+                "文件生成成功时，面向用户优先说明文件名和下载入口；不要展示 generated_file_path 或本地绝对路径，除非用户明确要求本地路径。"
                 "没有成功 file_reader/search/calculator 等结果时，不得声称已经读取、搜索或计算完成。\n"
                 "只输出 AIMessage JSON 对象，顶层键只能是 content、tool_calls、control、agent_step。\n"
                 "必须满足：tool_calls=[]，control.action=finish，control.state 为 completed 或 failed，"
@@ -342,10 +343,9 @@ def _workspace_stage_failure_answer_messages(
         "missing_info": workspace["draft"].get("missing_info", []),
         "tool_attempts": _tool_attempts_summary(workspace),
         "observations": workspace["tools"].get("observations", []),
-        "runtime_issue": {
-            "failed_stage": failed_stage,
-            "issue": "内部结构化输出未通过解析；该阶段动作没有生效，不能把未执行的工具结果当作事实。",
-            "error_type": error.get("type") if isinstance(error, dict) else None,
+        "result_policy": {
+            "only_successful_tool_results_are_evidence": True,
+            "do_not_claim_completion_without_evidence": True,
         },
     }
     del raw_text
@@ -355,8 +355,8 @@ def _workspace_stage_failure_answer_messages(
             "content": (
                 system_prompt
                 + "\n\n你正在生成最终回复。"
-                "本轮内部某个阶段的结构化输出没有通过解析，但你仍然需要基于用户目标、已有证据和运行时问题给出面向用户的回复。"
-                "不要泄露工具 JSON、内部阶段名、内部状态结构或调度过程。"
+                "你需要基于用户目标、已有证据和可靠工具结果给出面向用户的回复。"
+                "不要泄露工具 JSON、内部阶段名、内部状态结构、调度过程、解析异常或内部错误细节。"
             ),
         },
         {
@@ -364,8 +364,9 @@ def _workspace_stage_failure_answer_messages(
             "content": (
                 "根据本轮状态生成最终回答。\n"
                 "如果已有工具结果或证据足够完成用户任务，就直接完成。"
-                "如果信息不足或运行时问题导致无法完成，说明真实原因和下一步需要什么。"
+                "如果信息不足或没有可靠工具结果，说明还缺什么或下一步需要什么。"
                 "不要使用固定兜底文案，不要编造已经完成的文件、下载、读取、搜索或写入结果。\n"
+                "文件生成成功时，面向用户优先说明文件名和下载入口；不要展示 generated_file_path 或本地绝对路径，除非用户明确要求本地路径。\n"
                 "只输出 AIMessage JSON 对象，顶层键只能是 content、tool_calls、control、agent_step。\n"
                 "必须满足：tool_calls=[]，control.action=finish，control.state 为 completed 或 failed，agent_step.phase=final。\n\n"
                 f"本轮状态如下：\n{_json_block(payload)}"
