@@ -566,7 +566,7 @@ def upsert_turn_memory_tags(
     turn_id: str,
     tags: dict,
     *,
-    source: str = "heuristic",
+    source: str = "unspecified",
 ) -> dict:
     if not isinstance(tags, dict):
         raise ValueError("tags must be an object")
@@ -624,7 +624,7 @@ def upsert_turn_summary(
     turn_id: str,
     summary: dict,
     *,
-    source: str = "heuristic",
+    source: str = "unspecified",
 ) -> dict:
     if not isinstance(summary, dict):
         raise ValueError("summary must be an object")
@@ -895,7 +895,7 @@ def upsert_memory_block(
                 start_turn_index,
                 end_turn_index,
                 _json_dumps(block.get("keywords") if isinstance(block.get("keywords"), list) else []),
-                block.get("source") if isinstance(block.get("source"), str) else "heuristic",
+                block.get("source") if isinstance(block.get("source"), str) else "unspecified",
                 created_at,
                 now,
             ),
@@ -987,6 +987,166 @@ def list_task_memories(db_path: str | Path, conversation_id: str, status: str | 
             "source_turn_ids_json",
         ):
             item[key[:-5]] = _json_loads(item.get(key)) or []
+        result.append(item)
+    return result
+
+
+def list_memory_blocks(
+    db_path: str | Path,
+    conversation_id: str,
+    *,
+    status: str | None = None,
+    limit: int | None = None,
+) -> list[dict]:
+    init_store(db_path)
+    sql = """
+        SELECT id, conversation_id, task_id, title, summary, status,
+               start_turn_index, end_turn_index, keywords_json, source,
+               created_at, updated_at
+        FROM memory_blocks
+        WHERE conversation_id = ?
+    """
+    params: list[Any] = [conversation_id]
+    if status is not None:
+        sql += " AND status = ?"
+        params.append(status)
+    sql += " ORDER BY end_turn_index DESC, updated_at DESC"
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(max(1, int(limit)))
+    with _connect(db_path) as connection:
+        rows = connection.execute(sql, params).fetchall()
+    result = []
+    for row in rows:
+        item = dict(row)
+        item["keywords"] = _json_loads(item.get("keywords_json")) or []
+        result.append(item)
+    return result
+
+
+def list_turn_summaries(
+    db_path: str | Path,
+    conversation_id: str,
+    *,
+    block_ids: list[str] | None = None,
+    turn_ids: list[str] | None = None,
+    exclude_turn_ids: list[str] | None = None,
+    limit: int | None = None,
+) -> list[dict]:
+    init_store(db_path)
+    if block_ids is not None and not block_ids:
+        return []
+    if turn_ids is not None and not turn_ids:
+        return []
+    sql = """
+        SELECT t.id AS turn_id, t.turn_index, t.run_id,
+               t.user_message_id, t.assistant_message_id, t.status AS turn_status,
+               s.summary, s.keywords_json, s.facts_json, s.decisions_json,
+               s.corrections_json, s.tool_refs_json, s.artifact_refs_json,
+               s.source_message_ids_json, s.source_tool_step_ids_json,
+               s.source AS summary_source,
+               tags.current_task_relevance, tags.long_term_value,
+               tags.has_explicit_fact, tags.has_decision, tags.has_user_correction,
+               tags.allow_compress, tags.allow_drop, tags.noise_score,
+               tags.labels_json, tags.source AS tags_source,
+               bt.block_id, bt.position AS block_position
+        FROM conversation_turns AS t
+        JOIN turn_summaries AS s ON s.turn_id = t.id
+        LEFT JOIN turn_memory_tags AS tags ON tags.turn_id = t.id
+        LEFT JOIN memory_block_turns AS bt ON bt.turn_id = t.id
+        WHERE t.conversation_id = ?
+    """
+    params: list[Any] = [conversation_id]
+    if block_ids is not None:
+        sql += " AND bt.block_id IN (%s)" % ",".join("?" for _ in block_ids)
+        params.extend(block_ids)
+    if turn_ids is not None:
+        sql += " AND t.id IN (%s)" % ",".join("?" for _ in turn_ids)
+        params.extend(turn_ids)
+    if exclude_turn_ids:
+        sql += " AND t.id NOT IN (%s)" % ",".join("?" for _ in exclude_turn_ids)
+        params.extend(exclude_turn_ids)
+    sql += " ORDER BY t.turn_index DESC"
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(max(1, int(limit)))
+    with _connect(db_path) as connection:
+        rows = connection.execute(sql, params).fetchall()
+    result = []
+    for row in rows:
+        item = dict(row)
+        for key in (
+            "keywords_json",
+            "facts_json",
+            "decisions_json",
+            "corrections_json",
+            "tool_refs_json",
+            "artifact_refs_json",
+            "source_message_ids_json",
+            "source_tool_step_ids_json",
+            "labels_json",
+        ):
+            item[key[:-5]] = _json_loads(item.get(key)) or []
+        for key in (
+            "has_explicit_fact",
+            "has_decision",
+            "has_user_correction",
+            "allow_compress",
+            "allow_drop",
+        ):
+            if item.get(key) is not None:
+                item[key] = bool(item[key])
+        result.append(item)
+    return result
+
+
+def list_messages_by_ids(db_path: str | Path, message_ids: list[str]) -> list[dict]:
+    if not message_ids:
+        return []
+    init_store(db_path)
+    placeholders = ",".join("?" for _ in message_ids)
+    with _connect(db_path) as connection:
+        rows = connection.execute(
+            f"""
+            SELECT id, conversation_id, role, content, message_order, run_id,
+                   is_trivial, token_count, metadata_json, created_at
+            FROM conversation_messages
+            WHERE id IN ({placeholders})
+            ORDER BY message_order ASC
+            """,
+            message_ids,
+        ).fetchall()
+    result = []
+    for row in rows:
+        item = dict(row)
+        item["metadata"] = _json_loads(item.get("metadata_json"))
+        result.append(item)
+    return result
+
+
+def list_tool_steps_by_ids(db_path: str | Path, tool_step_ids: list[str]) -> list[dict]:
+    if not tool_step_ids:
+        return []
+    init_store(db_path)
+    placeholders = ",".join("?" for _ in tool_step_ids)
+    with _connect(db_path) as connection:
+        rows = connection.execute(
+            f"""
+            SELECT id, conversation_id, assistant_message_id, run_id, step_index,
+                   tool_call_id, tool_name, input_json, output_json, status,
+                   error_json, latency_ms, created_at
+            FROM tool_steps
+            WHERE id IN ({placeholders})
+            ORDER BY created_at ASC, step_index ASC
+            """,
+            tool_step_ids,
+        ).fetchall()
+    result = []
+    for row in rows:
+        item = dict(row)
+        item["input"] = _json_loads(item.get("input_json"))
+        item["output"] = _json_loads(item.get("output_json"))
+        item["error"] = _json_loads(item.get("error_json"))
         result.append(item)
     return result
 
