@@ -220,3 +220,10 @@ tool/skill 第一批增强：
 - 保留一个最小 conversation memory 样例：`mem_conversation_conv_000`，匹配 `data/runtime_input.json` 中的 `selected_memory_ids`。
 - 调整 `.gitignore`：允许追踪 `memory/memory_index.json` 和 `memory/conversations/conv_000.md`，继续忽略 SQLite、运行时会话 memory 和其他临时 memory 文件。
 - 本次只做静态校验；未启动项目、未跑训练、未跑测试、未调用模型。
+
+# -------------------------7.13 五模块验收辅助文档------------------------------
+
+- 重新静态阅读 `B方向_Agent智能体_说明文档.docx`、`2026实训B方向.pptx`、`最后验收安排.png`、当前 README/验收资料和 B1-B5 主要代码、配置、样例输入。
+- 新增 `五模块验收辅助文档.md`，按 B1-B5 分别整理验收展示方式、证据文件、命令、基础/进阶要求对照、老师可能追问和回答要点。
+- 文档中特别说明 B5 当前主线是 SQLite 分层记忆，`memory_index.json` 仅作为基础验收和旧命令兼容，不把旧 markdown memory 误说成主存储。
+- 本次只做文档整理；未启动项目、未跑训练、未跑测试、未调用模型。
