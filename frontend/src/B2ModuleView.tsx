@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { AlertCircle, CheckCircle, Circle, Play, RefreshCw, Wrench, XCircle } from 'lucide-react'
+import { AlertCircle, CheckCircle, Circle, Play, Wrench, XCircle } from 'lucide-react'
 
 import { API_BASE } from './appConfig'
 import { fetchB2Skills, runB2SkillPreview } from './backendApi'
@@ -323,22 +323,13 @@ function SkillCatalog({
   state,
   selectedTool,
   onSelect,
-  onRefresh,
 }: {
   state: SkillState
   selectedTool?: string
   onSelect?: (tool: string) => void
-  onRefresh: () => void
 }) {
   return (
     <>
-      <div className="b2-panel-toolbar">
-        <span>{state.toolset}</span>
-        <button type="button" onClick={onRefresh} disabled={state.loading}>
-          <RefreshCw size={13} aria-hidden="true" />
-          刷新
-        </button>
-      </div>
       {state.error ? (
         <p className="b2-error-text">
           <AlertCircle size={14} aria-hidden="true" />
@@ -356,17 +347,13 @@ function SkillCatalog({
 function ObservationPanel({
   messages,
   skills,
-  onRefreshSkills,
 }: {
   messages: ChatMessage[]
   skills: SkillState
-  onRefreshSkills: () => void
 }) {
   const executions = useMemo(() => collectExecutions(messages), [messages])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const selected = executions.find((item) => item.id === selectedId) ?? executions[0]
-  const successCount = executions.filter((item) => statusClass(item.status) === 'success').length
-  const errorCount = executions.filter((item) => statusClass(item.status) === 'error').length
 
   return (
     <div className="b2-module">
@@ -374,12 +361,6 @@ function ObservationPanel({
         <div>
           <span>B2</span>
           <h2>Skill工具函数模块</h2>
-        </div>
-        <div className="b2-summary">
-          <span>{executions.length} 次执行</span>
-          <span>{successCount} 成功</span>
-          <span>{errorCount} 失败</span>
-          <span>{skills.tools.length} skills</span>
         </div>
       </div>
 
@@ -458,7 +439,7 @@ function ObservationPanel({
 
         <section className="b2-panel b2-tools-panel">
           <h3>真实 Skill 清单</h3>
-          <SkillCatalog state={skills} onRefresh={onRefreshSkills} />
+          <SkillCatalog state={skills} />
         </section>
       </div>
     </div>
@@ -525,10 +506,8 @@ function DemoResult({ response }: { response: B2SkillRunResponse | null }) {
 
 function DemoPanel({
   skills,
-  onRefreshSkills,
 }: {
   skills: SkillState
-  onRefreshSkills: () => void
 }) {
   const initialTool = skills.tools[0]?.name ?? 'calculator'
   const [selectedTool, setSelectedTool] = useState(initialTool)
@@ -585,17 +564,12 @@ function DemoPanel({
           <span>B2</span>
           <h2>Skill 单模块演示</h2>
         </div>
-        <div className="b2-summary">
-          <span>{skills.toolset}</span>
-          <span>{skills.tools.length} skills</span>
-          <span>{response ? getRecordString(resultRecord(response), 'status') : '未执行'}</span>
-        </div>
       </div>
 
       <div className="b2-demo-grid">
         <section className="b2-panel b2-tools-panel">
           <h3>选择工具</h3>
-          <SkillCatalog state={skills} selectedTool={selectedTool} onSelect={selectTool} onRefresh={onRefreshSkills} />
+          <SkillCatalog state={skills} selectedTool={selectedTool} onSelect={selectTool} />
         </section>
 
         <section className="b2-panel b2-demo-form">
@@ -677,8 +651,8 @@ export function B2ModuleView({ mode, messages }: B2ModuleViewProps) {
   }, [])
 
   return mode === 'observe' ? (
-    <ObservationPanel messages={messages} skills={skills} onRefreshSkills={() => void loadSkills()} />
+    <ObservationPanel messages={messages} skills={skills} />
   ) : (
-    <DemoPanel skills={skills} onRefreshSkills={() => void loadSkills()} />
+    <DemoPanel skills={skills} />
   )
 }
