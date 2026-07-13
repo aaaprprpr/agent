@@ -1,4 +1,4 @@
-import type { BackendConversation, BackendMessage, UploadedFilePayload } from './types'
+import type { BackendConversation, BackendMessage, ConversationPrompt, UploadedFilePayload } from './types'
 
 type StreamResponse = Response & { body: ReadableStream<Uint8Array> }
 
@@ -33,6 +33,32 @@ export async function deleteBackendConversation(apiBase: string, conversationId:
   }
 }
 
+export async function fetchConversationPrompt(apiBase: string, conversationId: string) {
+  const response = await fetch(apiUrl(apiBase, `/api/conversations/${encodeURIComponent(conversationId)}/prompt`))
+  if (!response.ok) return null
+  return (await response.json()) as ConversationPrompt
+}
+
+export async function fetchDefaultPrompt(apiBase: string) {
+  const response = await fetch(apiUrl(apiBase, '/api/prompts/default'))
+  if (!response.ok) return null
+  return (await response.json()) as ConversationPrompt
+}
+
+export async function updateBackendConversationPrompt(apiBase: string, conversationId: string, content: string) {
+  const response = await fetch(apiUrl(apiBase, `/api/conversations/${encodeURIComponent(conversationId)}/prompt`), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content }),
+  })
+  if (!response.ok) {
+    const payload = await jsonOrNull(response)
+    const detail = payload?.detail ?? `HTTP ${response.status}`
+    throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
+  }
+  return (await response.json()) as ConversationPrompt
+}
+
 export async function requestConversationCancel(apiBase: string, conversationId: string) {
   const response = await fetch(apiUrl(apiBase, `/api/conversations/${encodeURIComponent(conversationId)}/cancel`), {
     method: 'POST',
@@ -46,6 +72,7 @@ export async function startRunStream(
   body: {
     user_input: string
     conversation_id: string
+    system_prompt?: string
     uploaded_file_payloads: UploadedFilePayload[]
   },
   signal: AbortSignal,

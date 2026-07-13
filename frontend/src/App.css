@@ -2320,7 +2320,113 @@
 .composer-main {
   position: relative;
   min-height: 50px;
-  padding: 13px 54px 13px 54px;
+  padding: 13px 54px 13px 94px;
+}
+
+.system-prompt-panel {
+  padding: 12px 12px 10px;
+  border-bottom: 1px solid #eeeeee;
+}
+
+.system-prompt-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.system-prompt-head strong {
+  color: #333;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.system-prompt-head span {
+  color: #888;
+  font-size: 12px;
+}
+
+.system-prompt-editor {
+  position: relative;
+}
+
+.system-prompt-editor textarea {
+  width: 100%;
+  min-height: 150px;
+  max-height: 260px;
+  resize: vertical;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #d4d4d4 transparent;
+  border: 1px solid #e1e1e1;
+  border-radius: 10px;
+  background: #fafafa;
+  color: #222;
+  padding: 10px 12px 48px;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.6;
+  outline: none;
+}
+
+.system-prompt-editor textarea::-webkit-scrollbar {
+  width: 7px;
+}
+
+.system-prompt-editor textarea::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.system-prompt-editor textarea::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: #d4d4d4;
+}
+
+.system-prompt-editor textarea:focus {
+  border-color: #c9c9c9;
+  background: #fff;
+}
+
+.system-prompt-save {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  height: 30px;
+  min-width: 58px;
+  border: 1px solid #d6d6d6;
+  border-radius: 8px;
+  background: #fff;
+  color: #222;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.16s ease, border-color 0.16s ease;
+}
+
+.system-prompt-save:hover {
+  background: #f3f3f3;
+  border-color: #c8c8c8;
+}
+
+.prompt-toggle-button {
+  position: absolute;
+  left: 10px;
+  bottom: 7px;
+  width: 30px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #777;
+  cursor: pointer;
+  transition: background 0.16s ease, color 0.16s ease;
+}
+
+.prompt-toggle-button:hover {
+  background: #f0f0f0;
+  color: #222;
 }
 
 .composer-main textarea {
@@ -2381,7 +2487,7 @@
 
 .tool-button {
   position: absolute;
-  left: 10px;
+  left: 46px;
   bottom: 7px;
 }
 

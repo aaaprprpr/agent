@@ -20,10 +20,12 @@ if str(PROJECT_ROOT) not in sys.path:
 from backend.api_models import (  # noqa: E402
     ConversationDetail,
     ConversationMessage,
+    ConversationPromptResponse,
     ConversationSummary,
     DeleteConversationResponse,
     RunRequest,
     RunResponse,
+    UpdateConversationPromptRequest,
     UploadRequest,
     UploadResponse,
     UploadedFileRef,
@@ -44,11 +46,13 @@ from backend.conversation_utils import (  # noqa: E402
 )
 from backend.settings import (  # noqa: E402
     CODE_DIR,
+    DEFAULT_SYSTEM_PROMPTS_PATH,
     HOST,
     MEMORY_CONFIG,
     MODEL_CONFIG,
     OUTPUT_ROOT,
     PORT,
+    PROMPT_STORE_PATH,
     RUNTIME_BASE,
     SYSTEM_PROMPT_PATH,
     TOOLS_CONFIG,
@@ -69,6 +73,12 @@ from b1_agent_runtime import resume_stream as resume_agent_runtime_stream  # noq
 from b1_agent_runtime import run as run_agent_runtime  # noqa: E402
 from b1_agent_runtime import run_stream as run_agent_runtime_stream  # noqa: E402
 from common.identifiers import validate_conversation_id  # noqa: E402
+from common.prompt_store import (  # noqa: E402
+    delete_conversation_prompt,
+    default_system_prompt,
+    get_conversation_prompt,
+    update_conversation_prompt,
+)
 from b5_memory import (  # noqa: E402
     append_conversation_message,
     clear_message_tool_steps,
@@ -162,12 +172,27 @@ def _build_runtime_payload(
     # legacy markdown memory still flows through B1 when explicitly selected.
     selected_memory_ids = request.selected_memory_ids
     use_global_memory = request.use_global_memory
+    prompt_text = request.system_prompt.strip() if isinstance(request.system_prompt, str) and request.system_prompt.strip() else None
+    if prompt_text is None:
+        prompt_text = get_conversation_prompt(
+            conversation_id,
+            PROMPT_STORE_PATH,
+            DEFAULT_SYSTEM_PROMPTS_PATH,
+        )["content"]
+    else:
+        update_conversation_prompt(
+            conversation_id,
+            prompt_text,
+            PROMPT_STORE_PATH,
+            DEFAULT_SYSTEM_PROMPTS_PATH,
+        )
     return {
         "conversation_id": conversation_id,
         "user_input": user_input,
         "history_messages": history_messages,
         "input_images": input_images,
         "system_prompt_path": SYSTEM_PROMPT_PATH,
+        "system_prompt": prompt_text,
         "selected_memory_ids": selected_memory_ids,
         "use_global_memory": use_global_memory,
         "toolset": request.toolset,
@@ -996,12 +1021,53 @@ def delete_conversation(conversation_id: str) -> DeleteConversationResponse:
         raise HTTPException(status_code=404, detail="conversation not found")
     upload_dir_deleted = delete_child_directory(UPLOAD_ROOT, conversation_id)
     output_dir_deleted = delete_child_directory(OUTPUT_ROOT, conversation_id)
+    delete_conversation_prompt(conversation_id, PROMPT_STORE_PATH)
     return DeleteConversationResponse(
         conversation_id=conversation_id,
         deleted=bool(record.get("deleted")),
         upload_dir_deleted=upload_dir_deleted,
         output_dir_deleted=output_dir_deleted,
     )
+
+
+@app.get("/api/conversations/{conversation_id}/prompt", response_model=ConversationPromptResponse)
+def get_conversation_system_prompt(conversation_id: str) -> ConversationPromptResponse:
+    safe_conversation_id = _safe_conversation_id(conversation_id)
+    prompt = get_conversation_prompt(
+        safe_conversation_id,
+        PROMPT_STORE_PATH,
+        DEFAULT_SYSTEM_PROMPTS_PATH,
+    )
+    return ConversationPromptResponse(**prompt)
+
+
+@app.get("/api/prompts/default", response_model=ConversationPromptResponse)
+def get_default_system_prompt() -> ConversationPromptResponse:
+    return ConversationPromptResponse(
+        conversation_id="__default__",
+        prompt_id="default_local_tool_agent",
+        content=default_system_prompt(DEFAULT_SYSTEM_PROMPTS_PATH),
+        default_content=default_system_prompt(DEFAULT_SYSTEM_PROMPTS_PATH),
+        locked_default=True,
+    )
+
+
+@app.put("/api/conversations/{conversation_id}/prompt", response_model=ConversationPromptResponse)
+def update_conversation_system_prompt(
+    conversation_id: str,
+    request: UpdateConversationPromptRequest,
+) -> ConversationPromptResponse:
+    safe_conversation_id = _safe_conversation_id(conversation_id)
+    try:
+        prompt = update_conversation_prompt(
+            safe_conversation_id,
+            request.content,
+            PROMPT_STORE_PATH,
+            DEFAULT_SYSTEM_PROMPTS_PATH,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ConversationPromptResponse(**prompt)
 
 
 @app.get("/api/messages/{message_id}/tool-steps")

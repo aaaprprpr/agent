@@ -48,6 +48,14 @@ export type UploadedFilePayload = {
   content_base64: string
 }
 
+export type ConversationPrompt = {
+  conversation_id: string
+  prompt_id: string
+  content: string
+  default_content: string
+  locked_default: boolean
+}
+
 export type HistoryItem = {
   id: string
   title: string

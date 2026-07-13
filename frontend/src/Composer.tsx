@@ -1,5 +1,5 @@
 import type { ChangeEventHandler, KeyboardEventHandler, RefObject } from 'react'
-import { ArrowUp, Square } from 'lucide-react'
+import { ArrowUp, ChevronDown, ChevronUp, Square } from 'lucide-react'
 
 import { formatSize } from './fileDataUtils'
 import { FileTypeIcon } from './fileUtils'
@@ -21,6 +21,11 @@ export function Composer({
   isRunning,
   isStopping,
   onStop,
+  promptOpen,
+  systemPrompt,
+  onPromptToggle,
+  onPromptSave,
+  onSystemPromptChange,
 }: {
   attachments: Attachment[]
   dragActive: boolean
@@ -36,6 +41,11 @@ export function Composer({
   onRemoveAttachment: (id: number) => void
   onSend: () => void
   onStop: () => void
+  promptOpen: boolean
+  systemPrompt: string
+  onPromptToggle: () => void
+  onPromptSave: () => void
+  onSystemPromptChange: (value: string) => void
 }) {
   const actionLabel = isStopping ? '正在终止' : isRunning ? '终止回答' : '发送'
 
@@ -43,6 +53,25 @@ export function Composer({
     <section className="composer-wrap">
       {dragActive && <div className="drop-hint">释放文件</div>}
       <div className="composer">
+        {promptOpen && (
+          <div className="system-prompt-panel">
+            <div className="system-prompt-head">
+              <strong>系统提示词</strong>
+              <span>当前对话副本</span>
+            </div>
+            <div className="system-prompt-editor">
+              <textarea
+                value={systemPrompt}
+                spellCheck={false}
+                placeholder="正在读取当前对话的系统提示词..."
+                onChange={(event) => onSystemPromptChange(event.target.value)}
+              />
+              <button className="system-prompt-save" type="button" onClick={onPromptSave}>
+                保存
+              </button>
+            </div>
+          </div>
+        )}
         {attachments.length > 0 && <div className="attachment-row">
           {attachments.map((file) => <div className="attachment-chip" key={file.id}>
             <FileTypeIcon name={file.name} />
@@ -51,6 +80,15 @@ export function Composer({
           </div>)}
         </div>}
         <div className="composer-main">
+          <button
+            className="prompt-toggle-button"
+            type="button"
+            aria-label={promptOpen ? '收起系统提示词' : '展开系统提示词'}
+            title={promptOpen ? '收起系统提示词' : '展开系统提示词'}
+            onClick={onPromptToggle}
+          >
+            {promptOpen ? <ChevronDown size={16} aria-hidden="true" /> : <ChevronUp size={16} aria-hidden="true" />}
+          </button>
           <button className="tool-button" type="button" aria-label="添加文件" onClick={() => fileRef.current?.click()}>
             <span aria-hidden="true">＋</span>
           </button>
