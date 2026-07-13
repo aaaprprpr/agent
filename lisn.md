@@ -275,3 +275,8 @@ tool/skill 第一批增强：
 - 前端 B3 观察页保留从当前对话 toolDetails 读取真实闭环的逻辑，并补充真实 schema 概览；演示页提供计算、文件读取、多工具、缺参错误、未知工具和 Markdown 文件生成等 AIMessage 样例，也允许手动编辑 JSON 后真实调用 B3，非法 tool_calls 会保留给 B3 校验并返回 ToolMessage error。
 - 页面明确区分不会调用 B4 模型；文件生成类样例会真实产生 demo 输出。支持展示 ToolMessage、SkillResult、schema、错误和 artifact 下载入口。
 - 本次未启动项目、未跑训练、未跑测试、未执行工具；只做静态 diff 检查。需要你前端实际复测 B3 观察页和演示页各样例。
+
+# -------------------------7.13 B5 块级压缩展示溢出修正------------------------------
+
+- 最小范围调整 B5 验收页块级压缩卡片样式：给 block card 内容列和长文本增加 `min-width: 0`、`overflow-wrap: anywhere`、`word-break: break-word`，避免 `task:...`、`project:...` 等长检索 key 冲出边框。
+- 不改 B5 数据、后端 API、召回/压缩逻辑和页面结构；本次未启动项目、未跑测试，只做静态样式检查。

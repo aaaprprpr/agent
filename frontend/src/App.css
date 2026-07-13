@@ -2029,6 +2029,21 @@
   background: #f4f4f4;
 }
 
+.b5-block-card > div:last-child {
+  min-width: 0;
+}
+
+.b5-block-card header {
+  align-items: flex-start;
+}
+
+.b5-block-card header strong,
+.b5-block-card small,
+.b5-block-card p {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 .b5-block-range {
   position: relative;
   min-height: 100%;
