@@ -4,12 +4,9 @@ import {
   Archive,
   Database,
   FileText,
-  Layers,
   Play,
   RefreshCw,
   Search,
-  Split,
-  TextSelect,
 } from 'lucide-react'
 
 import { API_BASE } from './appConfig'
@@ -126,29 +123,17 @@ function ErrorState({ message, onRefresh }: { message: string; onRefresh: () => 
   )
 }
 
-function CountPill({ label, value }: { label: string; value: number }) {
-  return (
-    <span>
-      <strong>{value}</strong>
-      {label}
-    </span>
-  )
-}
-
 function SnapshotHeader({
   title,
   modeLabel,
-  snapshot,
   loading,
   onRefresh,
 }: {
   title: string
   modeLabel: string
-  snapshot: B5MemorySnapshot | null
   loading: boolean
   onRefresh: () => void
 }) {
-  const counts = snapshot?.counts ?? {}
   return (
     <header className="b5-head">
       <div>
@@ -162,13 +147,6 @@ function SnapshotHeader({
           刷新
         </button>
       </div>
-      {snapshot && (
-        <div className="b5-summary">
-          <CountPill label="轮" value={counts.turns ?? 0} />
-          <CountPill label="块压缩" value={counts.memory_blocks ?? 0} />
-          <CountPill label="工具引用" value={counts.tool_steps ?? 0} />
-        </div>
-      )}
     </header>
   )
 }
@@ -453,7 +431,6 @@ function ObservationPanel({
       <SnapshotHeader
         title="记忆文档存储与查找模块"
         modeLabel="只读观察"
-        snapshot={snapshot}
         loading={loading}
         onRefresh={onRefresh}
       />
@@ -492,8 +469,6 @@ function ObservationPanel({
               <Search size={15} strokeWidth={1.9} aria-hidden="true" />
               <strong>召回与上下文</strong>
             </div>
-
-            <RecallFlow />
 
             <div className="b5-recall-detail">
               <section className="b5-hit-list">
@@ -550,18 +525,6 @@ function ObservationPanel({
           </section>
         </div>
       )}
-    </div>
-  )
-}
-
-function RecallFlow() {
-  return (
-    <div className="b5-recall-flow">
-      <div><TextSelect size={15} /><strong>当前输入</strong><span>query text</span></div>
-      <div><Layers size={15} /><strong>候选池</strong><span>blocks / turns</span></div>
-      <div><Search size={15} /><strong>召回命中</strong><span>score / rerank</span></div>
-      <div><Split size={15} /><strong>源证据</strong><span>messages / steps</span></div>
-      <div><Database size={15} /><strong>B1 上下文</strong><span>memory_messages</span></div>
     </div>
   )
 }
@@ -741,7 +704,6 @@ function DemoPanel({
       <SnapshotHeader
         title="B5 真实召回演示"
         modeLabel="真实运行"
-        snapshot={state.snapshot}
         loading={state.loading}
         onRefresh={() => {
           void onRefresh()

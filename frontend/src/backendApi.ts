@@ -3,7 +3,8 @@ import type {
   B5RecallPreviewResponse,
   BackendConversation,
   BackendMessage,
-  ConversationPrompt, UploadedFilePayload,
+  ConversationPrompt,
+  UploadedFilePayload,
 } from './types'
 
 type StreamResponse = Response & { body: ReadableStream<Uint8Array> }
@@ -37,6 +38,32 @@ export async function deleteBackendConversation(apiBase: string, conversationId:
     const detail = payload?.detail ?? `HTTP ${response.status}`
     throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
   }
+}
+
+export async function fetchDefaultPrompt(apiBase: string) {
+  const response = await fetch(apiUrl(apiBase, '/api/prompts/default'))
+  if (!response.ok) return null
+  return (await response.json()) as ConversationPrompt
+}
+
+export async function fetchConversationPrompt(apiBase: string, conversationId: string) {
+  const response = await fetch(apiUrl(apiBase, `/api/conversations/${encodeURIComponent(conversationId)}/prompt`))
+  if (!response.ok) return null
+  return (await response.json()) as ConversationPrompt
+}
+
+export async function updateBackendConversationPrompt(apiBase: string, conversationId: string, content: string) {
+  const response = await fetch(apiUrl(apiBase, `/api/conversations/${encodeURIComponent(conversationId)}/prompt`), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content }),
+  })
+  if (!response.ok) {
+    const payload = await jsonOrNull(response)
+    const detail = payload?.detail ?? `HTTP ${response.status}`
+    throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
+  }
+  return (await response.json()) as ConversationPrompt
 }
 
 export async function fetchB5MemorySnapshot(apiBase: string, conversationId: string) {
