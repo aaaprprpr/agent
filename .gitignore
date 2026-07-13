@@ -1,4 +1,5 @@
 __pycache__/
+.venv
 *.py[cod]
 outputs/_test_*/
 outputs/tmp*/
@@ -6,13 +7,11 @@ models/*
 !models/.gitkeep
 
 outputs/
-memory/*
-!memory/memory_index.json
-!memory/conversations/
-memory/conversations/*
-!memory/conversations/conv_000.md
+memory
+memory/conversations
+memory/memory_index.json
 outputs/full_demo
-
+.gitignore
 .env
-
 data/uploads/
+configs/model.yaml
