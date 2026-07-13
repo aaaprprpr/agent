@@ -398,6 +398,19 @@
   align-items: start;
 }
 
+.b1-demo-control-grid {
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(500px, 620px) minmax(520px, 1fr);
+  grid-template-areas:
+    "graph flow"
+    "state flow"
+    "workspace flow"
+    "composer composer";
+  gap: 8px;
+  align-items: start;
+}
+
 .b1-panel {
   min-width: 0;
   border: 1px solid #e5e5e5;
@@ -411,6 +424,252 @@
   color: #333;
   font-size: 14px;
   font-weight: 650;
+}
+
+.b1-graph-panel {
+  grid-area: graph;
+}
+
+.b1-state-panel {
+  grid-area: state;
+}
+
+.b1-flow-demo-panel {
+  grid-area: flow;
+  min-height: calc(100svh - 190px);
+  align-self: stretch;
+}
+
+.b1-demo-workspace-panel {
+  grid-area: workspace;
+}
+
+.b1-demo-control-grid > .composer-wrap {
+  grid-area: composer;
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  margin: 0 -10px -10px;
+}
+
+.b1-graph-shell {
+  min-width: 0;
+}
+
+.b1-topology-svg {
+  display: block;
+  width: 100%;
+  max-width: 620px;
+  height: auto;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.b1-svg-bg {
+  fill: #fafafa;
+}
+
+.b1-svg-grid {
+  fill: transparent;
+  stroke: rgba(0, 0, 0, 0.035);
+}
+
+.b1-svg-edges path {
+  fill: none;
+  stroke: #d2d2d2;
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+.b1-svg-node rect {
+  fill: rgba(255, 255, 255, 0.97);
+  stroke: #d8d8d8;
+  stroke-width: 1.2;
+}
+
+.b1-svg-node.external rect {
+  fill: #f5f5f5;
+  stroke-dasharray: 5 4;
+}
+
+.b1-svg-node.active rect {
+  fill: #222;
+  stroke: #222;
+}
+
+.b1-svg-node.active-soft rect {
+  stroke: #9d9d9d;
+}
+
+.b1-svg-node-title {
+  fill: #222;
+  font-size: 14px;
+  font-weight: 700;
+  text-anchor: middle;
+}
+
+.b1-svg-node-sub {
+  fill: #777;
+  font-size: 10px;
+  text-anchor: middle;
+}
+
+.b1-svg-node.active .b1-svg-node-title {
+  fill: #fff;
+}
+
+.b1-svg-node.active .b1-svg-node-sub {
+  fill: #d8d8d8;
+}
+
+.b1-svg-bubble rect {
+  fill: #222;
+  stroke: none;
+}
+
+.b1-svg-bubbles {
+  pointer-events: none;
+}
+
+.b1-svg-bubble text {
+  fill: #fff;
+  font-size: 10px;
+  font-weight: 650;
+  text-anchor: middle;
+  pointer-events: none;
+}
+
+.b1-stage-strip {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 5px;
+  margin: 0;
+}
+
+.b1-stage-strip span {
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: #f1f1f1;
+  color: #777;
+  font-size: 11px;
+}
+
+.b1-stage-strip span.active {
+  background: #222;
+  color: #fff;
+}
+
+.b1-flow-current-action {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border-radius: 8px;
+  background: #f7f7f7;
+}
+
+.b1-flow-current-action strong,
+.b1-flow-action-log header span,
+.b1-flow-action-log article strong {
+  color: #222;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.b1-flow-current-action p,
+.b1-flow-action-log article p {
+  margin: 0;
+  color: #555;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.b1-flow-current-action .b1-json {
+  max-height: 260px;
+  margin: 0;
+  background: #fff;
+}
+
+.b1-flow-action-log {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.b1-flow-action-log header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.b1-flow-action-log header em {
+  color: #777;
+  font-size: 12px;
+  font-style: normal;
+}
+
+.b1-flow-action-log article {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  gap: 10px;
+  padding: 9px 10px;
+  border-radius: 8px;
+  background: #f8f8f8;
+}
+
+.b1-flow-action-log article.active {
+  background: #efefef;
+}
+
+.b1-flow-action-log article > span {
+  min-width: 0;
+  align-self: start;
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: #222;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 650;
+  text-align: center;
+}
+
+.b1-demo-workspace-build {
+  display: grid;
+  gap: 7px;
+}
+
+.b1-demo-workspace-step {
+  margin: 0;
+  border-left: 3px solid #e1e1e1;
+  opacity: 0.62;
+}
+
+.b1-demo-workspace-step.filled {
+  border-left-color: #999;
+  opacity: 1;
+}
+
+.b1-demo-workspace-step.current {
+  border-left-color: #222;
+  background: #f3f3f3;
+}
+
+.b1-demo-workspace-step p {
+  margin: 0;
+  color: #444;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.b1-demo-workspace-step span {
+  display: block;
+  margin-top: 5px;
+  color: #777;
+  font-size: 11px;
 }
 
 .b1-track {
@@ -687,6 +946,16 @@
   gap: 12px;
 }
 
+.b1-workspace-real {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.b1-workspace-real + .b1-workspace-section {
+  margin-top: 2px;
+}
+
 .b1-workspace-section {
   padding-top: 12px;
   border-top: 1px solid #ededed;
@@ -730,6 +999,10 @@
   color: #666;
 }
 
+.b1-fallback-section {
+  opacity: 0.86;
+}
+
 .b1-workspace-tool-list {
   display: flex;
   flex-direction: column;
@@ -754,6 +1027,12 @@
   font-size: 12px;
   line-height: 1.55;
   white-space: pre-wrap;
+}
+
+.b1-workspace .b1-json {
+  max-height: none;
+  overflow: visible;
+  margin-top: 9px;
 }
 
 .b1-demo-form {
@@ -2637,6 +2916,7 @@
 }
 
 @media (max-width: 1180px) {
+  .b1-demo-control-grid,
   .b2-grid,
   .b2-demo-grid,
   .b3-observe-grid,
@@ -2645,6 +2925,15 @@
   .b5-layout,
   .b5-demo-workbench {
     grid-template-columns: 1fr;
+  }
+
+  .b1-demo-control-grid {
+    grid-template-areas:
+      "graph"
+      "state"
+      "workspace"
+      "flow"
+      "composer";
   }
 
   .b5-turn-row {
