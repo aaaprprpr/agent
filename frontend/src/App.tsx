@@ -1,7 +1,9 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { ChangeEvent, DragEvent, KeyboardEvent } from 'react'
-import { Trash2 } from 'lucide-react'
 import { API_BASE, ACTIVE_CONVERSATION_KEY } from './appConfig'
+import { DEFAULT_MODULE_MODES, MODULE_VIEWS } from './appNavigation'
+import type { ActiveViewId, ModuleMode, ModuleViewId } from './appNavigation'
+import { AppSidebar } from './AppSidebar'
 import {
   deleteBackendConversation,
   fetchConversationPrompt,
@@ -29,31 +31,8 @@ import {
 } from './toolTraceUtils'
 import { buildUploadPayloads } from './uploadUtils'
 import type { Attachment, ChatMessage, HistoryItem, RunStreamEvent } from './types'
-import { B1ModuleView } from './B1ModuleView'
-import { B2ModuleView } from './B2ModuleView'
-import { B3ModuleView } from './B3ModuleView'
-import { B5ModuleView } from './B5ModuleView'
+import { ModuleWorkspace } from './ModuleWorkspace'
 import './App.css'
-
-const MODULE_VIEWS = [
-  { id: 'b1', label: 'B1', title: 'Agent运行与消息管理模块' },
-  { id: 'b2', label: 'B2', title: 'Skill工具函数模块' },
-  { id: 'b3', label: 'B3', title: '说明生成与工具调用模块' },
-  { id: 'b4', label: 'B4', title: 'Agent LLM决策模块' },
-  { id: 'b5', label: 'B5', title: '记忆文档存储与查找模块' },
-] as const
-
-type ModuleViewId = (typeof MODULE_VIEWS)[number]['id']
-type ActiveViewId = 'chat' | ModuleViewId
-type ModuleMode = 'observe' | 'demo'
-
-const DEFAULT_MODULE_MODES: Record<ModuleViewId, ModuleMode> = {
-  b1: 'observe',
-  b2: 'observe',
-  b3: 'observe',
-  b4: 'observe',
-  b5: 'observe',
-}
 
 function App() {
   const [activeView, setActiveView] = useState<ActiveViewId>('chat')
@@ -878,93 +857,38 @@ function App() {
         handleDrop(event)
       }}
     >
-      <aside className={`sidebar ${sidebarCollapsed ? 'collapsed' : ''}`}>
-        <div className="sidebar-top">
-          <button
-            className="icon-button"
-            type="button"
-            aria-label="折叠侧栏"
-            onClick={() => setSidebarCollapsed((value) => !value)}
-          >
-            <span aria-hidden="true">☰</span>
-          </button>
-          <div className="brand">
-            <strong>Agent</strong>
-          </div>
-        </div>
-
-        <div className="module-tabs" aria-label="验收模块">
-          {MODULE_VIEWS.map((item) => (
-            <button
-              className={`module-tab ${item.id === activeView ? 'active' : ''}`}
-              type="button"
-              key={item.id}
-              title={`${item.label} ${item.title}`}
-              onClick={() => {
-                setActiveView(item.id)
-                setDragActive(false)
-              }}
-            >
-              <span>{item.label}</span>
-              <small>{item.title}</small>
-            </button>
-          ))}
-        </div>
-
-        <button
-          className="new-chat"
-          type="button"
-          onClick={() => {
-            setActiveView('chat')
-            stickToBottomRef.current = true
-            setMessages([])
-            setActiveConversation(null)
+      <AppSidebar
+        activeView={activeView}
+        cancellingConversationIds={cancellingConversationIds}
+        currentConversationId={currentConversationId}
+        histories={histories}
+        runningConversationIds={runningConversationIds}
+        sidebarCollapsed={sidebarCollapsed}
+        onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
+        onSelectModule={(moduleId) => {
+          setActiveView(moduleId)
+          setDragActive(false)
+        }}
+        onNewChat={() => {
+          setActiveView('chat')
+          stickToBottomRef.current = true
+          setMessages([])
+          setActiveConversation(null)
+          setAttachments([])
+          setDraft('')
+          void loadDefaultSystemPrompt()
+        }}
+        onOpenConversation={(conversationId) => {
+          if (activeView === 'chat') {
             setAttachments([])
             setDraft('')
-            void loadDefaultSystemPrompt()
-          }}
-        >
-          <span aria-hidden="true">＋</span>
-          <span>新对话</span>
-        </button>
-
-        <div className="history-list" aria-label="对话记录">
-          {histories.map((item) => (
-            <div
-              className={`history-item ${item.id === currentConversationId ? 'active' : ''}`}
-              key={item.id}
-            >
-              <button
-                className="history-open"
-                type="button"
-                onClick={() => {
-                  if (activeView === 'chat') {
-                    setAttachments([])
-                    setDraft('')
-                  }
-                  void loadConversation(item.id)
-                }}
-              >
-                <span className="history-copy">
-                  <strong>{item.title}</strong>
-                </span>
-              </button>
-              <button
-                className="history-delete"
-                type="button"
-                aria-label={`删除对话 ${item.title}`}
-                title="删除对话"
-                disabled={runningConversationIds.has(item.id) || cancellingConversationIds.has(item.id)}
-                onClick={() => {
-                  void deleteConversation(item.id)
-                }}
-              >
-                <Trash2 size={15} strokeWidth={1.8} aria-hidden="true" />
-              </button>
-            </div>
-          ))}
-        </div>
-      </aside>
+          }
+          void loadConversation(conversationId)
+        }}
+        onDeleteConversation={(conversationId) => {
+          void deleteConversation(conversationId)
+        }}
+      />
 
       <section className="workspace">
         {isChatView ? (
@@ -1012,28 +936,13 @@ function App() {
             />
           </>
         ) : (
-          <section className="module-placeholder" aria-label={`${activeView.toUpperCase()} 验收界面`}>
-            {activeModule && (
-              <button
-                className={`module-mode-switch ${activeModuleMode === 'demo' ? 'is-demo' : ''}`}
-                type="button"
-                aria-label={`切换${activeModule.label}展示模式`}
-                aria-pressed={activeModuleMode === 'demo'}
-                onClick={() => toggleModuleMode(activeModule.id)}
-              >
-                <span className="mode-label">观察</span>
-                <span className="mode-label">演示</span>
-                <span className="mode-thumb" aria-hidden="true" />
-              </button>
-            )}
-            {activeModule?.id === 'b1' && (
-              <B1ModuleView
-                mode={activeModuleMode}
-                messages={messages}
-                histories={histories}
-                conversationId={currentConversationId}
-                isRunning={isCurrentConversationRunning}
-                isStopping={isCurrentConversationStopping}
+          <ModuleWorkspace
+            activeModule={activeModule}
+            activeModuleMode={activeModuleMode}
+            conversationId={currentConversationId}
+            histories={histories}
+            isRunning={isCurrentConversationRunning}
+            isStopping={isCurrentConversationStopping}
                 attachments={attachments}
                 dragActive={dragActive}
                 draft={draft}
@@ -1051,27 +960,9 @@ function App() {
                 onPromptToggle={togglePromptPanel}
                 onPromptSave={() => void saveCurrentSystemPrompt()}
                 onSystemPromptChange={handleSystemPromptChange}
-              />
-            )}
-            {activeModule?.id === 'b2' && (
-              <B2ModuleView
-                mode={activeModuleMode}
-                messages={messages}
-              />
-            )}
-            {activeModule?.id === 'b3' && (
-              <B3ModuleView
-                mode={activeModuleMode}
-                messages={messages}
-              />
-            )}
-            {activeModule?.id === 'b5' && (
-              <B5ModuleView
-                mode={activeModuleMode}
-                conversationId={currentConversationId}
-              />
-            )}
-          </section>
+            messages={messages}
+            onToggleMode={toggleModuleMode}
+          />
         )}
       </section>
     </main>

@@ -5,10 +5,9 @@ import { Bot, CheckCircle, Circle, Clock, Database, MessageSquare, User, Wrench 
 import { API_BASE } from './appConfig'
 import { fetchB1WorkspaceSnapshot } from './backendApi'
 import { Composer } from './Composer'
+import type { ModuleMode } from './appNavigation'
 import type { Attachment, ChatMessage, HistoryItem } from './types'
 import type { B1WorkspaceSnapshot as B1WorkspaceSnapshotPayload } from './types'
-
-type ModuleMode = 'observe' | 'demo'
 
 type B1ModuleViewProps = {
   mode: ModuleMode

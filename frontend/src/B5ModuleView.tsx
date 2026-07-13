@@ -10,10 +10,18 @@ import {
 } from 'lucide-react'
 
 import { API_BASE } from './appConfig'
+import type { ModuleMode } from './appNavigation'
 import { fetchB5MemorySnapshot, runB5RecallPreview } from './backendApi'
+import {
+  asRecordArray as asArray,
+  boolText,
+  compactValue,
+  getRecordList as getList,
+  getRecordNumber as getNumber,
+  getRecordString as getString,
+  isRecord,
+} from './moduleViewUtils'
 import type { B5MemorySnapshot, B5RecallPreviewResponse } from './types'
-
-type ModuleMode = 'observe' | 'demo'
 
 type B5ModuleViewProps = {
   mode: ModuleMode
@@ -26,53 +34,8 @@ type SnapshotState = {
   error: string | null
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-function asArray(value: unknown): Record<string, unknown>[] {
-  return Array.isArray(value) ? value.filter(isRecord) : []
-}
-
-function getString(item: Record<string, unknown> | undefined, key: string, fallback = '无') {
-  const value = item?.[key]
-  if (value === null || value === undefined || value === '') return fallback
-  if (typeof value === 'string') return value
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
-  return fallback
-}
-
-function getNumber(item: Record<string, unknown> | undefined, key: string, fallback = 0) {
-  const value = item?.[key]
-  if (typeof value === 'number' && Number.isFinite(value)) return value
-  if (typeof value === 'string') {
-    const parsed = Number(value)
-    if (Number.isFinite(parsed)) return parsed
-  }
-  return fallback
-}
-
-function getList(item: Record<string, unknown> | undefined, key: string, limit = 6) {
-  const value = item?.[key]
-  if (!Array.isArray(value)) return []
-  return value.slice(0, limit).map((entry) => String(entry))
-}
-
 function compact(value: unknown, limit = 140) {
-  const text = typeof value === 'string'
-    ? value
-    : value === null || value === undefined
-      ? ''
-      : JSON.stringify(value)
-  const normalized = text.replace(/\s+/g, ' ').trim()
-  if (!normalized) return '无'
-  return normalized.length > limit ? `${normalized.slice(0, limit)}...` : normalized
-}
-
-function boolText(value: unknown) {
-  if (value === true) return 'true'
-  if (value === false) return 'false'
-  return 'unknown'
+  return compactValue(value, limit)
 }
 
 function JsonBlock({ value, maxHeight }: { value: unknown; maxHeight?: number }) {
