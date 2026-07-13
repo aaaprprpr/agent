@@ -925,6 +925,40 @@
   font-weight: 650;
 }
 
+.b2-panel-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 0 10px;
+}
+
+.b2-panel-toolbar span {
+  color: #777;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.b2-panel-toolbar button {
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px;
+  border: 1px solid #e1e1e1;
+  border-radius: 7px;
+  background: #fff;
+  color: #444;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.b2-panel-toolbar button:disabled {
+  color: #999;
+  cursor: wait;
+}
+
 .b2-execution-list,
 .b2-tool-list {
   display: flex;
@@ -1064,7 +1098,11 @@
 .b2-tool-list button {
   width: 100%;
   min-width: 0;
-  height: 30px;
+  min-height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   padding: 0 8px;
   border: 0;
   border-radius: 7px;
@@ -1074,6 +1112,20 @@
   font-size: 12px;
   text-align: left;
   cursor: pointer;
+}
+
+.b2-tool-list button span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.b2-tool-list button em {
+  flex: 0 0 auto;
+  color: #8a6d1d;
+  font-size: 10px;
+  font-style: normal;
 }
 
 .b2-tool-list button:hover,
@@ -1086,6 +1138,40 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.b2-example-note {
+  display: grid;
+  gap: 7px;
+  padding: 10px;
+  border-radius: 8px;
+  background: #f7f7f7;
+}
+
+.b2-example-note strong {
+  color: #333;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.b2-example-note p {
+  margin: 0;
+  color: #666;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.b2-example-note button {
+  width: fit-content;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid #dedede;
+  border-radius: 7px;
+  background: #fff;
+  color: #333;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
 }
 
 .b2-demo-form label {
@@ -1119,16 +1205,25 @@
   line-height: 1.55;
 }
 
-.b2-demo-form button {
+.b2-demo-form .b2-run-button {
   width: fit-content;
   height: 36px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   padding: 0 14px;
   border: 0;
   border-radius: 8px;
+  background: #222;
+  color: #fff;
+  font: inherit;
+  cursor: pointer;
+}
+
+.b2-demo-form .b2-run-button:disabled {
   background: #ededed;
   color: #777;
-  font: inherit;
-  cursor: not-allowed;
+  cursor: wait;
 }
 
 .b2-empty {
@@ -1136,6 +1231,33 @@
   color: #777;
   font-size: 13px;
   line-height: 1.6;
+}
+
+.b2-error-text {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0;
+  color: #b3261e;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.b2-artifact-link {
+  width: fit-content;
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 10px;
+  border-radius: 7px;
+  background: #f1f1f1;
+  color: #222;
+  font-size: 13px;
+  text-decoration: none;
+}
+
+.b2-artifact-link:hover {
+  background: #e7e7e7;
 }
 
 .b3-module {
@@ -2110,6 +2232,8 @@
 }
 
 @media (max-width: 1180px) {
+  .b2-grid,
+  .b2-demo-grid,
   .b5-layout,
   .b5-demo-grid,
   .b5-preview-result {
@@ -2122,10 +2246,12 @@
 }
 
 @media (max-width: 700px) {
+  .b2-head,
   .b5-head {
     padding-right: 0;
   }
 
+  .b2-summary,
   .b5-summary {
     justify-content: flex-start;
   }

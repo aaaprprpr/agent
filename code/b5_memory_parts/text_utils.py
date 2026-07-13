@@ -67,7 +67,7 @@ def _field_values(payload: dict, prefixes: tuple[str, ...] = FIELD_PREFIXES) -> 
 def _format_block_topic(keywords: list[str]) -> str:
     scoped = [item for item in keywords if isinstance(item, str) and any(item.casefold().startswith(prefix) for prefix in FIELD_PREFIXES)]
     selected = scoped[:4] if scoped else keywords[:6]
-    return ", ".join(selected) if selected else "general conversation"
+    return ", ".join(selected) if selected else "一般对话"
 
 
 def _compact_jsonish(value: Any, limit: int = MAX_WORKSPACE_ITEM_CHARS) -> Any:
@@ -367,52 +367,52 @@ def _build_memory_context_text(
         return "", False
     lines: list[str] = []
     budget = {"remaining": max(800, int(max_chars)), "truncated": False}
-    _append_budgeted_line(lines, "[B5 layered memory context]", budget)
+    _append_budgeted_line(lines, "[B5 分层记忆上下文]", budget)
     _append_budgeted_line(
         lines,
-        "Use this memory as historical context only. Current user input has priority. Summaries locate sources; exact facts must come from source snippets or current tool results.",
+        "这些记忆只作为历史上下文；当前用户输入优先。摘要只用于定位来源，精确事实必须来自 source 片段或当前工具结果。",
         budget,
     )
     foreground = [task for task in tasks if task.get("status") == "foreground"]
     paused = [task for task in tasks if task.get("status") == "paused"]
     if foreground or paused:
-        _append_budgeted_line(lines, "\n[Task memory]", budget)
+        _append_budgeted_line(lines, "\n[任务记忆]", budget)
     for task in foreground[:1]:
         _append_budgeted_line(
             lines,
-            f"- foreground task {task.get('id')}: {task.get('title')} | objective={task.get('objective') or ''} | phase={task.get('phase') or ''}",
+            f"- 前台任务 {task.get('id')}: {task.get('title')} | 目标={task.get('objective') or ''} | 阶段={task.get('phase') or ''}",
             budget,
         )
         for optional in (
-            _list_text("completed", task.get("completed_items")),
-            _list_text("pending", task.get("pending_items")),
-            _list_text("constraints", task.get("constraints")),
-            _list_text("active files", task.get("active_files")),
-            _list_text("next", task.get("next_actions")),
+            _list_text("已完成", task.get("completed_items")),
+            _list_text("待处理", task.get("pending_items")),
+            _list_text("约束", task.get("constraints")),
+            _list_text("相关文件", task.get("active_files")),
+            _list_text("下一步", task.get("next_actions")),
         ):
             if optional:
                 _append_budgeted_line(lines, f"  {optional}", budget)
     for task in paused[:3]:
         _append_budgeted_line(
             lines,
-            f"- paused task {task.get('id')}: {task.get('title')} | phase={task.get('phase') or ''}",
+            f"- 暂停任务 {task.get('id')}: {task.get('title')} | 阶段={task.get('phase') or ''}",
             budget,
         )
 
     if selected_blocks:
-        _append_budgeted_line(lines, "\n[Recalled blocks]", budget)
+        _append_budgeted_line(lines, "\n[召回的记忆块]", budget)
     for block in selected_blocks:
         _append_budgeted_line(
             lines,
-            f"- block {block.get('id')} turns {block.get('start_turn_index')}-{block.get('end_turn_index')}: {block.get('summary')}",
+            f"- 记忆块 {block.get('id')} 轮次 {block.get('start_turn_index')}-{block.get('end_turn_index')}: {block.get('summary')}",
             budget,
         )
 
     grouped_turns = _group_turns_by_context_role(selected_turns)
     turn_sections = [
-        ("task_related", "\n[Task-related recalled turns]"),
-        ("durable_memory", "\n[Durable preferences, decisions, and corrections]"),
-        ("supporting_context", "\n[Supporting recalled turns]"),
+        ("task_related", "\n[任务相关召回轮次]"),
+        ("durable_memory", "\n[长期偏好、决策和纠正]"),
+        ("supporting_context", "\n[辅助上下文召回轮次]"),
     ]
     for group_key, heading in turn_sections:
         turns = grouped_turns[group_key]
@@ -423,11 +423,11 @@ def _build_memory_context_text(
             tool_ids = _safe_list(turn.get("source_tool_step_ids"))
             _append_budgeted_line(
                 lines,
-                f"- turn {turn.get('turn_index')} ({turn.get('turn_id')}): {turn.get('summary')} | source_messages={source_ids} | source_tools={tool_ids}",
+                f"- 轮次 {turn.get('turn_index')} ({turn.get('turn_id')}): {turn.get('summary')} | source_messages={source_ids} | source_tools={tool_ids}",
                 budget,
             )
             details = []
-            for field, label in (("decisions", "decisions"), ("corrections", "corrections"), ("facts", "facts")):
+            for field, label in (("decisions", "决策"), ("corrections", "纠正"), ("facts", "事实")):
                 values = _unique_strings(_safe_list(turn.get(field)), 3)
                 if values:
                     details.append(f"{label}: {'; '.join(values)}")
@@ -435,16 +435,16 @@ def _build_memory_context_text(
                 _append_budgeted_line(lines, "  " + " | ".join(details), budget)
 
     if source_messages:
-        _append_budgeted_line(lines, "\n[Loaded source message snippets]", budget)
+        _append_budgeted_line(lines, "\n[已加载的原始消息片段]", budget)
     for message in source_messages:
         _append_budgeted_line(
             lines,
-            f"- message {message.get('id')} role={message.get('role')} order={message.get('message_order')}: {_clip_source_text(message.get('content'), MAX_SOURCE_SNIPPET_CHARS)}",
+            f"- 消息 {message.get('id')} role={message.get('role')} 顺序={message.get('message_order')}: {_clip_source_text(message.get('content'), MAX_SOURCE_SNIPPET_CHARS)}",
             budget,
         )
 
     if source_tool_steps:
-        _append_budgeted_line(lines, "\n[Loaded source tool snippets]", budget)
+        _append_budgeted_line(lines, "\n[已加载的原始工具片段]", budget)
     for step in source_tool_steps:
         payload = {
             "input": step.get("input"),
@@ -453,12 +453,12 @@ def _build_memory_context_text(
         }
         _append_budgeted_line(
             lines,
-            f"- tool_step {step.get('id')} name={step.get('tool_name')} status={step.get('status')}: {_clip_source_text(payload, MAX_TOOL_SNIPPET_CHARS)}",
+            f"- 工具步骤 {step.get('id')} name={step.get('tool_name')} status={step.get('status')}: {_clip_source_text(payload, MAX_TOOL_SNIPPET_CHARS)}",
             budget,
         )
 
     if legacy_docs:
-        _append_budgeted_line(lines, "\n[Selected legacy memory documents]", budget)
+        _append_budgeted_line(lines, "\n[已选旧版记忆文档]", budget)
     for doc in legacy_docs:
         _append_budgeted_line(
             lines,

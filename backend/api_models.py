@@ -94,5 +94,11 @@ class UpdateConversationPromptRequest(BaseModel):
     content: str = Field(..., min_length=1)
 
 
+class B2SkillRunRequest(BaseModel):
+    skill_name: str = Field(..., min_length=1)
+    input: dict = Field(default_factory=dict)
+    toolset: str = "basic_tools"
+
+
 class B5RecallPreviewRequest(BaseModel):
     current_user_input: str = Field(..., min_length=1)

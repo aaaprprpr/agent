@@ -59,7 +59,13 @@ def _prompt(*keys: str) -> str:
     return value
 
 
-def _neutral_locator_summary() -> str:
+def _contains_cjk(text: Any) -> bool:
+    return any("\u4e00" <= char <= "\u9fff" for char in str(text or ""))
+
+
+def _neutral_locator_summary(raw_user_input: str = "", final_answer: str = "") -> str:
+    if _contains_cjk(raw_user_input) or _contains_cjk(final_answer):
+        return "本轮记忆反思暂不可用。需要事实、路径、命令、代码、错误和输出时，请以关联的原始消息和工具步骤为准。"
     return (
         "Memory reflection was unavailable for this turn. "
         "Use the linked source messages and tool steps for all facts, paths, commands, code, errors, and outputs."
@@ -180,7 +186,7 @@ def _neutral_memory_decision(
         "labels": ["model_reflection_unavailable"],
     }
     summary = {
-        "summary": _neutral_locator_summary(),
+        "summary": _neutral_locator_summary(raw_user_input, final_answer),
         "keywords": [],
         "facts": [],
         "decisions": [],
@@ -325,6 +331,8 @@ def _coerce_memory_decision(
     source_message_ids: list[str],
     source_tool_step_ids: list[str],
     tool_steps: list[dict],
+    raw_user_input: str = "",
+    final_answer: str = "",
 ) -> dict:
     if not isinstance(candidate, dict):
         raise ValueError("memory decision must be an object")
@@ -377,7 +385,7 @@ def _coerce_memory_decision(
     summary["source_message_ids"] = source_message_ids
     summary["source_tool_step_ids"] = source_tool_step_ids
     if not isinstance(summary.get("summary"), str) or not summary["summary"].strip():
-        summary["summary"] = _neutral_locator_summary()
+        summary["summary"] = _neutral_locator_summary(raw_user_input, final_answer)
     task = dict(task)
     action = task.get("action")
     if action not in {"no_change", "update_foreground", "switch_task", "resume_task", "pause_task", "complete_task"}:
@@ -425,7 +433,14 @@ def _reflect_memory_with_model(
     )
     if result.get("status") != "success" or not isinstance(result.get("json"), dict):
         raise ValueError(f"memory reflection failed: {result.get('error')}")
-    return _coerce_memory_decision(result["json"], source_message_ids, source_tool_step_ids, tool_steps)
+    return _coerce_memory_decision(
+        result["json"],
+        source_message_ids,
+        source_tool_step_ids,
+        tool_steps,
+        raw_user_input,
+        final_answer,
+    )
 
 
 def _apply_task_memory_decision(
@@ -540,15 +555,15 @@ def _maybe_create_memory_block(config_path: str, conversation_id: str) -> dict:
     for summary in selected_summaries[:4]:
         text = summary.get("summary")
         if isinstance(text, str) and text.strip():
-            representative.append(f"turn {summary.get('turn_index')}: {_compact_text(text, 120)}")
+            representative.append(f"轮次 {summary.get('turn_index')}: {_compact_text(text, 120)}")
     topic_text = _format_block_topic(keywords)
     task_keys = _unique_strings([key for summary in selected_summaries for key in _summary_task_keys(summary)], 3)
     block = {
-        "title": f"Turns {start}-{end}: {topic_text}",
+        "title": f"轮次 {start}-{end}: {topic_text}",
         "summary": (
-            f"Block covering turns {start}-{end}. Boundary: {boundary_reason}. Topics: {topic_text}. "
-            + ("Representative turn summaries: " + " | ".join(representative) + ". " if representative else "")
-            + "Use linked turn summaries first, then load original messages/tool steps for exact facts."
+            f"记忆块覆盖轮次 {start}-{end}。边界原因：{boundary_reason}。主题：{topic_text}。"
+            + ("代表性轮摘要：" + " | ".join(representative) + "。 " if representative else "")
+            + "优先使用关联轮摘要定位信息；需要精确事实时，再加载原始消息或工具步骤。"
         ),
         "status": "active",
         "keywords": keywords,
