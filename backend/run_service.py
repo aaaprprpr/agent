@@ -442,6 +442,7 @@ def stream_agent(request: RunRequest) -> Iterator[str]:
             {
                 "type": "start",
                 "conversation_id": conversation_id,
+                "run_id": run_id,
                 "user_message_id": user_message_id,
                 "assistant_message_id": assistant_message_id,
             }
@@ -683,6 +684,7 @@ def stream_resume_agent(conversation_id: str, assistant_message_id: str) -> Iter
             {
                 "type": "start",
                 "conversation_id": safe_conversation,
+                "run_id": run_id,
                 "user_message_id": user_message_id,
                 "assistant_message_id": assistant_message_id,
                 "resumed": True,

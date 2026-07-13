@@ -652,6 +652,7 @@ function DemoPanel({
                 />
               </label>
               <button
+                className="b5-run-button module-run-button"
                 type="button"
                 disabled={!hasSource || !selectedConversationId || !query.trim() || previewRunning}
                 onClick={() => {

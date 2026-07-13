@@ -164,7 +164,6 @@ function ObservationPanel({
   onRefreshSchema: () => void
 }) {
   const cycles = useMemo(() => collectCycles(messages), [messages])
-  const toolCount = cycles.reduce((total, cycle) => total + cycle.tools.length, 0)
 
   return (
     <div className="b3-module">
@@ -172,11 +171,6 @@ function ObservationPanel({
         <div>
           <span>B3</span>
           <h2>说明生成与工具调用模块</h2>
-        </div>
-        <div className="b3-summary">
-          <span>{cycles.length} 个闭环</span>
-          <span>{toolCount} 个工具调用</span>
-          <span>{schema.payload?.tool_count ?? 0} schemas</span>
         </div>
       </div>
 
@@ -403,11 +397,6 @@ function DemoPanel({
           <span>B3</span>
           <h2>工具调用协议演示</h2>
         </div>
-        <div className="b3-summary">
-          <span>{schema.payload?.toolset ?? DEFAULT_TOOLSET}</span>
-          <span>{schema.payload?.tool_count ?? 0} schemas</span>
-          <span>{response ? '已执行' : '未执行'}</span>
-        </div>
       </div>
 
       <div className="b3-demo-grid">
@@ -452,7 +441,7 @@ function DemoPanel({
             AIMessage JSON
             <textarea value={aiMessageText} onChange={(event) => setAiMessageText(event.target.value)} />
           </label>
-          <button className="b3-run-button" type="button" disabled={running} onClick={handleRun}>
+          <button className="b3-run-button module-run-button" type="button" disabled={running} onClick={handleRun}>
             <Play size={14} aria-hidden="true" />
             {running ? '执行中' : '运行 B3 工具调用'}
           </button>

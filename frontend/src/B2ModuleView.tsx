@@ -428,7 +428,7 @@ function DemoPanel({
             args JSON
             <textarea value={args} onChange={(event) => setArgs(event.target.value)} />
           </label>
-          <button className="b2-run-button" type="button" disabled={running || !selectedTool} onClick={handleRun}>
+          <button className="b2-run-button module-run-button" type="button" disabled={running || !selectedTool} onClick={handleRun}>
             <Play size={14} aria-hidden="true" />
             {running ? '执行中' : '执行 B2 Skill'}
           </button>

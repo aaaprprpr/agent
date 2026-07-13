@@ -4,7 +4,7 @@ import { B3ModuleView } from './B3ModuleView'
 import { B5ModuleView } from './B5ModuleView'
 import type { ModuleMode, ModuleView, ModuleViewId } from './appNavigation'
 import type { ChangeEventHandler, KeyboardEventHandler, RefObject } from 'react'
-import type { Attachment, ChatMessage, HistoryItem } from './types'
+import type { Attachment, B1RuntimeEvent, ChatMessage, HistoryItem } from './types'
 
 type ModuleWorkspaceProps = {
   activeModule: ModuleView | null
@@ -14,6 +14,7 @@ type ModuleWorkspaceProps = {
   isRunning: boolean
   isStopping: boolean
   messages: ChatMessage[]
+  runtimeEvents: B1RuntimeEvent[]
   attachments: Attachment[]
   dragActive: boolean
   draft: string
@@ -42,6 +43,7 @@ export function ModuleWorkspace({
   isRunning,
   isStopping,
   messages,
+  runtimeEvents,
   attachments,
   dragActive,
   draft,
@@ -80,6 +82,7 @@ export function ModuleWorkspace({
         <B1ModuleView
           mode={activeModuleMode}
           messages={messages}
+          runtimeEvents={runtimeEvents}
           histories={histories}
           conversationId={conversationId}
           isRunning={isRunning}

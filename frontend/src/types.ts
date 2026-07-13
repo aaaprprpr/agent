@@ -189,6 +189,7 @@ export type RunStreamEvent =
   | {
       type: 'start'
       conversation_id: string
+      run_id?: string
       user_message_id?: string
       assistant_message_id?: string
     }
@@ -240,3 +241,9 @@ export type RunStreamEvent =
       assistant_message_id?: string
       message: string
     }
+
+export type B1RuntimeEvent = {
+  id: number
+  receivedAt: number
+  event: RunStreamEvent
+}

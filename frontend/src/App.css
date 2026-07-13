@@ -403,12 +403,19 @@
   display: grid;
   grid-template-columns: minmax(500px, 620px) minmax(520px, 1fr);
   grid-template-areas:
-    "graph flow"
-    "state flow"
-    "workspace flow"
+    "left workspace"
     "composer composer";
   gap: 8px;
   align-items: start;
+}
+
+.b1-demo-left-column {
+  grid-area: left;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-self: start;
 }
 
 .b1-panel {
@@ -436,12 +443,12 @@
 
 .b1-flow-demo-panel {
   grid-area: flow;
-  min-height: calc(100svh - 190px);
-  align-self: stretch;
 }
 
 .b1-demo-workspace-panel {
   grid-area: workspace;
+  min-height: calc(100svh - 190px);
+  align-self: stretch;
 }
 
 .b1-demo-control-grid > .composer-wrap {
@@ -493,8 +500,10 @@
 }
 
 .b1-svg-node.active rect {
-  fill: #222;
+  fill: rgba(255, 255, 255, 0.97);
   stroke: #222;
+  stroke-width: 2.2;
+  filter: drop-shadow(0 0 4px rgba(0, 0, 0, 0.2));
 }
 
 .b1-svg-node.active-soft rect {
@@ -515,28 +524,43 @@
 }
 
 .b1-svg-node.active .b1-svg-node-title {
-  fill: #fff;
+  fill: #222;
 }
 
 .b1-svg-node.active .b1-svg-node-sub {
-  fill: #d8d8d8;
+  fill: #666;
 }
 
-.b1-svg-bubble rect {
-  fill: #222;
-  stroke: none;
+.b1-svg-node.flow-origin rect,
+.b1-svg-node.flow-target rect,
+.b1-svg-node.flow-transit rect {
+  animation: b1-node-flow-pulse 520ms ease both;
 }
 
-.b1-svg-bubbles {
-  pointer-events: none;
+.b1-svg-node.flow-transit-1 rect {
+  animation-delay: 360ms;
 }
 
-.b1-svg-bubble text {
-  fill: #fff;
-  font-size: 10px;
-  font-weight: 650;
-  text-anchor: middle;
-  pointer-events: none;
+.b1-svg-node.flow-transit-2 rect {
+  animation-delay: 720ms;
+}
+
+.b1-svg-node.flow-target rect {
+  animation-delay: 1050ms;
+}
+
+@keyframes b1-node-flow-pulse {
+  0%, 100% {
+    fill: rgba(255, 255, 255, 0.97);
+    stroke: #d8d8d8;
+    stroke-width: 1.2;
+    filter: drop-shadow(0 0 0 rgba(0, 0, 0, 0));
+  }
+  35%, 75% {
+    stroke: #222;
+    stroke-width: 3;
+    filter: drop-shadow(0 0 5px rgba(0, 0, 0, 0.28));
+  }
 }
 
 .b1-stage-strip {
@@ -571,6 +595,28 @@
   background: #f7f7f7;
 }
 
+.b1-flow-current-action > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.b1-flow-current-action > header span {
+  padding: 3px 7px;
+  border-radius: 6px;
+  background: #222;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.b1-flow-current-action > header em {
+  color: #777;
+  font-size: 11px;
+  font-style: normal;
+}
+
 .b1-flow-current-action strong,
 .b1-flow-action-log header span,
 .b1-flow-action-log article strong {
@@ -588,9 +634,12 @@
 }
 
 .b1-flow-current-action .b1-json {
-  max-height: 260px;
+  max-height: none;
   margin: 0;
   background: #fff;
+  overflow: visible;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .b1-flow-action-log {
@@ -2058,9 +2107,10 @@
   overflow: auto;
   margin: 0;
   padding: 10px;
+  border: 1px solid #e4e4e4;
   border-radius: 6px;
-  background: #202124;
-  color: #f7f7f7;
+  background: #f7f7f7;
+  color: #2b2b2b;
   font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -2555,6 +2605,49 @@
   color: #999;
 }
 
+.b2-demo-form .module-run-button,
+.b3-demo-form .module-run-button,
+.b5-demo-card .module-run-button {
+  width: fit-content;
+  min-width: 0;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 14px;
+  border: 1px solid #222;
+  border-radius: 7px;
+  background: #222;
+  color: #fff;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color 140ms ease, border-color 140ms ease;
+}
+
+.b2-demo-form .module-run-button:hover:not(:disabled),
+.b3-demo-form .module-run-button:hover:not(:disabled),
+.b5-demo-card .module-run-button:hover:not(:disabled) {
+  border-color: #3b3b3b;
+  background: #3b3b3b;
+}
+
+.b2-demo-form .module-run-button:disabled,
+.b3-demo-form .module-run-button:disabled,
+.b5-demo-card .module-run-button:disabled {
+  border-color: #e5e5e5;
+  background: #e5e5e5;
+  color: #999;
+  cursor: not-allowed;
+}
+
+.module-run-button svg {
+  flex: 0 0 auto;
+}
+
 .b5-file-source > span {
   display: inline-flex;
   align-items: center;
@@ -2929,10 +3022,8 @@
 
   .b1-demo-control-grid {
     grid-template-areas:
-      "graph"
-      "state"
+      "left"
       "workspace"
-      "flow"
       "composer";
   }
 

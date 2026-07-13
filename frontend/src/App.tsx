@@ -30,7 +30,7 @@ import {
   toolDetailsFromSteps,
 } from './toolTraceUtils'
 import { buildUploadPayloads } from './uploadUtils'
-import type { Attachment, ChatMessage, HistoryItem, RunStreamEvent } from './types'
+import type { Attachment, B1RuntimeEvent, ChatMessage, HistoryItem, RunStreamEvent } from './types'
 import { ModuleWorkspace } from './ModuleWorkspace'
 import './App.css'
 
@@ -48,6 +48,7 @@ function App() {
   const [dragActive, setDragActive] = useState(false)
   const [runningConversationIds, setRunningConversationIds] = useState<Set<string>>(() => new Set())
   const [cancellingConversationIds, setCancellingConversationIds] = useState<Set<string>>(() => new Set())
+  const [b1RuntimeEvents, setB1RuntimeEvents] = useState<Record<string, B1RuntimeEvent[]>>({})
   const [isLoadingHistory, setIsLoadingHistory] = useState(false)
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
   const fileRef = useRef<HTMLInputElement | null>(null)
@@ -56,6 +57,29 @@ function App() {
   const runningConversationIdsRef = useRef<Set<string>>(new Set())
   const cancellingConversationIdsRef = useRef<Set<string>>(new Set())
   const abortControllersRef = useRef<Map<string, AbortController>>(new Map())
+  const b1RuntimeEventIdRef = useRef(0)
+
+  function recordB1RuntimeEvent(conversationId: string, event: RunStreamEvent) {
+    const receivedAt = Date.now()
+    setB1RuntimeEvents((current) => {
+      const previous = current[conversationId] ?? []
+      if (event.type === 'start') {
+        const nextEvent = { id: ++b1RuntimeEventIdRef.current, receivedAt, event }
+        return { ...current, [conversationId]: [nextEvent] }
+      }
+      const last = previous[previous.length - 1]
+      if (event.type === 'delta' && last?.event.type === 'delta') {
+        const merged: B1RuntimeEvent = {
+          ...last,
+          receivedAt,
+          event: { ...event, text: last.event.text + event.text },
+        }
+        return { ...current, [conversationId]: [...previous.slice(0, -1), merged] }
+      }
+      const nextEvent = { id: ++b1RuntimeEventIdRef.current, receivedAt, event }
+      return { ...current, [conversationId]: [...previous, nextEvent].slice(-80) }
+    })
+  }
   const stickToBottomRef = useRef(true)
   const [showScrollBottom, setShowScrollBottom] = useState(false)
 
@@ -361,6 +385,7 @@ function App() {
     }
 
     function handleStreamEvent(event: RunStreamEvent) {
+      recordB1RuntimeEvent(conversationId, event)
       if (event.type === 'start') {
         adoptBackendMessageIds(event)
         return
@@ -635,6 +660,7 @@ function App() {
     applyMessageState(currentMessages)
 
     function handleStreamEvent(event: RunStreamEvent) {
+      recordB1RuntimeEvent(resumeConversationId, event)
       if (event.type === 'start') return
       if (event.type === 'delta') {
         streamedAnswer += event.text
@@ -961,6 +987,7 @@ function App() {
                 onPromptSave={() => void saveCurrentSystemPrompt()}
                 onSystemPromptChange={handleSystemPromptChange}
             messages={messages}
+            runtimeEvents={currentConversationId ? (b1RuntimeEvents[currentConversationId] ?? []) : []}
             onToggleMode={toggleModuleMode}
           />
         )}

@@ -1,17 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ChangeEventHandler, ComponentType, KeyboardEventHandler, ReactNode, RefObject } from 'react'
-import { Bot, CheckCircle, Circle, Clock, Database, MessageSquare, User, Wrench } from 'lucide-react'
+import { Bot, CheckCircle, Database, MessageSquare, User, Wrench } from 'lucide-react'
 
 import { API_BASE } from './appConfig'
 import { fetchB1WorkspaceSnapshot } from './backendApi'
 import { Composer } from './Composer'
 import type { ModuleMode } from './appNavigation'
-import type { Attachment, ChatMessage, HistoryItem } from './types'
+import type { Attachment, B1RuntimeEvent, ChatMessage, HistoryItem, RunStreamEvent } from './types'
 import type { B1WorkspaceSnapshot as B1WorkspaceSnapshotPayload } from './types'
 
 type B1ModuleViewProps = {
   mode: ModuleMode
   messages: ChatMessage[]
+  runtimeEvents: B1RuntimeEvent[]
   histories: HistoryItem[]
   conversationId: string | null
   isRunning: boolean
@@ -62,7 +63,7 @@ type WorkspaceLoadState = {
   error: string | null
 }
 
-type B1GraphActionKind = 'user_to_b1' | 'b1_to_b5' | 'b1_to_b4' | 'b1_to_tool' | 'b1_to_user'
+type B1GraphActionKind = 'user_to_b1' | 'b1_to_b5' | 'b5_to_b1' | 'b1_to_b4' | 'b4_to_b1' | 'b1_to_tool' | 'tool_to_b1' | 'b1_to_user'
 
 type B1GraphAction = {
   key: string
@@ -127,130 +128,216 @@ function getString(item: Record<string, unknown>, key: string, fallback = '无')
 }
 
 function jsonText(value: unknown) {
-  return JSON.stringify(value ?? null, null, 2)
+  return JSON.stringify(normalizeJsonForDisplay(value), null, 2)
+}
+
+function parseJsonString(value: string) {
+  const text = value.trim()
+  if (!text || (!text.startsWith('{') && !text.startsWith('['))) return value
+  try {
+    return JSON.parse(text) as unknown
+  } catch {
+    return value
+  }
+}
+
+function normalizeJsonForDisplay(value: unknown, key = ''): unknown {
+  if (Array.isArray(value)) return value.map((item) => normalizeJsonForDisplay(item))
+  if (isRecord(value)) {
+    return Object.fromEntries(
+      Object.entries(value).map(([childKey, childValue]) => [
+        childKey,
+        normalizeJsonForDisplay(childValue, childKey),
+      ]),
+    )
+  }
+  if (typeof value === 'string' && key.endsWith('_json')) {
+    const parsed = parseJsonString(value)
+    return parsed === value ? value : normalizeJsonForDisplay(parsed)
+  }
+  return value
 }
 
 function JsonBlock({ value }: { value: unknown }) {
   return <pre className="b1-json">{jsonText(value)}</pre>
 }
 
+function runtimeEventDescription(event: RunStreamEvent) {
+  if (event.type === 'start') return '后端已接收本轮用户输入，并为本轮创建用户消息与待生成的 AI 消息。'
+  if (event.type === 'delta') return compactText(event.text, 260)
+  if (event.type === 'state') return compactText(event.reason || event.action || event.state, 260)
+  if (event.type === 'tool_start') {
+    const calls = Array.isArray(event.tool_calls) ? event.tool_calls : []
+    return calls.length > 0 ? `B1 发出 ${calls.length} 个工具调用。` : compactText(event.assistant_content, 260)
+  }
+  if (event.type === 'tool_done') {
+    const messages = Array.isArray(event.tool_messages) ? event.tool_messages : []
+    return `B1 收到 ${messages.length} 条工具执行结果。`
+  }
+  if (event.type === 'done') return compactText(event.final_answer, 260)
+  return 'message' in event ? event.message : 'B1 收到运行事件。'
+}
+
+function actionPayload(record: B1RuntimeEvent) {
+  return {
+    event_id: record.id,
+    received_at: new Date(record.receivedAt).toISOString(),
+    ...record.event,
+  }
+}
+
 function buildB1DemoActions({
-  conversationId,
-  messages,
-  isRunning,
+  runtimeEvents,
   workspaceState,
 }: {
-  conversationId: string | null
-  messages: ChatMessage[]
-  isRunning: boolean
+  runtimeEvents: B1RuntimeEvent[]
   workspaceState: WorkspaceLoadState
 }) {
   const workspace = getRecord(workspaceState.data?.workspace)
   const memory = getRecord(workspace.memory)
-  const task = getRecord(workspace.task)
-  const tools = collectToolDetails(messages)
-  const lastUser = latestMessage(messages, 'user')
-  const pendingAssistant = [...messages].reverse().find((message) => message.role === 'assistant' && message.status === 'pending')
-  const finalAssistant = latestMessage(messages, 'assistant', false)
   const actions: B1GraphAction[] = []
 
-  if (lastUser) {
+  runtimeEvents.forEach((record) => {
+    const event = record.event
+    if (event.type === 'start') {
+      actions.push({
+        key: `input:${record.id}`,
+        kind: 'user_to_b1',
+        label: 'input',
+        title: 'B1 接收用户输入',
+        description: runtimeEventDescription(event),
+        payload: actionPayload(record),
+      })
+      return
+    }
+    if (event.type === 'state') {
+      actions.push({
+        key: `llm-request:${record.id}`,
+        kind: 'b1_to_b4',
+        label: 'messages',
+        title: 'B1 请求 B4 进行决策',
+        description: `第 ${event.llm_call_index ?? '?'} 次 LLM 调用，等待模型返回阶段判断。`,
+        payload: actionPayload(record),
+      })
+      actions.push({
+        key: `state:${record.id}`,
+        kind: 'b4_to_b1',
+        label: event.state || 'state',
+        title: 'B1 接收 B4 的阶段判断',
+        description: runtimeEventDescription(event),
+        payload: actionPayload(record),
+      })
+      return
+    }
+    if (event.type === 'tool_start') {
+      actions.push({
+        key: `tool-start:${record.id}`,
+        kind: 'b1_to_tool',
+        label: 'tool_calls',
+        title: 'B1 下发工具调用',
+        description: runtimeEventDescription(event),
+        payload: actionPayload(record),
+      })
+      return
+    }
+    if (event.type === 'tool_done') {
+      actions.push({
+        key: `tool-done:${record.id}`,
+        kind: 'tool_to_b1',
+        label: 'ToolMessage',
+        title: 'B1 接收工具结果',
+        description: runtimeEventDescription(event),
+        payload: actionPayload(record),
+      })
+      return
+    }
+    if (event.type === 'delta') {
+      actions.push({
+        key: `delta:${record.id}`,
+        kind: 'b4_to_b1',
+        label: 'AIMessage',
+        title: 'B1 接收 B4 流式输出',
+        description: runtimeEventDescription(event),
+        payload: actionPayload(record),
+      })
+      return
+    }
+    if (event.type === 'done') {
+      actions.push({
+        key: `final:${record.id}`,
+        kind: 'b1_to_user',
+        label: 'final',
+        title: 'B1 输出最终回复',
+        description: runtimeEventDescription(event),
+        payload: actionPayload(record),
+      })
+      return
+    }
     actions.push({
-      key: `input:${conversationId ?? 'none'}:${String(lastUser.id)}`,
-      kind: 'user_to_b1',
-      label: 'input',
-      title: '用户输入进入 B1',
-      description: compactText(lastUser.body, 260),
-      payload: {
-        role: 'user',
-        message_id: lastUser.id,
-        content: lastUser.body,
-        attachments: lastUser.attachments ?? [],
-      },
+      key: `error:${record.id}`,
+      kind: 'b4_to_b1',
+      label: 'error',
+      title: 'B1 接收运行错误',
+      description: runtimeEventDescription(event),
+      payload: actionPayload(record),
     })
-  }
 
-  if (workspaceState.data) {
-    actions.push({
-      key: `memory:${conversationId ?? 'none'}:${String(lastUser?.id ?? messages.length)}:${workspaceState.data.status ?? 'loaded'}`,
-      kind: 'b1_to_b5',
-      label: 'memory',
-      title: 'B1 请求记忆上下文',
-      description: 'B5 返回当前会话可用于本轮任务的历史消息、摘要或召回上下文。',
-      payload: {
-        selected_memory: workspaceState.data?.selected_memory ?? null,
-        memory,
-      },
-    })
-  }
+  })
 
-  if (pendingAssistant || isRunning || getString(task, 'stage', '') === 'planning' || getString(task, 'stage', '') === 'answering') {
-    actions.push({
-      key: `llm:${conversationId ?? 'none'}:${String(pendingAssistant?.id ?? lastUser?.id ?? messages.length)}:${getString(task, 'stage', 'running')}`,
-      kind: 'b1_to_b4',
-      label: 'messages',
-      title: 'B1 将消息交给 B4 决策',
-      description: pendingAssistant?.body ? compactText(pendingAssistant.body, 260) : 'B1 组装 messages、workspace 阶段输入和系统提示词，交给 B4 调用 LLM 源。',
-      payload: {
-        stage: getString(task, 'stage', isRunning ? 'running' : 'unknown'),
-        pending_assistant_id: pendingAssistant?.id ?? null,
-        message_count: messages.length,
-        task,
+  const startIndex = actions.findIndex((action) => action.kind === 'user_to_b1')
+  if (startIndex >= 0 && Object.keys(memory).length > 0) {
+    const turnId = runtimeEvents[0]?.id ?? 'none'
+    actions.splice(
+      startIndex + 1,
+      0,
+      {
+        key: `memory-request:${turnId}`,
+        kind: 'b1_to_b5',
+        label: 'memory query',
+        title: 'B1 请求 B5 组织记忆上下文',
+        description: 'B1 将本轮会话标识和用户输入交给 B5，请求可用于当前任务的记忆上下文。',
+        payload: { conversation_id: workspaceState.data?.conversation_id ?? null },
       },
-    })
-  }
-
-  const lastTool = tools[tools.length - 1]
-  if (lastTool) {
-    actions.push({
-      key: `tool:${conversationId ?? 'none'}:${String(lastTool.messageId)}:${lastTool.detailIndex}:${lastTool.status ?? 'unknown'}`,
-      kind: 'b1_to_tool',
-      label: lastTool.kind === 'tool' ? 'tool' : 'step',
-      title: lastTool.kind === 'tool' ? `B1 调度工具：${lastTool.label}` : `B1 记录中间过程：${lastTool.label}`,
-      description: compactText(lastTool.body, 260),
-      payload: {
-        label: lastTool.label,
-        kind: lastTool.kind,
-        status: lastTool.status,
-        body: lastTool.body,
+      {
+        key: `memory-result:${turnId}`,
+        kind: 'b5_to_b1',
+        label: 'memory context',
+        title: 'B1 接收 B5 记忆上下文',
+        description: 'B1 已取得本轮可用的历史消息、压缩记忆或召回结果。',
+        payload: memory,
       },
-    })
-  }
-
-  if (finalAssistant && finalAssistant.body && finalAssistant.status !== 'pending') {
-    actions.push({
-      key: `final:${conversationId ?? 'none'}:${String(finalAssistant.id)}:${finalAssistant.body.length}:${finalAssistant.status ?? 'ok'}`,
-      kind: 'b1_to_user',
-      label: 'final',
-      title: 'B1 输出最终回复',
-      description: compactText(finalAssistant.body, 260),
-      payload: {
-        role: 'assistant',
-        message_id: finalAssistant.id,
-        status: finalAssistant.status ?? 'success',
-        content: finalAssistant.body,
-        artifacts: finalAssistant.artifacts ?? [],
-      },
-    })
+    )
   }
 
   return actions
 }
 
-function useB1WorkspaceCheckpoint(conversationId: string | null, poll = false) {
+function useB1WorkspaceCheckpoint(
+  conversationId: string | null,
+  poll = false,
+  eventRevision = 0,
+  expectedRunId: string | null = null,
+) {
   const [state, setState] = useState<WorkspaceLoadState>({ data: null, loading: false, error: null })
 
   useEffect(() => {
     if (!conversationId) {
-      setState({ data: null, loading: false, error: null })
-      return
+      const resetTimer = window.setTimeout(() => setState({ data: null, loading: false, error: null }), 0)
+      return () => window.clearTimeout(resetTimer)
     }
     let active = true
     const load = (showLoading: boolean) => {
       if (showLoading) setState((current) => ({ ...current, loading: !current.data, error: null }))
       fetchB1WorkspaceSnapshot(API_BASE, conversationId)
         .then((data) => {
-          if (active) setState({ data, loading: false, error: null })
+          if (!active) return
+          const checkpoint = getRecord(data.checkpoint)
+          const outputDir = getString(checkpoint, 'output_dir', '')
+          if (expectedRunId && outputDir && !outputDir.includes(expectedRunId)) {
+            setState({ data: null, loading: true, error: null })
+            return
+          }
+          setState({ data, loading: false, error: null })
         })
         .catch((error: unknown) => {
           if (active) {
@@ -263,21 +350,14 @@ function useB1WorkspaceCheckpoint(conversationId: string | null, poll = false) {
         })
     }
     load(true)
-    const timer = poll ? window.setInterval(() => load(false), 1400) : undefined
+    const timer = poll ? window.setInterval(() => load(false), 400) : undefined
     return () => {
       active = false
       if (timer) window.clearInterval(timer)
     }
-  }, [conversationId, poll])
+  }, [conversationId, eventRevision, expectedRunId, poll])
 
   return state
-}
-
-function statusText(status: TrackStatus) {
-  if (status === 'done') return '完成'
-  if (status === 'running') return '运行中'
-  if (status === 'warning') return '待确认'
-  return '等待'
 }
 
 function useB1Observation({
@@ -594,8 +674,8 @@ function activeNodesForAction(action: B1GraphAction | null) {
   if (!action) return active
   active.add('b1')
   if (action.kind === 'user_to_b1' || action.kind === 'b1_to_user') active.add('user')
-  if (action.kind === 'b1_to_b5') active.add('b5')
-  if (action.kind === 'b1_to_b4') {
+  if (action.kind === 'b1_to_b5' || action.kind === 'b5_to_b1') active.add('b5')
+  if (action.kind === 'b1_to_b4' || action.kind === 'b4_to_b1') {
     active.add('b4')
     active.add('llm')
   }
@@ -604,32 +684,42 @@ function activeNodesForAction(action: B1GraphAction | null) {
     active.add('b2')
     active.add('tool')
   }
+  if (action.kind === 'tool_to_b1') {
+    active.add('tool')
+    active.add('b2')
+    active.add('b3')
+  }
   return active
 }
 
-function bubbleRoute(action: B1GraphAction) {
-  if (action.kind === 'user_to_b1') return '112 147; 152 147; 198 147'
-  if (action.kind === 'b1_to_b5') return '270 170; 312 205; 346 247'
-  if (action.kind === 'b1_to_b4') return '270 151; 360 166; 500 166'
-  if (action.kind === 'b1_to_tool') return '270 113; 350 70; 494 86; 618 86'
-  return '182 166; 144 166; 96 166'
+function nodeFlowPhase(action: B1GraphAction | null, nodeId: string) {
+  if (!action) return ''
+  const paths: Record<B1GraphActionKind, string[]> = {
+    user_to_b1: ['user', 'b1'],
+    b1_to_b5: ['b1', 'b5'],
+    b5_to_b1: ['b5', 'b1'],
+    b1_to_b4: ['b1', 'b4', 'llm'],
+    b4_to_b1: ['llm', 'b4', 'b1'],
+    b1_to_tool: ['b1', 'b3', 'b2', 'tool'],
+    tool_to_b1: ['tool', 'b2', 'b3', 'b1'],
+    b1_to_user: ['b1', 'user'],
+  }
+  const path = paths[action.kind]
+  const index = path.indexOf(nodeId)
+  if (index < 0) return ''
+  if (index === 0) return 'flow-origin'
+  if (index === path.length - 1) return 'flow-target'
+  return `flow-transit flow-transit-${index}`
 }
 
-function GraphBubble({ action }: { action: B1GraphAction }) {
-  const width = Math.max(48, Math.min(96, action.label.length * 7 + 22))
-  return (
-    <g className="b1-svg-bubble" key={action.key}>
-      <animateTransform
-        attributeName="transform"
-        type="translate"
-        values={bubbleRoute(action)}
-        dur={`${B1_ACTION_PLAY_MS}ms`}
-        fill="freeze"
-      />
-      <rect width={width} height="22" rx="7" />
-      <text x={width / 2} y="14">{action.label}</text>
-    </g>
-  )
+function stageForAction(action: B1GraphAction | null, fallback: string) {
+  if (!action) return fallback
+  if (action.kind === 'user_to_b1' || action.kind === 'b1_to_b5' || action.kind === 'b5_to_b1') return 'planning'
+  if (action.kind === 'b1_to_b4') return 'answering'
+  if (action.kind === 'b4_to_b1') return 'observation'
+  if (action.kind === 'b1_to_tool') return 'tool_calling'
+  if (action.kind === 'tool_to_b1') return 'observation'
+  return 'done'
 }
 
 function B1TopologyGraph({
@@ -647,14 +737,14 @@ function B1TopologyGraph({
   const memoryActive = activeStage === 'planning' || activeStage === 'done'
   const actionNodes = activeNodesForAction(action)
   const nodes = [
-    { id: 'user', x: 46, y: 132, title: '用户', sub: '输入 / final', external: true },
-    { id: 'b1', x: 188, y: 132, title: 'B1', sub: '调度 / workspace', active: actionNodes.has('b1') || isRunning },
-    { id: 'b3', x: 336, y: 54, title: 'B3', sub: '解析 / 包装', activeSoft: toolActive },
-    { id: 'b2', x: 492, y: 70, title: 'B2', sub: 'skill 执行', activeSoft: toolActive },
-    { id: 'tool', x: 626, y: 70, title: 'Tool', sub: '工具能力', external: true },
-    { id: 'b4', x: 360, y: 150, title: 'B4', sub: 'LLM 接口', activeSoft: llmActive },
-    { id: 'llm', x: 508, y: 150, title: 'LLM源', sub: '模型服务', external: true },
-    { id: 'b5', x: 352, y: 232, title: 'B5', sub: 'memory context', activeSoft: memoryActive },
+    { id: 'user', x: 38, y: 132, title: '用户', sub: '输入 / final', external: true },
+    { id: 'b1', x: 176, y: 132, title: 'B1', sub: '调度 / workspace', active: actionNodes.has('b1') || isRunning },
+    { id: 'b3', x: 330, y: 42, title: 'B3', sub: '解析 / 包装', activeSoft: toolActive },
+    { id: 'b2', x: 478, y: 42, title: 'B2', sub: 'skill 执行', activeSoft: toolActive },
+    { id: 'tool', x: 620, y: 42, title: 'Tool', sub: '工具能力', external: true },
+    { id: 'b4', x: 330, y: 132, title: 'B4', sub: 'LLM 接口', activeSoft: llmActive },
+    { id: 'llm', x: 478, y: 132, title: 'LLM源', sub: '模型服务', external: true },
+    { id: 'b5', x: 330, y: 222, title: 'B5', sub: 'memory context', activeSoft: memoryActive },
   ]
 
   return (
@@ -671,13 +761,14 @@ function B1TopologyGraph({
         <rect className="b1-svg-bg" x="0" y="0" width="720" height="320" />
         <rect className="b1-svg-grid" x="0" y="0" width="720" height="320" fill="url(#b1-grid-pattern)" />
         <g className="b1-svg-edges">
-          <path d="M126 158 L188 158" />
-          <path d="M276 140 L336 90" />
-          <path d="M276 158 L360 176" />
-          <path d="M276 176 L352 258" />
-          <path d="M424 80 L492 96" />
-          <path d="M580 96 L626 96" />
-          <path d="M448 176 L508 176" />
+          <path d="M126 158 L176 158" />
+          <path d="M264 146 L330 68" />
+          <path d="M264 158 L330 158" />
+          <path d="M264 170 L330 248" />
+          <path d="M418 68 L478 68" />
+          <path d="M566 68 L620 68" />
+          <path d="M418 158 L478 158" />
+          <path d="M374 184 L374 222" />
         </g>
         <g className="b1-svg-nodes">
           {nodes.map((node) => (
@@ -687,8 +778,9 @@ function B1TopologyGraph({
                 node.external ? 'external' : '',
                 node.active ? 'active' : '',
                 node.activeSoft || actionNodes.has(node.id) ? 'active-soft' : '',
+                nodeFlowPhase(action, node.id),
               ].filter(Boolean).join(' ')}
-              key={node.id}
+              key={`${node.id}:${action?.key ?? 'idle'}`}
               transform={`translate(${node.x} ${node.y})`}
             >
               <rect width="88" height="52" rx="9" filter="url(#b1-node-shadow)" />
@@ -697,7 +789,6 @@ function B1TopologyGraph({
             </g>
           ))}
         </g>
-        <g className="b1-svg-bubbles">{action ? <GraphBubble action={action} /> : null}</g>
       </svg>
     </div>
   )
@@ -705,7 +796,7 @@ function B1TopologyGraph({
 
 function ObservationPanel(props: B1ModuleViewProps & { workspaceState: WorkspaceLoadState }) {
   const { messages, histories, conversationId } = props
-  const { track, snapshot, runtimeStatus } = useB1Observation(props)
+  const { track, snapshot } = useB1Observation(props)
   const { workspaceState } = props
   const currentHistory = histories.find((item) => item.id === conversationId)
 
@@ -716,7 +807,6 @@ function ObservationPanel(props: B1ModuleViewProps & { workspaceState: Workspace
           <span>B1</span>
           <h2>Agent运行与消息管理模块</h2>
         </div>
-        <strong>{runtimeStatus}</strong>
       </div>
 
       <div className="b1-grid">
@@ -732,12 +822,6 @@ function ObservationPanel(props: B1ModuleViewProps & { workspaceState: Workspace
                   <header>
                     <span className="b1-module-chip">{item.module}</span>
                     <strong>{item.title}</strong>
-                    <em className={item.status}>
-                      {item.status === 'running' ? <Clock size={12} strokeWidth={1.9} aria-hidden="true" /> : null}
-                      {item.status === 'done' ? <CheckCircle size={12} strokeWidth={1.9} aria-hidden="true" /> : null}
-                      {item.status === 'idle' || item.status === 'warning' ? <Circle size={12} strokeWidth={1.9} aria-hidden="true" /> : null}
-                      {statusText(item.status)}
-                    </em>
                   </header>
                   <div className="b1-track-meta">
                     <span>{item.signal}</span>
@@ -810,48 +894,32 @@ function ObservationPanel(props: B1ModuleViewProps & { workspaceState: Workspace
 }
 
 function B1ActionPanel({
-  currentAction,
-  playedActions,
+  action,
   queuedActions,
 }: {
-  currentAction: B1GraphAction | null
-  playedActions: B1GraphAction[]
+  action: B1GraphAction | null
   queuedActions: B1GraphAction[]
 }) {
-  const log = currentAction ? [currentAction, ...playedActions] : playedActions
-
   return (
-    <>
-      <div className="b1-flow-current-action">
-        <strong>{currentAction ? currentAction.title : '等待新的流转动作'}</strong>
-        <p>{currentAction ? currentAction.description : '对话开始后，B1 旁路会记录真实消息变化，并按顺序驱动关系图动画。'}</p>
-        {currentAction?.payload !== undefined && <JsonBlock value={currentAction.payload} />}
-      </div>
-      <div className="b1-flow-action-log">
-        <header>
-          <span>动作记录</span>
-          <em>{queuedActions.length > 0 ? `队列 ${queuedActions.length}` : '实时'}</em>
-        </header>
-        {log.length === 0 ? (
-          <p className="b1-empty">暂无动作。发送一条消息后，这里会按 B1 视角记录跨模块信息流。</p>
-        ) : (
-          log.map((action) => (
-            <article className={action === currentAction ? 'active' : ''} key={action.key}>
-              <span>{action.label}</span>
-              <div>
-                <strong>{action.title}</strong>
-                <p>{action.description}</p>
-              </div>
-            </article>
-          ))
-        )}
-      </div>
-    </>
+    <div className="b1-flow-current-action">
+      <header>
+        <span>{action?.label ?? 'idle'}</span>
+        <em>{queuedActions.length > 0 ? `待播放 ${queuedActions.length}` : '最新'}</em>
+      </header>
+      <strong>{action ? action.title : '等待新的流转消息'}</strong>
+      <p>{action ? action.description : '发送消息后，这里始终显示 B1 最新接收或产生的信息。'}</p>
+      {action?.payload !== undefined && <JsonBlock value={action.payload} />}
+    </div>
   )
 }
 
 function actionDone(actions: B1GraphAction[], kind: B1GraphActionKind) {
   return actions.some((action) => action.kind === kind)
+}
+
+function latestTurnKey(conversationId: string | null, runtimeEvents: B1RuntimeEvent[]) {
+  const start = runtimeEvents.find((record) => record.event.type === 'start')
+  return `${conversationId ?? 'none'}:${start?.id ?? 'empty'}`
 }
 
 function WorkspaceBuildPreview({
@@ -871,7 +939,14 @@ function WorkspaceBuildPreview({
   const toolDetails = collectToolDetails(messages)
   const workspace = getRecord(workspaceState.data?.workspace)
   const checkpoint = getRecord(workspaceState.data?.checkpoint)
+  const input = getRecord(workspace.input)
+  const memory = getRecord(workspace.memory)
   const task = getRecord(workspace.task)
+  const tools = getRecord(workspace.tools)
+  const draft = getRecord(workspace.draft)
+  const final = getRecord(workspace.final)
+  const trace = asArray(workspace.trace)
+  const runtime = getRecord(workspaceState.data?.runtime)
   const sections = [
     {
       id: 'input',
@@ -880,22 +955,37 @@ function WorkspaceBuildPreview({
       current: currentAction?.kind === 'user_to_b1',
       body: compactText(lastUser?.body, 160),
       meta: `${lastUser?.attachments?.length ?? 0} 个上传文件`,
+      value: Object.keys(input).length > 0 ? input : {
+        conversation_id: workspaceState.data?.conversation_id ?? null,
+        user_input: lastUser?.body ?? null,
+        attachments: lastUser?.attachments ?? [],
+        message_count: messages.length,
+      },
     },
     {
       id: 'memory',
       title: 'memory',
-      done: actionDone(visibleActions, 'b1_to_b5'),
-      current: currentAction?.kind === 'b1_to_b5',
+      done: actionDone(visibleActions, 'b5_to_b1'),
+      current: currentAction?.kind === 'b1_to_b5' || currentAction?.kind === 'b5_to_b1',
       body: workspaceState.data ? '已接收 B5 返回的 conversation / recall context' : '等待 B5 上下文',
       meta: workspaceState.data?.selected_memory ? 'selected memory loaded' : 'side channel pending',
+      value: Object.keys(memory).length > 0 ? memory : {
+        selected_memory: workspaceState.data?.selected_memory ?? null,
+        runtime: workspaceState.data?.runtime ?? null,
+      },
     },
     {
       id: 'llm',
-      title: 'LLM decision',
-      done: actionDone(visibleActions, 'b1_to_b4'),
-      current: currentAction?.kind === 'b1_to_b4',
+      title: 'task / state',
+      done: actionDone(visibleActions, 'b1_to_b4') || actionDone(visibleActions, 'b4_to_b1'),
+      current: currentAction?.kind === 'b1_to_b4' || currentAction?.kind === 'b4_to_b1',
       body: getString(task, 'stage', workspaceStage(workspaceState, false)),
       meta: `${messages.length} 条 message`,
+      value: Object.keys(task).length > 0 ? task : {
+        stage: workspaceStage(workspaceState, false),
+        action: currentAction?.title ?? null,
+        latest_pending: latestMessage(messages, 'assistant')?.status === 'pending',
+      },
     },
     {
       id: 'tools',
@@ -904,6 +994,26 @@ function WorkspaceBuildPreview({
       current: currentAction?.kind === 'b1_to_tool',
       body: toolDetails.length > 0 ? compactText(toolDetails[toolDetails.length - 1].label, 120) : '无工具调用',
       meta: `${toolDetails.length} 项中间过程`,
+      value: Object.keys(tools).length > 0 ? tools : {
+        details: toolDetails.map((detail) => ({
+          label: detail.label,
+          kind: detail.kind,
+          status: detail.status,
+          body: detail.body,
+        })),
+      },
+    },
+    {
+      id: 'draft',
+      title: 'draft',
+      done: actionDone(visibleActions, 'b4_to_b1') || actionDone(visibleActions, 'b1_to_tool'),
+      current: currentAction?.kind === 'b4_to_b1',
+      body: Object.keys(draft).length > 0 ? '已读取运行时草稿字段' : '等待模型阶段判断或工具观察',
+      meta: `${trace.length} 条 trace`,
+      value: Object.keys(draft).length > 0 ? draft : {
+        trace,
+        latest_action: currentAction,
+      },
     },
     {
       id: 'final',
@@ -912,6 +1022,19 @@ function WorkspaceBuildPreview({
       current: currentAction?.kind === 'b1_to_user',
       body: compactText(finalAssistant?.body, 160),
       meta: finalAssistant?.artifacts?.length ? `${finalAssistant.artifacts.length} 个生成文件` : 'answer payload',
+      value: Object.keys(final).length > 0 ? final : {
+        answer: finalAssistant?.body ?? null,
+        artifacts: finalAssistant?.artifacts ?? [],
+      },
+    },
+    {
+      id: 'trace',
+      title: 'trace',
+      done: visibleActions.length > 0 && trace.length > 0,
+      current: currentAction?.kind === 'b4_to_b1' || currentAction?.kind === 'tool_to_b1',
+      body: trace.length > 0 ? `已记录 ${trace.length} 个阶段快照` : '等待阶段轨迹',
+      meta: 'workspace trace',
+      value: trace,
     },
     {
       id: 'checkpoint',
@@ -920,6 +1043,23 @@ function WorkspaceBuildPreview({
       current: false,
       body: getString(checkpoint, 'status', workspaceState.error ? `读取失败：${workspaceState.error}` : '等待 checkpoint'),
       meta: getString(checkpoint, 'stage', 'stage unknown'),
+      value: {
+        checkpoint,
+        tools_schema_count: workspaceState.data?.tools_schema_count ?? 0,
+        status: workspaceState.data?.status ?? null,
+      },
+    },
+    {
+      id: 'runtime',
+      title: 'runtime / selected memory',
+      done: Boolean(workspaceState.data),
+      current: false,
+      body: workspaceState.data ? '已读取本轮运行参数和记忆选择结果' : '等待运行旁路数据',
+      meta: `${workspaceState.data?.tools_schema_count ?? 0} 个 tool schema`,
+      value: {
+        runtime,
+        selected_memory: workspaceState.data?.selected_memory ?? null,
+      },
     },
   ]
 
@@ -938,6 +1078,7 @@ function WorkspaceBuildPreview({
           <h4>{section.title}</h4>
           <p>{section.body}</p>
           <span>{section.meta}</span>
+          {(section.done || section.current) && <JsonBlock value={section.value} />}
         </section>
       ))}
     </div>
@@ -945,53 +1086,75 @@ function WorkspaceBuildPreview({
 }
 
 function DemoPanel(props: B1ModuleViewProps & { workspaceState: WorkspaceLoadState }) {
-  const { messages } = props
+  const { messages, runtimeEvents } = props
   const { workspaceState } = props
   const activeStage = workspaceStage(workspaceState, props.isRunning)
   const stages = ['planning', 'tool_calling', 'observation', 'answering', 'done', 'failed', 'cancelled']
   const detectedActions = useMemo(
     () => buildB1DemoActions({
-      conversationId: props.conversationId,
-      messages,
-      isRunning: props.isRunning,
+      runtimeEvents,
       workspaceState,
     }),
-    [messages, props.conversationId, props.isRunning, workspaceState],
+    [runtimeEvents, workspaceState],
   )
   const [queuedActions, setQueuedActions] = useState<B1GraphAction[]>([])
   const [playedActions, setPlayedActions] = useState<B1GraphAction[]>([])
   const [currentAction, setCurrentAction] = useState<B1GraphAction | null>(null)
   const seenActionKeys = useRef<Set<string>>(new Set())
-  const lastConversation = useRef<string | null>(null)
+  const lastTurn = useRef<string | null>(null)
+  const initialized = useRef(false)
+  const turnKey = useMemo(
+    () => latestTurnKey(props.conversationId, runtimeEvents),
+    [props.conversationId, runtimeEvents],
+  )
 
   useEffect(() => {
-    const conversationKey = props.conversationId ?? '__none__'
-    const runActive = props.isRunning || messages.some((message) => message.status === 'pending')
-    if (lastConversation.current !== conversationKey) {
-      lastConversation.current = conversationKey
-      seenActionKeys.current = runActive ? new Set() : new Set(detectedActions.map((action) => action.key))
-      setQueuedActions([])
-      setPlayedActions([])
-      setCurrentAction(null)
-      if (!runActive) return
-    }
-    const freshActions = detectedActions.filter((action) => !seenActionKeys.current.has(action.key))
-    if (freshActions.length === 0) return
-    freshActions.forEach((action) => seenActionKeys.current.add(action.key))
-    setQueuedActions((items) => [...items, ...freshActions])
-  }, [detectedActions, messages, props.conversationId, props.isRunning])
+    const timer = window.setTimeout(() => {
+      if (!initialized.current) {
+        initialized.current = true
+        lastTurn.current = turnKey
+        seenActionKeys.current = new Set(detectedActions.map((action) => action.key))
+        setQueuedActions([])
+        setCurrentAction(null)
+        setPlayedActions([...detectedActions].reverse().slice(0, 12))
+        return
+      }
+      if (lastTurn.current !== turnKey) {
+        lastTurn.current = turnKey
+        seenActionKeys.current = new Set(detectedActions.map((action) => action.key))
+        setPlayedActions([])
+        setCurrentAction(null)
+        setQueuedActions(detectedActions)
+        return
+      }
+      const freshActions = detectedActions.filter((action) => !seenActionKeys.current.has(action.key))
+      if (freshActions.length === 0) return
+      freshActions.forEach((action) => seenActionKeys.current.add(action.key))
+      setQueuedActions((items) => [...items, ...freshActions])
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [detectedActions, turnKey])
 
   useEffect(() => {
     if (currentAction || queuedActions.length === 0) return undefined
     const [nextAction, ...rest] = queuedActions
-    setQueuedActions(rest)
-    setCurrentAction(nextAction)
     const timer = window.setTimeout(() => {
-      setPlayedActions((items) => [nextAction, ...items].slice(0, 12))
+      setQueuedActions(rest)
+      setCurrentAction(nextAction)
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [currentAction, queuedActions])
+
+  useEffect(() => {
+    if (!currentAction) return undefined
+    const timer = window.setTimeout(() => {
+      setPlayedActions((items) => [currentAction, ...items].slice(0, 12))
       setCurrentAction(null)
     }, B1_ACTION_PLAY_MS)
     return () => window.clearTimeout(timer)
-  }, [currentAction, queuedActions])
+  }, [currentAction])
+  const displayedStage = stageForAction(currentAction, activeStage)
+  const latestAction = detectedActions[detectedActions.length - 1] ?? currentAction ?? playedActions[0] ?? null
 
   return (
     <div className="b1-module">
@@ -1000,26 +1163,27 @@ function DemoPanel(props: B1ModuleViewProps & { workspaceState: WorkspaceLoadSta
           <span>B1</span>
           <h2>信息流与状态控制演示</h2>
         </div>
-        <strong>前端预览</strong>
       </div>
 
       <div className="b1-demo-control-grid">
-        <section className="b1-panel b1-graph-panel">
-          <h3>模块依赖与信息流</h3>
-          <B1TopologyGraph workspaceState={workspaceState} isRunning={props.isRunning} action={currentAction} />
-        </section>
+        <div className="b1-demo-left-column">
+          <section className="b1-panel b1-graph-panel">
+            <h3>模块依赖与信息流</h3>
+            <B1TopologyGraph workspaceState={workspaceState} isRunning={props.isRunning} action={currentAction} />
+          </section>
 
-        <section className="b1-panel b1-state-panel">
-          <h3>状态控制</h3>
-          <div className="b1-stage-strip">
-            {stages.map((stage) => <span className={stage === activeStage ? 'active' : ''} key={stage}>{stage}</span>)}
-          </div>
-        </section>
+          <section className="b1-panel b1-state-panel">
+            <h3>状态控制</h3>
+            <div className="b1-stage-strip">
+              {stages.map((stage) => <span className={stage === displayedStage ? 'active' : ''} key={stage}>{stage}</span>)}
+            </div>
+          </section>
 
-        <section className="b1-panel b1-flow-demo-panel">
-          <h3>当前流转信息</h3>
-          <B1ActionPanel currentAction={currentAction} playedActions={playedActions} queuedActions={queuedActions} />
-        </section>
+          <section className="b1-panel b1-flow-demo-panel">
+            <h3>当前流转信息</h3>
+            <B1ActionPanel action={latestAction} queuedActions={queuedActions} />
+          </section>
+        </div>
 
         <section className="b1-panel b1-demo-workspace-panel">
           <h3>Workspace 快照</h3>
@@ -1058,7 +1222,15 @@ function DemoPanel(props: B1ModuleViewProps & { workspaceState: WorkspaceLoadSta
 }
 
 export function B1ModuleView(props: B1ModuleViewProps) {
-  const workspaceState = useB1WorkspaceCheckpoint(props.conversationId, props.isRunning)
+  const eventRevision = props.runtimeEvents[props.runtimeEvents.length - 1]?.id ?? 0
+  const startEvent = props.runtimeEvents.find((record) => record.event.type === 'start')?.event
+  const expectedRunId = startEvent?.type === 'start' ? startEvent.run_id ?? null : null
+  const workspaceState = useB1WorkspaceCheckpoint(
+    props.conversationId,
+    props.isRunning,
+    eventRevision,
+    expectedRunId,
+  )
   return props.mode === 'observe'
     ? <ObservationPanel {...props} workspaceState={workspaceState} />
     : <DemoPanel {...props} workspaceState={workspaceState} />
