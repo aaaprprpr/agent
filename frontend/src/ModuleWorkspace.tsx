@@ -3,7 +3,8 @@ import { B2ModuleView } from './B2ModuleView'
 import { B3ModuleView } from './B3ModuleView'
 import { B5ModuleView } from './B5ModuleView'
 import type { ModuleMode, ModuleView, ModuleViewId } from './appNavigation'
-import type { ChatMessage, HistoryItem } from './types'
+import type { ChangeEventHandler, KeyboardEventHandler, RefObject } from 'react'
+import type { Attachment, ChatMessage, HistoryItem } from './types'
 
 type ModuleWorkspaceProps = {
   activeModule: ModuleView | null
@@ -13,6 +14,23 @@ type ModuleWorkspaceProps = {
   isRunning: boolean
   isStopping: boolean
   messages: ChatMessage[]
+  attachments: Attachment[]
+  dragActive: boolean
+  draft: string
+  canSend: boolean
+  inputRef: RefObject<HTMLTextAreaElement | null>
+  fileRef: RefObject<HTMLInputElement | null>
+  onDraftChange: (value: string) => void
+  onKeyDown: KeyboardEventHandler<HTMLTextAreaElement>
+  onFileChange: ChangeEventHandler<HTMLInputElement>
+  onRemoveAttachment: (id: number) => void
+  onSend: () => void
+  onStop: () => void
+  promptOpen: boolean
+  systemPrompt: string
+  onPromptToggle: () => void
+  onPromptSave: () => void
+  onSystemPromptChange: (value: string) => void
   onToggleMode: (moduleId: ModuleViewId) => void
 }
 
@@ -24,6 +42,23 @@ export function ModuleWorkspace({
   isRunning,
   isStopping,
   messages,
+  attachments,
+  dragActive,
+  draft,
+  canSend,
+  inputRef,
+  fileRef,
+  onDraftChange,
+  onKeyDown,
+  onFileChange,
+  onRemoveAttachment,
+  onSend,
+  onStop,
+  promptOpen,
+  systemPrompt,
+  onPromptToggle,
+  onPromptSave,
+  onSystemPromptChange,
   onToggleMode,
 }: ModuleWorkspaceProps) {
   return (
@@ -49,6 +84,23 @@ export function ModuleWorkspace({
           conversationId={conversationId}
           isRunning={isRunning}
           isStopping={isStopping}
+          attachments={attachments}
+          dragActive={dragActive}
+          draft={draft}
+          canSend={canSend}
+          inputRef={inputRef}
+          fileRef={fileRef}
+          onDraftChange={onDraftChange}
+          onKeyDown={onKeyDown}
+          onFileChange={onFileChange}
+          onRemoveAttachment={onRemoveAttachment}
+          onSend={onSend}
+          onStop={onStop}
+          promptOpen={promptOpen}
+          systemPrompt={systemPrompt}
+          onPromptToggle={onPromptToggle}
+          onPromptSave={onPromptSave}
+          onSystemPromptChange={onSystemPromptChange}
         />
       )}
       {activeModule?.id === 'b2' && (
