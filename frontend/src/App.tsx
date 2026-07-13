@@ -26,9 +26,32 @@ import {
 } from './toolTraceUtils'
 import { buildUploadPayloads } from './uploadUtils'
 import type { Attachment, ChatMessage, HistoryItem, RunStreamEvent } from './types'
+import { B1ModuleView } from './B1ModuleView'
 import './App.css'
 
+const MODULE_VIEWS = [
+  { id: 'b1', label: 'B1', title: 'Agent运行与消息管理模块' },
+  { id: 'b2', label: 'B2', title: 'Skill工具函数模块' },
+  { id: 'b3', label: 'B3', title: '说明生成与工具调用模块' },
+  { id: 'b4', label: 'B4', title: 'Agent LLM决策模块' },
+  { id: 'b5', label: 'B5', title: '记忆文档存储与查找模块' },
+] as const
+
+type ModuleViewId = (typeof MODULE_VIEWS)[number]['id']
+type ActiveViewId = 'chat' | ModuleViewId
+type ModuleMode = 'observe' | 'demo'
+
+const DEFAULT_MODULE_MODES: Record<ModuleViewId, ModuleMode> = {
+  b1: 'observe',
+  b2: 'observe',
+  b3: 'observe',
+  b4: 'observe',
+  b5: 'observe',
+}
+
 function App() {
+  const [activeView, setActiveView] = useState<ActiveViewId>('chat')
+  const [moduleModes, setModuleModes] = useState<Record<ModuleViewId, ModuleMode>>(DEFAULT_MODULE_MODES)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [histories, setHistories] = useState<HistoryItem[]>([])
   const [currentConversationId, setCurrentConversationId] = useState<string | null>(null)
@@ -53,6 +76,9 @@ function App() {
   const isCurrentConversationStopping = currentConversationId ? cancellingConversationIds.has(currentConversationId) : false
   const hasPendingMessage = messages.some((message) => message.status === 'pending')
   const canSend = draft.trim().length > 0 && !isCurrentConversationRunning && !isCurrentConversationStopping && !hasPendingMessage
+  const isChatView = activeView === 'chat'
+  const activeModule = isChatView ? null : MODULE_VIEWS.find((item) => item.id === activeView) ?? null
+  const activeModuleMode = activeModule ? moduleModes[activeModule.id] : 'observe'
 
   function setActiveConversation(conversationId: string | null) {
     currentConversationIdRef.current = conversationId
@@ -213,9 +239,6 @@ function App() {
 
   async function deleteConversation(conversationId: string) {
     if (runningConversationIdsRef.current.has(conversationId)) return
-    const item = histories.find((history) => history.id === conversationId)
-    const title = item?.title || '当前对话'
-    if (!window.confirm(`删除“${title}”？本对话的上传文件也会一并删除。`)) return
     try {
       await deleteBackendConversation(API_BASE, conversationId)
       setHistories((current) => current.filter((history) => history.id !== conversationId))
@@ -246,7 +269,7 @@ function App() {
     event.target.value = ''
   }
 
-  function handleDrop(event: DragEvent<HTMLDivElement>) {
+  function handleDrop(event: DragEvent<HTMLElement>) {
     event.preventDefault()
     setDragActive(false)
     if (event.dataTransfer.files.length) addFiles(event.dataTransfer.files)
@@ -717,6 +740,13 @@ function App() {
     }
   }
 
+  function toggleModuleMode(moduleId: ModuleViewId) {
+    setModuleModes((current) => ({
+      ...current,
+      [moduleId]: current[moduleId] === 'observe' ? 'demo' : 'observe',
+    }))
+  }
+
   function resizeInput() {
     const node = inputRef.current
     if (!node) return
@@ -759,15 +789,20 @@ function App() {
 
   return (
     <main
-      className={`app-shell ${dragActive ? 'is-dragging' : ''}`}
+      className={`app-shell ${isChatView && dragActive ? 'is-dragging' : ''}`}
       onDragOver={(event) => {
+        if (!isChatView) return
         event.preventDefault()
         setDragActive(true)
       }}
       onDragLeave={(event) => {
+        if (!isChatView) return
         if (event.currentTarget === event.target) setDragActive(false)
       }}
-      onDrop={handleDrop}
+      onDrop={(event) => {
+        if (!isChatView) return
+        handleDrop(event)
+      }}
     >
       <aside className={`sidebar ${sidebarCollapsed ? 'collapsed' : ''}`}>
         <div className="sidebar-top">
@@ -784,10 +819,29 @@ function App() {
           </div>
         </div>
 
+        <div className="module-tabs" aria-label="验收模块">
+          {MODULE_VIEWS.map((item) => (
+            <button
+              className={`module-tab ${item.id === activeView ? 'active' : ''}`}
+              type="button"
+              key={item.id}
+              title={`${item.label} ${item.title}`}
+              onClick={() => {
+                setActiveView(item.id)
+                setDragActive(false)
+              }}
+            >
+              <span>{item.label}</span>
+              <small>{item.title}</small>
+            </button>
+          ))}
+        </div>
+
         <button
           className="new-chat"
           type="button"
           onClick={() => {
+            setActiveView('chat')
             stickToBottomRef.current = true
             setMessages([])
             setActiveConversation(null)
@@ -809,6 +863,7 @@ function App() {
                 className="history-open"
                 type="button"
                 onClick={() => {
+                  setActiveView('chat')
                   setAttachments([])
                   setDraft('')
                   void loadConversation(item.id)
@@ -836,42 +891,72 @@ function App() {
       </aside>
 
       <section className="workspace">
-        <ChatMessageList
-          messages={messages}
-          apiBase={API_BASE}
-          conversationRef={conversationRef}
-          onScroll={updateScrollButton}
-          onToggleTool={toggleToolPanel}
-          onResumeMessage={handleResumeMessage}
-        />
+        {isChatView ? (
+          <>
+            <ChatMessageList
+              messages={messages}
+              apiBase={API_BASE}
+              conversationRef={conversationRef}
+              onScroll={updateScrollButton}
+              onToggleTool={toggleToolPanel}
+              onResumeMessage={handleResumeMessage}
+            />
 
-        {showScrollBottom && (
-          <button
-            className="scroll-bottom-button"
-            type="button"
-            aria-label="跳到最新消息"
-            onClick={() => scrollToBottom()}
-          >
-            ↓
-          </button>
+            {showScrollBottom && (
+              <button
+                className="scroll-bottom-button"
+                type="button"
+                aria-label="跳到最新消息"
+                onClick={() => scrollToBottom()}
+              >
+                ↓
+              </button>
+            )}
+
+            <Composer
+              attachments={attachments}
+              dragActive={dragActive}
+              draft={draft}
+              canSend={canSend}
+              inputRef={inputRef}
+              fileRef={fileRef}
+              onDraftChange={setDraft}
+              onKeyDown={handleKeyDown}
+              onFileChange={handleFileChange}
+              onRemoveAttachment={(id) => setAttachments((current) => current.filter((item) => item.id !== id))}
+              onSend={handleSend}
+              isRunning={isCurrentConversationRunning}
+              isStopping={isCurrentConversationStopping}
+              onStop={() => stopConversation(currentConversationId)}
+            />
+          </>
+        ) : (
+          <section className="module-placeholder" aria-label={`${activeView.toUpperCase()} 验收界面`}>
+            {activeModule && (
+              <button
+                className={`module-mode-switch ${activeModuleMode === 'demo' ? 'is-demo' : ''}`}
+                type="button"
+                aria-label={`切换${activeModule.label}展示模式`}
+                aria-pressed={activeModuleMode === 'demo'}
+                onClick={() => toggleModuleMode(activeModule.id)}
+              >
+                <span className="mode-label">观察</span>
+                <span className="mode-label">演示</span>
+                <span className="mode-thumb" aria-hidden="true" />
+              </button>
+            )}
+            {activeModule?.id === 'b1' && (
+              <B1ModuleView
+                mode={activeModuleMode}
+                messages={messages}
+                histories={histories}
+                conversationId={currentConversationId}
+                isRunning={isCurrentConversationRunning}
+                isStopping={isCurrentConversationStopping}
+              />
+            )}
+          </section>
         )}
-
-        <Composer
-          attachments={attachments}
-          dragActive={dragActive}
-          draft={draft}
-          canSend={canSend}
-          inputRef={inputRef}
-          fileRef={fileRef}
-          onDraftChange={setDraft}
-          onKeyDown={handleKeyDown}
-          onFileChange={handleFileChange}
-          onRemoveAttachment={(id) => setAttachments((current) => current.filter((item) => item.id !== id))}
-          onSend={handleSend}
-          isRunning={isCurrentConversationRunning}
-          isStopping={isCurrentConversationStopping}
-          onStop={() => stopConversation(currentConversationId)}
-        />
       </section>
     </main>
   )
