@@ -6,9 +6,11 @@ models/*
 !models/.gitkeep
 
 outputs/
-memory
-memory/conversations
-memory/memory_index.json
+memory/*
+!memory/memory_index.json
+!memory/conversations/
+memory/conversations/*
+!memory/conversations/conv_000.md
 outputs/full_demo
 
 .env
