@@ -112,6 +112,31 @@ export type B2SkillRunResponse = {
   result: Record<string, unknown>
 }
 
+export type B3ToolsSchemaResponse = {
+  status: string
+  module: string
+  toolset: string
+  tool_count: number
+  tools: string[]
+  tools_schema: Record<string, unknown>[]
+  toolsets?: Record<string, string[]>
+}
+
+export type B3ToolCallsPreviewResponse = {
+  status: string
+  module: string
+  toolset: string
+  run_id: string
+  output_dir: string
+  tool_count: number
+  tools: string[]
+  tools_schema: Record<string, unknown>[]
+  tool_calls: Record<string, unknown>[]
+  tool_messages: Record<string, unknown>[]
+  results: Record<string, unknown>[]
+  summary?: Record<string, unknown>
+}
+
 export type B5MemorySnapshot = {
   status: string
   conversation_id: string

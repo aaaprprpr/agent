@@ -100,5 +100,11 @@ class B2SkillRunRequest(BaseModel):
     toolset: str = "basic_tools"
 
 
+class B3ToolCallsPreviewRequest(BaseModel):
+    ai_message: dict | None = None
+    tool_calls: list = Field(default_factory=list)
+    toolset: str = "basic_tools"
+
+
 class B5RecallPreviewRequest(BaseModel):
     current_user_input: str = Field(..., min_length=1)

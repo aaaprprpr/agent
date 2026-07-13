@@ -21,7 +21,7 @@ python test.py
 修复bug：页面JSX文本`->`导致Vite/OXC解析失败
 修B5的bug x N
 实现B2验收页后端API
-
+实现B3验收页后端API
 
 
 # -------------------------7.12------------------------------
@@ -267,3 +267,11 @@ tool/skill 第一批增强：
 - 在 `prompts/b5_memory_prompts.json` 的 reflection system prompt 中加入语言保持约束：自然语言记忆字段跟随用户主要语言；中文输入/回答时使用简洁中文，同时保留文件路径、工具名、代码标识符、labels 和 scoped retrieval keys 原样。
 - 将 B5 自身生成的 fallback summary、memory block 标题/摘要、召回上下文固定说明改为中文表达，减少新记忆和演示页中由模板带来的英文混入。
 - 本次未启动项目、未跑训练、未跑测试、未调用模型；只做静态 diff 和文本检查。旧数据库中已经生成的英文摘要不会自动改变，需要后续新对话或重新生成记忆才能体现效果。
+
+# -------------------------7.13 B3 验收页真实化实现------------------------------
+
+- 新增 B3 后端验收 API：`GET /api/b3/tools-schema` 真实调用 `get_tools_schema` 返回当前 toolset 的 OpenAI-style tools schema；`POST /api/b3/tool-calls/preview` 真实调用 `execute_tool_calls` 执行 AIMessage/tool_calls，并返回 ToolMessage、解析后的 SkillResult、schema 和本次输出目录。
+- B3 API 只做 HTTP 包装，不改 `code/b3_tool_layer.py` 核心逻辑，不改 B1/B2/B4/B5 主链路；演示输出隔离写入 `outputs/backend_runs/b3_demo/<run_id>/`。
+- 前端 B3 观察页保留从当前对话 toolDetails 读取真实闭环的逻辑，并补充真实 schema 概览；演示页提供计算、文件读取、多工具、缺参错误、未知工具和 Markdown 文件生成等 AIMessage 样例，也允许手动编辑 JSON 后真实调用 B3，非法 tool_calls 会保留给 B3 校验并返回 ToolMessage error。
+- 页面明确区分不会调用 B4 模型；文件生成类样例会真实产生 demo 输出。支持展示 ToolMessage、SkillResult、schema、错误和 artifact 下载入口。
+- 本次未启动项目、未跑训练、未跑测试、未执行工具；只做静态 diff 检查。需要你前端实际复测 B3 观察页和演示页各样例。

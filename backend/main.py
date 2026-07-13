@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 from datetime import datetime
 from pathlib import Path, PurePosixPath
@@ -20,6 +21,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from backend.api_models import (  # noqa: E402
     B2SkillRunRequest,
+    B3ToolCallsPreviewRequest,
     B5RecallPreviewRequest,
     ConversationDetail,
     ConversationMessage,
@@ -76,6 +78,8 @@ from b1_agent_runtime import resume_stream as resume_agent_runtime_stream  # noq
 from b1_agent_runtime import run as run_agent_runtime  # noqa: E402
 from b1_agent_runtime import run_stream as run_agent_runtime_stream  # noqa: E402
 from b2_run_skill import run_skill as run_b2_skill  # noqa: E402
+from b3_tool_layer import execute_tool_calls as execute_b3_tool_calls  # noqa: E402
+from b3_tool_layer import get_tools_schema as get_b3_tools_schema  # noqa: E402
 from common.identifiers import validate_conversation_id  # noqa: E402
 from common.io_utils import append_jsonl, write_json  # noqa: E402
 from common.logging_utils import now_iso  # noqa: E402
@@ -198,6 +202,27 @@ def _b2_skill_summary(name: str, definition: dict, enabled: bool) -> dict:
         "parameter_count": len(parameters),
         "return_count": len(returns),
     }
+
+
+def _b3_tool_calls_from_request(request: B3ToolCallsPreviewRequest) -> list:
+    if request.tool_calls:
+        return request.tool_calls
+    if isinstance(request.ai_message, dict):
+        tool_calls = request.ai_message.get("tool_calls")
+        if isinstance(tool_calls, list):
+            return tool_calls
+    return []
+
+
+def _parse_b3_tool_message(message: dict) -> dict | None:
+    content = message.get("content")
+    if not isinstance(content, str):
+        return None
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def _register_cancel_event(conversation_id: str) -> Event:
@@ -1148,6 +1173,100 @@ def run_b2_skill_preview(request: B2SkillRunRequest) -> dict:
         "run_id": run_id,
         "output_dir": str(output_dir),
         "result": result,
+    }
+
+
+@app.get("/api/b3/tools-schema")
+def get_b3_schema(toolset: str | None = None) -> dict:
+    try:
+        _, config = load_tools_config(str(TOOLS_CONFIG))
+        selected, enabled_tools = resolve_toolset(config, toolset)
+        schema = get_b3_tools_schema(str(TOOLS_CONFIG), selected, None)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "status": "success",
+        "module": "B3",
+        "toolset": selected,
+        "tool_count": len(schema),
+        "tools": enabled_tools,
+        "tools_schema": schema,
+        "toolsets": config.get("toolsets", {}),
+    }
+
+
+@app.post("/api/b3/tool-calls/preview")
+def run_b3_tool_calls_preview(request: B3ToolCallsPreviewRequest) -> dict:
+    tool_calls = _b3_tool_calls_from_request(request)
+    if not tool_calls:
+        raise HTTPException(status_code=400, detail="tool_calls is required")
+    try:
+        _, config = load_tools_config(str(TOOLS_CONFIG))
+        selected, enabled_tools = resolve_toolset(config, request.toolset)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    run_id = _now_stamp()
+    output_dir = OUTPUT_ROOT / "b3_demo" / run_id
+    output_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        schema = get_b3_tools_schema(str(TOOLS_CONFIG), selected, str(output_dir))
+        tool_messages = execute_b3_tool_calls(tool_calls, str(TOOLS_CONFIG), selected, str(output_dir))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
+
+    results = []
+    success_count = 0
+    error_count = 0
+    for index, message in enumerate(tool_messages):
+        parsed = _parse_b3_tool_message(message)
+        status = str(message.get("status") or (parsed or {}).get("status") or "unknown")
+        if status == "success":
+            success_count += 1
+        elif status == "error":
+            error_count += 1
+        results.append(
+            {
+                "index": index,
+                "tool_call_id": message.get("tool_call_id"),
+                "name": message.get("name"),
+                "status": status,
+                "skill_result": parsed,
+            }
+        )
+
+    return {
+        "status": "success",
+        "module": "B3",
+        "toolset": selected,
+        "run_id": run_id,
+        "output_dir": str(output_dir),
+        "tool_count": len(enabled_tools),
+        "tools": enabled_tools,
+        "tools_schema": schema,
+        "tool_calls": tool_calls,
+        "tool_messages": tool_messages,
+        "results": results,
+        "summary": {
+            "tool_call_count": len(tool_calls),
+            "tool_message_count": len(tool_messages),
+            "success_count": success_count,
+            "error_count": error_count,
+            "schema_count": len(schema),
+            "artifacts": [
+                artifact
+                for result in results
+                for artifact in (
+                    (result.get("skill_result") or {}).get("artifacts", [])
+                    if isinstance(result.get("skill_result"), dict)
+                    and isinstance((result.get("skill_result") or {}).get("artifacts"), list)
+                    else []
+                )
+                if isinstance(artifact, dict)
+            ],
+        },
     }
 
 

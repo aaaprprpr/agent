@@ -1,6 +1,8 @@
 import type {
   B2SkillRunResponse,
   B2SkillsResponse,
+  B3ToolCallsPreviewResponse,
+  B3ToolsSchemaResponse,
   B5MemorySnapshot,
   B5RecallPreviewResponse,
   BackendConversation,
@@ -95,6 +97,34 @@ export async function runB2SkillPreview(
     throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
   }
   return (await response.json()) as B2SkillRunResponse
+}
+
+export async function fetchB3ToolsSchema(apiBase: string, toolset = 'basic_tools') {
+  const response = await fetch(apiUrl(apiBase, `/api/b3/tools-schema?toolset=${encodeURIComponent(toolset)}`))
+  if (!response.ok) {
+    const payload = await jsonOrNull(response)
+    const detail = payload?.detail ?? `HTTP ${response.status}`
+    throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
+  }
+  return (await response.json()) as B3ToolsSchemaResponse
+}
+
+export async function runB3ToolCallsPreview(
+  apiBase: string,
+  aiMessage: Record<string, unknown>,
+  toolset = 'basic_tools',
+) {
+  const response = await fetch(apiUrl(apiBase, '/api/b3/tool-calls/preview'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ai_message: aiMessage, toolset }),
+  })
+  if (!response.ok) {
+    const payload = await jsonOrNull(response)
+    const detail = payload?.detail ?? `HTTP ${response.status}`
+    throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
+  }
+  return (await response.json()) as B3ToolCallsPreviewResponse
 }
 
 export async function fetchB5MemorySnapshot(apiBase: string, conversationId: string) {
