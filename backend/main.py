@@ -77,6 +77,7 @@ if str(CODE_DIR) not in sys.path:
 from b1_agent_runtime import resume_stream as resume_agent_runtime_stream  # noqa: E402
 from b1_agent_runtime import run as run_agent_runtime  # noqa: E402
 from b1_agent_runtime import run_stream as run_agent_runtime_stream  # noqa: E402
+from b1_agent_runtime_parts.b1_checkpoint import checkpoint_metadata, load_checkpoint  # noqa: E402
 from b2_run_skill import run_skill as run_b2_skill  # noqa: E402
 from b3_tool_layer import execute_tool_calls as execute_b3_tool_calls  # noqa: E402
 from b3_tool_layer import get_tools_schema as get_b3_tools_schema  # noqa: E402
@@ -1124,6 +1125,47 @@ def get_b2_skills(toolset: str | None = None) -> dict:
             "default_workspace_root": settings.get("default_workspace_root"),
             "workspace_roots": sorted(workspace_roots.keys()),
         },
+    }
+
+
+@app.get("/api/b1/conversations/{conversation_id}/workspace")
+def get_b1_workspace_checkpoint(conversation_id: str) -> dict:
+    safe_conversation_id = _safe_conversation_id(conversation_id)
+    metadata = checkpoint_metadata(safe_conversation_id)
+    if not metadata["exists"]:
+        return {
+            "status": "missing",
+            "module": "B1",
+            "conversation_id": safe_conversation_id,
+            "checkpoint": metadata,
+            "workspace": None,
+        }
+    try:
+        checkpoint = load_checkpoint(safe_conversation_id)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
+
+    runtime = checkpoint.get("runtime") if isinstance(checkpoint.get("runtime"), dict) else {}
+    workspace = checkpoint.get("workspace") if isinstance(checkpoint.get("workspace"), dict) else None
+    tools_schema = checkpoint.get("tools_schema")
+    selected_memory = checkpoint.get("selected_memory")
+    return {
+        "status": "success",
+        "module": "B1",
+        "conversation_id": safe_conversation_id,
+        "checkpoint": {
+            **metadata,
+            "schema_version": checkpoint.get("schema_version"),
+            "status": checkpoint.get("status"),
+            "stage": checkpoint.get("stage"),
+            "mode": checkpoint.get("mode"),
+            "execution_mode": checkpoint.get("execution_mode"),
+            "output_dir": checkpoint.get("output_dir"),
+        },
+        "runtime": runtime,
+        "selected_memory": selected_memory if isinstance(selected_memory, dict) else {},
+        "tools_schema_count": len(tools_schema) if isinstance(tools_schema, list) else 0,
+        "workspace": workspace,
     }
 
 

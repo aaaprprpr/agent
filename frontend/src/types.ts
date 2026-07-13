@@ -137,6 +137,17 @@ export type B3ToolCallsPreviewResponse = {
   summary?: Record<string, unknown>
 }
 
+export type B1WorkspaceSnapshot = {
+  status: string
+  module: string
+  conversation_id: string
+  checkpoint?: Record<string, unknown>
+  runtime?: Record<string, unknown>
+  selected_memory?: Record<string, unknown>
+  tools_schema_count?: number
+  workspace?: Record<string, unknown> | null
+}
+
 export type B5MemorySnapshot = {
   status: string
   conversation_id: string

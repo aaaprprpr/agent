@@ -1,4 +1,5 @@
 import type {
+  B1WorkspaceSnapshot,
   B2SkillRunResponse,
   B2SkillsResponse,
   B3ToolCallsPreviewResponse,
@@ -78,6 +79,16 @@ export async function fetchB2Skills(apiBase: string, toolset = 'basic_tools') {
     throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
   }
   return (await response.json()) as B2SkillsResponse
+}
+
+export async function fetchB1WorkspaceSnapshot(apiBase: string, conversationId: string) {
+  const response = await fetch(apiUrl(apiBase, `/api/b1/conversations/${encodeURIComponent(conversationId)}/workspace`))
+  if (!response.ok) {
+    const payload = await jsonOrNull(response)
+    const detail = payload?.detail ?? `HTTP ${response.status}`
+    throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
+  }
+  return (await response.json()) as B1WorkspaceSnapshot
 }
 
 export async function runB2SkillPreview(

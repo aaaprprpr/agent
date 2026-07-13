@@ -87,6 +87,7 @@ function App() {
   const isChatView = activeView === 'chat'
   const activeModule = isChatView ? null : MODULE_VIEWS.find((item) => item.id === activeView) ?? null
   const activeModuleMode = activeModule ? moduleModes[activeModule.id] : 'observe'
+  const acceptsComposerInput = isChatView || (activeModule?.id === 'b1' && activeModuleMode === 'demo')
 
   function setActiveConversation(conversationId: string | null) {
     currentConversationIdRef.current = conversationId
@@ -862,18 +863,18 @@ function App() {
 
   return (
     <main
-      className={`app-shell ${isChatView && dragActive ? 'is-dragging' : ''}`}
+      className={`app-shell ${acceptsComposerInput && dragActive ? 'is-dragging' : ''}`}
       onDragOver={(event) => {
-        if (!isChatView) return
+        if (!acceptsComposerInput) return
         event.preventDefault()
         setDragActive(true)
       }}
       onDragLeave={(event) => {
-        if (!isChatView) return
+        if (!acceptsComposerInput) return
         if (event.currentTarget === event.target) setDragActive(false)
       }}
       onDrop={(event) => {
-        if (!isChatView) return
+        if (!acceptsComposerInput) return
         handleDrop(event)
       }}
     >
@@ -1033,6 +1034,23 @@ function App() {
                 conversationId={currentConversationId}
                 isRunning={isCurrentConversationRunning}
                 isStopping={isCurrentConversationStopping}
+                attachments={attachments}
+                dragActive={dragActive}
+                draft={draft}
+                canSend={canSend}
+                inputRef={inputRef}
+                fileRef={fileRef}
+                onDraftChange={setDraft}
+                onKeyDown={handleKeyDown}
+                onFileChange={handleFileChange}
+                onRemoveAttachment={(id) => setAttachments((current) => current.filter((item) => item.id !== id))}
+                onSend={handleSend}
+                onStop={() => stopConversation(currentConversationId)}
+                promptOpen={promptPanelOpen}
+                systemPrompt={systemPrompt}
+                onPromptToggle={togglePromptPanel}
+                onPromptSave={() => void saveCurrentSystemPrompt()}
+                onSystemPromptChange={handleSystemPromptChange}
               />
             )}
             {activeModule?.id === 'b2' && (
