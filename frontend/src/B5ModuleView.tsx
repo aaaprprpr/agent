@@ -10,7 +10,7 @@ import {
 } from 'lucide-react'
 
 import { API_BASE } from './appConfig'
-import { fetchB5MemorySnapshot } from './backendApi'
+import { fetchB5MemorySnapshot, runB5RecallPreview } from './backendApi'
 import type { B5MemorySnapshot, B5RecallPreviewResponse } from './types'
 
 type ModuleMode = 'observe' | 'demo'
@@ -25,8 +25,6 @@ type SnapshotState = {
   loading: boolean
   error: string | null
 }
-
-type B5DemoTarget = 'compression' | 'recall'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -509,61 +507,6 @@ function ObservationPanel({
   )
 }
 
-function CompressionResult({ snapshot }: { snapshot: B5MemorySnapshot | null }) {
-  const summaries = asArray(snapshot?.turn_summaries)
-  const blocks = asArray(snapshot?.memory_blocks)
-
-  return (
-    <section className="b5-demo-result-card">
-      <header>
-        <Archive size={16} strokeWidth={1.9} aria-hidden="true" />
-        <div>
-          <h3>压缩结果</h3>
-          <p>展示当前会话已生成的轮级压缩和块级压缩。</p>
-        </div>
-      </header>
-
-      <div className="b5-result-columns">
-        <section>
-          <h4>轮级压缩</h4>
-          {summaries.length === 0 ? (
-            <p className="b5-empty">暂无轮级压缩。完成对话后等待 B5 后台反思写入。</p>
-          ) : (
-            <div className="b5-card-list">
-              {summaries.map((summary) => (
-                <article className="b5-mini-card" key={getString(summary, 'id', getString(summary, 'turn_id'))}>
-                  <span>第 {getString(summary, 'turn_index', '?')} 轮</span>
-                  <p>{compact(summary['summary'], 220)}</p>
-                  <div className="b5-tags">
-                    {getList(summary, 'labels', 5).map((label) => <span key={label}>{label}</span>)}
-                  </div>
-                </article>
-              ))}
-            </div>
-          )}
-        </section>
-
-        <section>
-          <h4>块级压缩</h4>
-          {blocks.length === 0 ? (
-            <p className="b5-empty">暂无块级压缩。块级压缩通常需要多个已完成轮次。</p>
-          ) : (
-            <div className="b5-card-list">
-              {blocks.map((block) => (
-                <article className="b5-mini-card" key={getString(block, 'id')}>
-                  <span>{getString(block, 'title')}</span>
-                  <em>第 {getNumber(block, 'start_turn_index')}-{getNumber(block, 'end_turn_index')} 轮</em>
-                  <p>{compact(block['summary'], 220)}</p>
-                </article>
-              ))}
-            </div>
-          )}
-        </section>
-      </div>
-    </section>
-  )
-}
-
 function RecallResult({
   query,
   preview,
@@ -653,10 +596,16 @@ function DemoPanel({
   conversationId,
   state,
   preview,
+  previewRunning,
+  previewError,
+  onRunRecall,
 }: {
   conversationId: string | null
   state: SnapshotState
   preview: B5RecallPreviewResponse | null
+  previewRunning: boolean
+  previewError: string | null
+  onRunRecall: (conversationId: string, query: string) => void
 }) {
   const messages = asArray(state.snapshot?.messages)
   const conversationOptions = useMemo(() => {
@@ -673,14 +622,12 @@ function DemoPanel({
   const [uploadedSourceName, setUploadedSourceName] = useState('')
   const [query, setQuery] = useState('')
   const [queryTouched, setQueryTouched] = useState(false)
-  const [activeResult, setActiveResult] = useState<B5DemoTarget>('compression')
 
   useEffect(() => {
     setSelectedConversationId(conversationId ?? '')
     setUploadedSourceName('')
     setQuery('')
     setQueryTouched(false)
-    setActiveResult('compression')
   }, [conversationId])
 
   useEffect(() => {
@@ -730,15 +677,6 @@ function DemoPanel({
             </section>
 
             <section className="b5-demo-card">
-              <h3>测试压缩</h3>
-              <p className="b5-note">读取当前会话历史，展示轮级压缩和块级压缩结构。</p>
-              <button type="button" disabled={!hasSource} onClick={() => setActiveResult('compression')}>
-                <Archive size={14} strokeWidth={1.9} aria-hidden="true" />
-                运行压缩演示
-              </button>
-            </section>
-
-            <section className="b5-demo-card">
               <h3>测试召回</h3>
               <label>
                 召回输入
@@ -750,19 +688,22 @@ function DemoPanel({
                   }}
                 />
               </label>
-              <button type="button" disabled={!hasSource || !query.trim()} onClick={() => setActiveResult('recall')}>
+              <button
+                type="button"
+                disabled={!hasSource || !selectedConversationId || !query.trim() || previewRunning}
+                onClick={() => {
+                  onRunRecall(selectedConversationId, query)
+                }}
+              >
                 <Play size={14} strokeWidth={1.9} aria-hidden="true" />
-                运行召回演示
+                {previewRunning ? '召回中' : '运行召回演示'}
               </button>
+              {previewError && <p className="b5-error-text">{previewError}</p>}
             </section>
           </aside>
 
           <main className="b5-demo-results" aria-label="B5 演示结果">
-            {activeResult === 'compression' ? (
-              <CompressionResult snapshot={state.snapshot} />
-            ) : (
-              <RecallResult query={query} preview={preview} snapshot={state.snapshot} />
-            )}
+            <RecallResult query={query} preview={preview} snapshot={state.snapshot} />
           </main>
         </div>
       )}
@@ -777,6 +718,8 @@ export function B5ModuleView({ mode, conversationId }: B5ModuleViewProps) {
     error: null,
   })
   const [preview, setPreview] = useState<B5RecallPreviewResponse | null>(null)
+  const [previewRunning, setPreviewRunning] = useState(false)
+  const [previewError, setPreviewError] = useState<string | null>(null)
 
   const refreshSnapshot = useCallback(async () => {
     if (!conversationId) {
@@ -801,6 +744,25 @@ export function B5ModuleView({ mode, conversationId }: B5ModuleViewProps) {
     void refreshSnapshot()
   }, [refreshSnapshot])
 
+  const runRecall = useCallback(async (targetConversationId: string, currentUserInput: string) => {
+    const target = targetConversationId.trim()
+    const input = currentUserInput.trim()
+    if (!target || !input || previewRunning) return
+    setPreviewRunning(true)
+    setPreviewError(null)
+    try {
+      const result = await runB5RecallPreview(API_BASE, target, input)
+      setPreview(result)
+      if (target === conversationId) {
+        await refreshSnapshot()
+      }
+    } catch (err) {
+      setPreviewError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setPreviewRunning(false)
+    }
+  }, [conversationId, previewRunning, refreshSnapshot])
+
   return mode === 'observe' ? (
     <ObservationPanel conversationId={conversationId} state={state} preview={preview} onRefresh={refreshSnapshot} />
   ) : (
@@ -808,6 +770,9 @@ export function B5ModuleView({ mode, conversationId }: B5ModuleViewProps) {
       conversationId={conversationId}
       state={state}
       preview={preview}
+      previewRunning={previewRunning}
+      previewError={previewError}
+      onRunRecall={(targetConversationId, query) => void runRecall(targetConversationId, query)}
     />
   )
 }
