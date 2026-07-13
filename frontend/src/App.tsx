@@ -27,6 +27,9 @@ import {
 import { buildUploadPayloads } from './uploadUtils'
 import type { Attachment, ChatMessage, HistoryItem, RunStreamEvent } from './types'
 import { B1ModuleView } from './B1ModuleView'
+import { B2ModuleView } from './B2ModuleView'
+import { B3ModuleView } from './B3ModuleView'
+import { B5ModuleView } from './B5ModuleView'
 import './App.css'
 
 const MODULE_VIEWS = [
@@ -953,6 +956,23 @@ function App() {
                 conversationId={currentConversationId}
                 isRunning={isCurrentConversationRunning}
                 isStopping={isCurrentConversationStopping}
+              />
+            )}
+            {activeModule?.id === 'b2' && (
+              <B2ModuleView
+                mode={activeModuleMode}
+                messages={messages}
+              />
+            )}
+            {activeModule?.id === 'b3' && (
+              <B3ModuleView
+                mode={activeModuleMode}
+                messages={messages}
+              />
+            )}
+            {activeModule?.id === 'b5' && (
+              <B5ModuleView
+                mode={activeModuleMode}
               />
             )}
           </section>

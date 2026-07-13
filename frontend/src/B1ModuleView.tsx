@@ -287,7 +287,7 @@ function ObservationPanel(props: B1ModuleViewProps) {
             {track.map((item) => (
               <div className="b1-track-item" key={item.title}>
                 <div className={`b1-track-icon ${item.status}`}>
-                  <item.Icon size={16} strokeWidth={1.9} aria-hidden="true" />
+                  <item.Icon size={13} strokeWidth={1.9} aria-hidden="true" />
                 </div>
                 <div>
                   <header>
