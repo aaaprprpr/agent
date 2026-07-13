@@ -213,3 +213,10 @@ tool/skill 第一批增强：
 - 更新 `requirements_fastapi.txt`：整理轻量后端/Qwen API 代理环境，不包含 torch/transformers。
 - 新增 `README_712.md`：说明项目定位、运行方式、环境要求、核心配置、模块架构、文件上传/生成/下载、记忆系统、协作边界、常见问题和后续方向。
 - 本次只做文档和依赖整理；未启动项目、未跑训练、未跑测试。
+
+# -------------------------7.13 B5 memory_index 兼容样例------------------------------
+
+- 当前 B5 主线仍是 `memory/conversation_store.sqlite3`，`memory_index.json` 只作为基础验收和旧命令兼容文件，不作为新记忆系统主存储。
+- 保留一个最小 conversation memory 样例：`mem_conversation_conv_000`，匹配 `data/runtime_input.json` 中的 `selected_memory_ids`。
+- 调整 `.gitignore`：允许追踪 `memory/memory_index.json` 和 `memory/conversations/conv_000.md`，继续忽略 SQLite、运行时会话 memory 和其他临时 memory 文件。
+- 本次只做静态校验；未启动项目、未跑训练、未跑测试、未调用模型。
