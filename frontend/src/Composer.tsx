@@ -1,7 +1,8 @@
 import type { ChangeEventHandler, KeyboardEventHandler, RefObject } from 'react'
 import { ArrowUp, Square } from 'lucide-react'
 
-import { FileTypeIcon, formatSize } from './fileUtils'
+import { formatSize } from './fileDataUtils'
+import { FileTypeIcon } from './fileUtils'
 import type { Attachment } from './types'
 
 

@@ -1,9 +1,18 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { ChangeEvent, DragEvent, KeyboardEvent } from 'react'
 import { Trash2 } from 'lucide-react'
+import { API_BASE, ACTIVE_CONVERSATION_KEY } from './appConfig'
+import {
+  deleteBackendConversation,
+  fetchConversationList,
+  fetchConversationMessages,
+  requestConversationCancel,
+  startRunStream,
+} from './backendApi'
 import { ChatMessageList } from './ChatMessageList'
 import { Composer } from './Composer'
-import { arrayBufferToBase64 } from './fileUtils'
+import { createConversationId, titleFromInput } from './conversationUtils'
+import { backendMessagesToChatMessages } from './messageAdapters'
 import {
   artifactsFromToolMessages,
   artifactsFromToolSteps,
@@ -13,32 +22,10 @@ import {
   toolDetailsFromMessages,
   toolDetailsFromProgress,
   toolDetailsFromSteps,
-} from './ToolTrace'
-import type { Attachment, BackendConversation, BackendMessage, ChatMessage, HistoryItem, RunStreamEvent, UploadedFilePayload } from './types'
+} from './toolTraceUtils'
+import { buildUploadPayloads } from './uploadUtils'
+import type { Attachment, ChatMessage, HistoryItem, RunStreamEvent } from './types'
 import './App.css'
-
-const API_BASE = import.meta.env.VITE_AGENT_API_BASE ?? 'http://127.0.0.1:8020'
-const ACTIVE_CONVERSATION_KEY = 'agent.activeConversationId'
-
-function pad(value: number, size = 2) {
-  return String(value).padStart(size, '0')
-}
-
-function createConversationId() {
-  const now = new Date()
-  return [
-    'conv_web',
-    `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`,
-    `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`,
-    pad(now.getMilliseconds(), 3),
-  ].join('_')
-}
-
-function titleFromInput(text: string) {
-  const compact = text.replace(/\s+/g, ' ').trim()
-  if (!compact) return '新对话'
-  return compact.length > 18 ? `${compact.slice(0, 18)}...` : compact
-}
 
 function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
@@ -106,16 +93,15 @@ function App() {
     if (!conversationId || !runningConversationIdsRef.current.has(conversationId)) return
     if (cancellingConversationIdsRef.current.has(conversationId)) return
     setConversationCancelling(conversationId, true)
-    void fetch(`${API_BASE}/api/conversations/${encodeURIComponent(conversationId)}/cancel`, {
-      method: 'POST',
-    }).then(async (response) => {
-      const payload = await response.json().catch(() => null)
-      if (!response.ok || !payload?.cancel_requested) {
+    void requestConversationCancel(API_BASE, conversationId)
+      .then((cancelRequested) => {
+        if (!cancelRequested) {
+          abortControllersRef.current.get(conversationId)?.abort()
+        }
+      })
+      .catch(() => {
         abortControllersRef.current.get(conversationId)?.abort()
-      }
-    }).catch(() => {
-      abortControllersRef.current.get(conversationId)?.abort()
-    })
+      })
   }
 
   function updateHistoryMessages(conversationId: string, nextMessages: ChatMessage[], memoryReady?: boolean) {
@@ -171,9 +157,8 @@ function App() {
 
   async function loadConversationList() {
     try {
-      const response = await fetch(`${API_BASE}/api/conversations`)
-      if (!response.ok) return
-      const payload = (await response.json()) as BackendConversation[]
+      const payload = await fetchConversationList(API_BASE)
+      if (!payload) return
       setHistories((current) => {
         const byId = new Map(current.map((item) => [item.id, item]))
         return payload.map((item) => ({
@@ -201,20 +186,9 @@ function App() {
     if (runningConversationIdsRef.current.has(conversationId) && cached) return
     setIsLoadingHistory(true)
     try {
-      const response = await fetch(`${API_BASE}/api/conversations/${conversationId}`)
-      if (!response.ok) return
-      const payload = (await response.json()) as { messages: BackendMessage[] }
-      const loadedMessages = payload.messages
-        .filter((message) => message.role === 'user' || message.role === 'assistant')
-        .map((message) => ({
-          id: message.id,
-          role: message.role,
-          body: message.content,
-          status: message.status ?? undefined,
-          toolDetails: toolDetailsFromSteps(message.tool_steps),
-          artifacts: artifactsFromToolSteps(message.tool_steps),
-          attachments: message.attachments,
-        })) satisfies ChatMessage[]
+      const payload = await fetchConversationMessages(API_BASE, conversationId)
+      if (!payload) return
+      const loadedMessages = backendMessagesToChatMessages(payload.messages)
       if (currentConversationIdRef.current !== conversationId) return
       setMessages(loadedMessages)
       updateHistoryMessages(conversationId, loadedMessages, true)
@@ -229,12 +203,7 @@ function App() {
     const title = item?.title || '当前对话'
     if (!window.confirm(`删除“${title}”？本对话的上传文件也会一并删除。`)) return
     try {
-      const response = await fetch(`${API_BASE}/api/conversations/${conversationId}`, { method: 'DELETE' })
-      if (!response.ok) {
-        const payload = await response.json().catch(() => null)
-        const detail = payload?.detail ?? `HTTP ${response.status}`
-        throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
-      }
+      await deleteBackendConversation(API_BASE, conversationId)
       setHistories((current) => current.filter((history) => history.id !== conversationId))
       if (currentConversationIdRef.current === conversationId) {
         stickToBottomRef.current = true
@@ -267,18 +236,6 @@ function App() {
     event.preventDefault()
     setDragActive(false)
     if (event.dataTransfer.files.length) addFiles(event.dataTransfer.files)
-  }
-
-  async function buildUploadPayloads(files: Attachment[]): Promise<UploadedFilePayload[]> {
-    if (files.length === 0) return []
-    return Promise.all(
-      files.map(async (item) => ({
-        name: item.name,
-        size: item.size,
-        mime_type: item.file.type || undefined,
-        content_base64: arrayBufferToBase64(await item.file.arrayBuffer()),
-      })),
-    )
   }
 
   async function handleSend() {
@@ -488,24 +445,15 @@ function App() {
 
     try {
       const uploadPayloads = await buildUploadPayloads(filesToUpload)
-      const response = await fetch(`${API_BASE}/api/run/stream`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      const response = await startRunStream(
+        API_BASE,
+        {
           user_input: text,
           conversation_id: conversationId,
           uploaded_file_payloads: uploadPayloads,
-        }),
-        signal: abortController.signal,
-      })
-      if (!response.ok) {
-        const payload = await response.json().catch(() => null)
-        const detail = payload?.detail ?? `HTTP ${response.status}`
-        throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
-      }
-      if (!response.body) {
-        throw new Error('浏览器没有返回可读的流式响应')
-      }
+        },
+        abortController.signal,
+      )
       const reader = response.body.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
@@ -574,7 +522,12 @@ function App() {
   }, [draft])
 
   useEffect(() => {
-    loadConversationList()
+    const timer = window.setTimeout(() => {
+      void loadConversationList()
+    }, 0)
+    return () => window.clearTimeout(timer)
+    // Initial history hydration should run once after mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => {
@@ -583,6 +536,8 @@ function App() {
       void loadConversation(currentConversationId)
     }, 2000)
     return () => window.clearInterval(timer)
+    // Polling intentionally follows the selected conversation id and pending/running flags.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentConversationId, hasPendingMessage, runningConversationIds])
 
   useLayoutEffect(() => {
@@ -591,6 +546,8 @@ function App() {
       return
     }
     updateScrollButton()
+    // Scroll adjustment is tied to message updates.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages])
 
   return (

@@ -1,6 +1,7 @@
 import type { ClipboardEvent, RefObject, UIEventHandler } from 'react'
 
-import { FileTypeIcon, formatSize } from './fileUtils'
+import { formatSize } from './fileDataUtils'
+import { FileTypeIcon } from './fileUtils'
 import { MarkdownMessage } from './MarkdownMessage'
 import { LoadingBubble, ToolTrace } from './ToolTrace'
 import type { ChatMessage, GeneratedArtifact } from './types'
@@ -64,29 +65,29 @@ export function ChatMessageList({
       {messages.map((message) => {
         const statusClass = message.status === 'pending' ? 'pending' : ''
         return (
-        <article className={`message ${message.role} ${statusClass}`} key={message.id}>
-          <div className="message-body" onCopy={handleMessageCopy}>
-            {message.role === 'assistant' && <ToolTrace message={message} onToggle={onToggleTool} />}
-            {message.role === 'user' && message.attachments && message.attachments.length > 0 && (
-              <div className="message-attachments">
-                {message.attachments.map((file, index) => (
-                  <div className="message-attachment" key={`${file.path ?? file.name}-${index}`}>
-                    <FileTypeIcon name={file.name} />
-                    <span><strong>{file.name}</strong><small>{formatSize(file.size)}</small></span>
-                  </div>
-                ))}
-              </div>
-            )}
-            {message.status === 'pending' && (!message.body || message.body === '...')
-              ? <LoadingBubble />
-              : message.role === 'assistant'
-                ? <MarkdownMessage text={message.body} />
-                : <p>{message.body}</p>}
-            {message.role === 'assistant' && message.artifacts && (
-              <ArtifactList artifacts={message.artifacts} apiBase={apiBase} />
-            )}
-          </div>
-        </article>
+          <article className={`message ${message.role} ${statusClass}`} key={message.id}>
+            <div className="message-body" onCopy={handleMessageCopy}>
+              {message.role === 'assistant' && <ToolTrace message={message} onToggle={onToggleTool} />}
+              {message.role === 'user' && message.attachments && message.attachments.length > 0 && (
+                <div className="message-attachments">
+                  {message.attachments.map((file, index) => (
+                    <div className="message-attachment" key={`${file.path ?? file.name}-${index}`}>
+                      <FileTypeIcon name={file.name} />
+                      <span><strong>{file.name}</strong><small>{formatSize(file.size)}</small></span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {message.status === 'pending' && (!message.body || message.body === '...')
+                ? <LoadingBubble />
+                : message.role === 'assistant'
+                  ? <MarkdownMessage text={message.body} />
+                  : <p>{message.body}</p>}
+              {message.role === 'assistant' && message.artifacts && (
+                <ArtifactList artifacts={message.artifacts} apiBase={apiBase} />
+              )}
+            </div>
+          </article>
         )
       })}
     </section>
