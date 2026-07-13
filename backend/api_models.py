@@ -79,3 +79,7 @@ class DeleteConversationResponse(BaseModel):
     deleted: bool
     upload_dir_deleted: bool
     output_dir_deleted: bool
+
+
+class B5RecallPreviewRequest(BaseModel):
+    current_user_input: str = Field(..., min_length=1)

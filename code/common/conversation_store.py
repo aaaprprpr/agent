@@ -843,6 +843,47 @@ def record_memory_retrieval(
     return {"status": "success", "retrieval_log_id": log_id, "created_at": now}
 
 
+def list_memory_retrieval_logs(
+    db_path: str | Path,
+    conversation_id: str,
+    *,
+    limit: int = 20,
+) -> list[dict]:
+    init_store(db_path)
+    with _connect(db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT id, conversation_id, query_text, query_context_json,
+                   candidate_blocks_json, selected_turns_json,
+                   loaded_message_ids_json, created_at
+            FROM memory_retrieval_log
+            WHERE conversation_id = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (conversation_id, max(1, int(limit))),
+        ).fetchall()
+    result = []
+    for row in rows:
+        item = dict(row)
+        item["query_context"] = _json_loads(item.get("query_context_json")) or {}
+        item["candidate_blocks"] = _json_loads(item.get("candidate_blocks_json")) or []
+        item["selected_turns"] = _json_loads(item.get("selected_turns_json")) or []
+        item["loaded_message_ids"] = _json_loads(item.get("loaded_message_ids_json")) or []
+        result.append(item)
+    return result
+
+
+def count_memory_retrieval_logs(db_path: str | Path, conversation_id: str) -> int:
+    init_store(db_path)
+    with _connect(db_path) as connection:
+        row = connection.execute(
+            "SELECT COUNT(*) AS total FROM memory_retrieval_log WHERE conversation_id = ?",
+            (conversation_id,),
+        ).fetchone()
+    return int(row["total"]) if row is not None else 0
+
+
 def get_memory_embedding(
     db_path: str | Path,
     item_type: str,
@@ -1286,6 +1327,21 @@ def list_conversations(db_path: str | Path, limit: int = 50) -> list[dict]:
             (limit,),
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+def get_conversation(db_path: str | Path, conversation_id: str) -> dict | None:
+    init_store(db_path)
+    with _connect(db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT id, title, is_trivial, trivial_reason, summary, status,
+                   created_at, updated_at, last_message_at
+            FROM conversations
+            WHERE id = ?
+            """,
+            (conversation_id,),
+        ).fetchone()
+    return dict(row) if row is not None else None
 
 
 def delete_conversation(db_path: str | Path, conversation_id: str) -> dict:

@@ -2,12 +2,18 @@ from __future__ import annotations
 
 from common.conversation_store import (
     append_message,
+    count_memory_retrieval_logs,
     delete_conversation,
     delete_tool_steps,
+    get_conversation,
     init_store,
+    list_conversation_turns,
     list_conversations,
+    list_memory_blocks,
+    list_memory_retrieval_logs,
     list_messages,
     list_task_memories,
+    list_turn_summaries,
     list_tool_steps,
     record_tool_step,
     update_message,
@@ -116,6 +122,71 @@ def record_conversation_tool_step(
 
 def list_conversation_records(config_path: str, limit: int = 50) -> list[dict]:
     return list_conversations(_conversation_db_path(config_path), limit)
+
+def get_conversation_memory_snapshot(config_path: str, conversation_id: str, retrieval_limit: int = 20) -> dict:
+    """Return a read-only B5 inspection snapshot for one web conversation."""
+    _safe_conversation_id(conversation_id)
+    db_path = _conversation_db_path(config_path)
+    conversation = get_conversation(db_path, conversation_id)
+    if conversation is None:
+        return {
+            "status": "not_found",
+            "conversation_id": conversation_id,
+            "counts": {
+                "messages": 0,
+                "tool_steps": 0,
+                "turns": 0,
+                "turn_summaries": 0,
+                "memory_blocks": 0,
+                "task_memories": 0,
+                "retrieval_logs": 0,
+            },
+            "messages": [],
+            "turns": [],
+            "turn_summaries": [],
+            "memory_blocks": [],
+            "task_memories": [],
+            "retrieval_logs": [],
+        }
+
+    messages = list_messages(db_path, conversation_id)
+    total_tool_steps = 0
+    messages_with_steps = []
+    for message in messages:
+        item = dict(message)
+        tool_steps = list_tool_steps(db_path, item["id"]) if item.get("role") == "assistant" else []
+        total_tool_steps += len(tool_steps)
+        item["tool_steps"] = tool_steps
+        item["tool_step_count"] = len(tool_steps)
+        messages_with_steps.append(item)
+
+    turns = list_conversation_turns(db_path, conversation_id)
+    turn_summaries = list_turn_summaries(db_path, conversation_id)
+    memory_blocks = list_memory_blocks(db_path, conversation_id)
+    task_memories = list_task_memories(db_path, conversation_id)
+    retrieval_logs = list_memory_retrieval_logs(db_path, conversation_id, limit=retrieval_limit)
+    retrieval_log_count = count_memory_retrieval_logs(db_path, conversation_id)
+
+    return {
+        "status": "success",
+        "conversation_id": conversation_id,
+        "conversation": conversation,
+        "counts": {
+            "messages": len(messages_with_steps),
+            "tool_steps": total_tool_steps,
+            "turns": len(turns),
+            "turn_summaries": len(turn_summaries),
+            "memory_blocks": len(memory_blocks),
+            "task_memories": len(task_memories),
+            "retrieval_logs": retrieval_log_count,
+        },
+        "messages": messages_with_steps,
+        "turns": turns,
+        "turn_summaries": turn_summaries,
+        "memory_blocks": memory_blocks,
+        "task_memories": task_memories,
+        "retrieval_logs": retrieval_logs,
+    }
 
 def delete_conversation_record(config_path: str, conversation_id: str) -> dict:
     _safe_conversation_id(conversation_id)

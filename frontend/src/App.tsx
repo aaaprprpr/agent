@@ -973,6 +973,7 @@ function App() {
             {activeModule?.id === 'b5' && (
               <B5ModuleView
                 mode={activeModuleMode}
+                conversationId={currentConversationId}
               />
             )}
           </section>

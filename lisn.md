@@ -18,6 +18,9 @@ python test.py
 修沙箱超时反馈
 取消代码沙箱默认弹出 json 下载
 不改 B1/B3 主链路
+实现 B5 验收页，后端 API，封装读取记忆
+修复bug：页面JSX文本`->`导致Vite/OXC解析失败
+修B5的bug x N
 
 # -------------------------7.12------------------------------
 
@@ -246,3 +249,12 @@ tool/skill 第一批增强：
 - 根据前端测试反馈优化：正常计算、`1/0` 异常、无限循环超时均能进入工具链；超时结果新增明确诊断，避免 Agent 误以为必须读取报告文件。
 - 取消默认弹出 `execution_report.json` 下载卡片：执行报告仍本地保存，但默认不返回 `generated_file_path/relative_output_path`；只有用户明确要求导出/下载执行报告时，模型传 `export_report=true` 才暴露下载入口。
 - 按要求不改 B1、不改 B3，不改变 B5 记忆主线；本次由你通过前端运行 Agent 测试，我只做静态检查和日志分析。
+
+# -------------------------7.13 B5 验收页召回排查修正------------------------------
+
+- 根据前端复制的 B5 演示结果排查：本次召回链路已真实写入 `memory_retrieval_log`，且能召回近期原文、memory block、turn summary 和 source evidence；但向量召回状态为 `unavailable`，错误为后端运行环境缺少 `numpy`。
+- 静态对比确认 `code/b5_memory_parts/vector_retrieval.py`、`configs/memory.yaml` 的向量召回主逻辑和配置不是本次验收页改动引入；`requirements.txt` 与 `requirements_fastapi.txt` 已声明 `numpy==2.2.6`，问题表现为当前启动环境依赖未安装或不一致。
+- 为降低运行环境脆弱性，将 B5 `_cosine_similarity` 从 `numpy` 实现改为标准库 `math` 实现，保持接口和召回策略不变，不改 B1/B2/B3/B4，不改 memory 配置。
+- 确认 `max_memory_chars: 2000`、最近 4 轮原文、最多 3 个 block/5 个 turn 为当前 B5 既有设计；本次未调整上下文预算，避免影响主 Agent 行为。
+- 调整 B5 演示页 `source_tool_steps` 展示：保留真实加载数量，但空 input/output/error 不再渲染成连续“无”，改为说明本次事实证据主要来自 `source_messages`。
+- 本次未启动项目、未跑训练、未跑测试、未调用模型；只做静态 diff 检查，需要你重启后端后在前端复测 B5 演示页。

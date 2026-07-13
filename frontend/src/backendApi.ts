@@ -1,4 +1,10 @@
-import type { BackendConversation, BackendMessage, UploadedFilePayload } from './types'
+import type {
+  B5MemorySnapshot,
+  B5RecallPreviewResponse,
+  BackendConversation,
+  BackendMessage,
+  UploadedFilePayload,
+} from './types'
 
 type StreamResponse = Response & { body: ReadableStream<Uint8Array> }
 
@@ -31,6 +37,30 @@ export async function deleteBackendConversation(apiBase: string, conversationId:
     const detail = payload?.detail ?? `HTTP ${response.status}`
     throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
   }
+}
+
+export async function fetchB5MemorySnapshot(apiBase: string, conversationId: string) {
+  const response = await fetch(apiUrl(apiBase, `/api/b5/conversations/${encodeURIComponent(conversationId)}/memory`))
+  if (!response.ok) {
+    const payload = await jsonOrNull(response)
+    const detail = payload?.detail ?? `HTTP ${response.status}`
+    throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
+  }
+  return (await response.json()) as B5MemorySnapshot
+}
+
+export async function runB5RecallPreview(apiBase: string, conversationId: string, currentUserInput: string) {
+  const response = await fetch(apiUrl(apiBase, `/api/b5/conversations/${encodeURIComponent(conversationId)}/recall-preview`), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ current_user_input: currentUserInput }),
+  })
+  if (!response.ok) {
+    const payload = await jsonOrNull(response)
+    const detail = payload?.detail ?? `HTTP ${response.status}`
+    throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
+  }
+  return (await response.json()) as B5RecallPreviewResponse
 }
 
 export async function requestConversationCancel(apiBase: string, conversationId: string) {

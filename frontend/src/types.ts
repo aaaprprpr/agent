@@ -70,6 +70,43 @@ export type BackendMessage = {
   attachments?: MessageAttachment[]
 }
 
+export type B5MemorySnapshot = {
+  status: string
+  conversation_id: string
+  counts: Record<string, number>
+  conversation?: Record<string, unknown>
+  messages: Record<string, unknown>[]
+  turns: Record<string, unknown>[]
+  turn_summaries: Record<string, unknown>[]
+  memory_blocks: Record<string, unknown>[]
+  task_memories: Record<string, unknown>[]
+  retrieval_logs: Record<string, unknown>[]
+}
+
+export type B5RecallPreviewRequest = {
+  current_user_input: string
+}
+
+export type B5RecallPreviewResponse = {
+  status: string
+  conversation_id: string
+  current_user_input?: string
+  history_message_count?: number
+  recent_history_message_count?: number
+  recent_history_messages?: Record<string, unknown>[]
+  workspace_memory?: Record<string, unknown>
+  layered_memory_context?: Record<string, unknown>
+  memory_messages?: Record<string, unknown>[]
+  recalled_blocks?: Record<string, unknown>[]
+  recalled_turns?: Record<string, unknown>[]
+  source_messages?: Record<string, unknown>[]
+  source_tool_steps?: Record<string, unknown>[]
+  vector_retrieval?: unknown
+  llm_rerank?: unknown
+  retrieval_log?: Record<string, unknown> | null
+  [key: string]: unknown
+}
+
 export type RunStreamEvent =
   | {
       type: 'start'
