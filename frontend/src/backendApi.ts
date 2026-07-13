@@ -4,6 +4,10 @@ import type {
   B2SkillsResponse,
   B3ToolCallsPreviewResponse,
   B3ToolsSchemaResponse,
+  B4CallDetailResponse,
+  B4CallsResponse,
+  B4ProtocolCasesResponse,
+  B4ProtocolRunResponse,
   B5MemorySnapshot,
   B5RecallPreviewResponse,
   BackendConversation,
@@ -136,6 +140,53 @@ export async function runB3ToolCallsPreview(
     throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
   }
   return (await response.json()) as B3ToolCallsPreviewResponse
+}
+
+export async function fetchB4Calls(apiBase: string, conversationId?: string | null, limit = 60) {
+  const params = new URLSearchParams({ limit: String(limit) })
+  if (conversationId) params.set('conversation_id', conversationId)
+  const response = await fetch(apiUrl(apiBase, `/api/b4/calls?${params.toString()}`))
+  if (!response.ok) {
+    const payload = await jsonOrNull(response)
+    const detail = payload?.detail ?? `HTTP ${response.status}`
+    throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
+  }
+  return (await response.json()) as B4CallsResponse
+}
+
+export async function fetchB4CallDetail(apiBase: string, callId: string) {
+  const params = new URLSearchParams({ call_id: callId })
+  const response = await fetch(apiUrl(apiBase, `/api/b4/calls/detail?${params.toString()}`))
+  if (!response.ok) {
+    const payload = await jsonOrNull(response)
+    const detail = payload?.detail ?? `HTTP ${response.status}`
+    throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
+  }
+  return (await response.json()) as B4CallDetailResponse
+}
+
+export async function fetchB4ProtocolCases(apiBase: string) {
+  const response = await fetch(apiUrl(apiBase, '/api/b4/protocol-tests'))
+  if (!response.ok) {
+    const payload = await jsonOrNull(response)
+    const detail = payload?.detail ?? `HTTP ${response.status}`
+    throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
+  }
+  return (await response.json()) as B4ProtocolCasesResponse
+}
+
+export async function runB4ProtocolTests(apiBase: string, caseId: string) {
+  const response = await fetch(apiUrl(apiBase, '/api/b4/protocol-tests/run'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ case_id: caseId }),
+  })
+  if (!response.ok) {
+    const payload = await jsonOrNull(response)
+    const detail = payload?.detail ?? `HTTP ${response.status}`
+    throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
+  }
+  return (await response.json()) as B4ProtocolRunResponse
 }
 
 export async function fetchB5MemorySnapshot(apiBase: string, conversationId: string) {

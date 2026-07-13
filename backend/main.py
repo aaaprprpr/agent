@@ -17,6 +17,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from backend.api_models import (
     B2SkillRunRequest,
     B3ToolCallsPreviewRequest,
+    B4ProtocolTestRequest,
     B5RecallPreviewRequest,
     ConversationDetail,
     ConversationMessage,
@@ -30,6 +31,12 @@ from backend.api_models import (
     UploadResponse,
 )
 from backend.artifacts import attach_artifact_download_urls, generated_artifact_target
+from backend.b4_demo_service import (
+    get_b4_call_detail,
+    list_b4_calls,
+    protocol_test_cases,
+    run_b4_protocol_tests,
+)
 from backend.conversation_utils import (
     message_attachments,
     message_resumable,
@@ -411,6 +418,37 @@ def run_b3_tool_calls_preview(request: B3ToolCallsPreviewRequest) -> dict:
             ],
         },
     }
+
+
+@app.get("/api/b4/calls")
+def get_b4_calls(conversation_id: str | None = None, limit: int = 60) -> dict:
+    try:
+        return list_b4_calls(conversation_id, limit)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/b4/calls/detail")
+def get_b4_call(call_id: str) -> dict:
+    try:
+        return get_b4_call_detail(call_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/b4/protocol-tests")
+def get_b4_protocol_tests() -> dict:
+    return protocol_test_cases()
+
+
+@app.post("/api/b4/protocol-tests/run")
+def run_b4_protocol_test(request: B4ProtocolTestRequest) -> dict:
+    try:
+        return run_b4_protocol_tests(request.case_id.strip())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/api/b5/conversations/{conversation_id}/memory")

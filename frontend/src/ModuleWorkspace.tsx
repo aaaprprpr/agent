@@ -1,6 +1,7 @@
 import { B1ModuleView } from './B1ModuleView'
 import { B2ModuleView } from './B2ModuleView'
 import { B3ModuleView } from './B3ModuleView'
+import { B4ModuleView } from './B4ModuleView'
 import { B5ModuleView } from './B5ModuleView'
 import type { ModuleMode, ModuleView, ModuleViewId } from './appNavigation'
 import type { ChangeEventHandler, KeyboardEventHandler, RefObject } from 'react'
@@ -116,6 +117,12 @@ export function ModuleWorkspace({
         <B3ModuleView
           mode={activeModuleMode}
           messages={messages}
+        />
+      )}
+      {activeModule?.id === 'b4' && (
+        <B4ModuleView
+          mode={activeModuleMode}
+          conversationId={conversationId}
         />
       )}
       {activeModule?.id === 'b5' && (

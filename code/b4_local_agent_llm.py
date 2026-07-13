@@ -477,6 +477,17 @@ def _parse_model_output(raw_text: str, has_tool_messages: bool = False) -> tuple
     return _candidate_to_message(candidate, has_tool_messages)
 
 
+def parse_model_output(raw_text: str, has_tool_messages: bool = False) -> dict:
+    """Expose B4's existing model-output parser for isolated protocol demos."""
+    if not isinstance(raw_text, str) or not raw_text.strip():
+        raise ValueError("raw_text must be a non-empty string")
+    parsed_candidate, ai_message = _parse_model_output(raw_text, has_tool_messages)
+    return {
+        "parsed_candidate": parsed_candidate,
+        "ai_message": ai_message,
+    }
+
+
 def _dtype_value(torch_module: Any, configured: str) -> Any:
     if configured == "auto":
         return "auto"

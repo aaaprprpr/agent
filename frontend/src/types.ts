@@ -137,6 +137,89 @@ export type B3ToolCallsPreviewResponse = {
   summary?: Record<string, unknown>
 }
 
+export type B4ModelInfo = {
+  source?: string | null
+  model?: string | null
+  endpoint?: string | null
+  mode?: string | null
+}
+
+export type B4CallSummary = {
+  id: string
+  stage: string
+  kind: string
+  status: string
+  source: string
+  mode: string
+  generated_at?: string | null
+  message_count: number
+  roles: string[]
+  raw_chars: number
+  run_id: string
+}
+
+export type B4CallsResponse = {
+  status: string
+  module: string
+  conversation_id?: string | null
+  model?: B4ModelInfo
+  calls: B4CallSummary[]
+}
+
+export type B4CallDetailResponse = {
+  status: string
+  module: string
+  call: B4CallSummary
+  record: Record<string, unknown>
+  standard_output: unknown
+}
+
+export type B4ProtocolCase = {
+  id: string
+  title: string
+  kind: string
+  description: string
+  expected: string
+}
+
+export type B4ProtocolCasesResponse = {
+  status: string
+  module: string
+  model?: B4ModelInfo
+  cases: B4ProtocolCase[]
+}
+
+export type B4ProtocolResult = {
+  case_id: string
+  test_status: string
+  verdict: string
+  elapsed_ms: number
+  request: Record<string, unknown>
+  raw_text: string
+  prompt_messages: Record<string, unknown>[]
+  ai_message: Record<string, unknown> | null
+  parsed_candidate: Record<string, unknown> | null
+  error: Record<string, unknown> | null
+  stream: {
+    delta_count: number
+    deltas: string[]
+  }
+}
+
+export type B4ProtocolRunResponse = {
+  status: string
+  module: string
+  run_id: string
+  output_dir: string
+  model?: B4ModelInfo
+  summary: {
+    total: number
+    passed: number
+    failed: number
+  }
+  results: B4ProtocolResult[]
+}
+
 export type B1WorkspaceSnapshot = {
   status: string
   module: string

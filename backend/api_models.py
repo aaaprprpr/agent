@@ -106,5 +106,9 @@ class B3ToolCallsPreviewRequest(BaseModel):
     toolset: str = "basic_tools"
 
 
+class B4ProtocolTestRequest(BaseModel):
+    case_id: str = Field(..., min_length=1)
+
+
 class B5RecallPreviewRequest(BaseModel):
     current_user_input: str = Field(..., min_length=1)
