@@ -5,12 +5,12 @@ import {
   Database,
   FileText,
   Play,
-  RefreshCw,
   Search,
+  Upload,
 } from 'lucide-react'
 
 import { API_BASE } from './appConfig'
-import { fetchB5MemorySnapshot, runB5RecallPreview } from './backendApi'
+import { fetchB5MemorySnapshot } from './backendApi'
 import type { B5MemorySnapshot, B5RecallPreviewResponse } from './types'
 
 type ModuleMode = 'observe' | 'demo'
@@ -25,6 +25,8 @@ type SnapshotState = {
   loading: boolean
   error: string | null
 }
+
+type B5DemoTarget = 'compression' | 'recall'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -75,24 +77,9 @@ function boolText(value: unknown) {
   return 'unknown'
 }
 
-function meaningfulText(value: unknown, limit = 140) {
-  const text = compact(value, limit)
-  return text === '无' ? '' : text
-}
-
-function toolStepEvidence(step: Record<string, unknown>) {
-  const output = meaningfulText(step['output'])
-  if (output) return `output: ${output}`
-  const error = meaningfulText(step['error'])
-  if (error) return `error: ${error}`
-  const input = meaningfulText(step['input'])
-  if (input) return `input: ${input}`
-  return ''
-}
-
-function JsonBlock({ value, maxHeight = 260 }: { value: unknown; maxHeight?: number }) {
+function JsonBlock({ value, maxHeight }: { value: unknown; maxHeight?: number }) {
   return (
-    <pre className="b5-json" style={{ maxHeight }}>
+    <pre className="b5-json" style={maxHeight ? { maxHeight, overflow: 'auto' } : undefined}>
       {JSON.stringify(value ?? null, null, 2)}
     </pre>
   )
@@ -125,27 +112,14 @@ function ErrorState({ message, onRefresh }: { message: string; onRefresh: () => 
 
 function SnapshotHeader({
   title,
-  modeLabel,
-  loading,
-  onRefresh,
 }: {
   title: string
-  modeLabel: string
-  loading: boolean
-  onRefresh: () => void
 }) {
   return (
     <header className="b5-head">
       <div>
         <span>B5</span>
         <h2>{title}</h2>
-      </div>
-      <div className="b5-head-actions">
-        <strong>{modeLabel}</strong>
-        <button className="b5-refresh-button" type="button" onClick={onRefresh} disabled={loading}>
-          <RefreshCw size={14} strokeWidth={1.9} aria-hidden="true" />
-          刷新
-        </button>
       </div>
     </header>
   )
@@ -180,14 +154,19 @@ function TurnCompressionView({
   }, [messages])
   const rowByTurnIndex = useMemo(() => {
     const result = new Map<number, number>()
-    turns.forEach((turn, index) => {
+    const orderedTurns = [...turns].sort((a, b) => getNumber(b, 'turn_index') - getNumber(a, 'turn_index'))
+    orderedTurns.forEach((turn, index) => {
       result.set(getNumber(turn, 'turn_index'), index + 2)
     })
     return result
   }, [turns])
+  const displayTurns = useMemo(
+    () => [...turns].sort((a, b) => getNumber(b, 'turn_index') - getNumber(a, 'turn_index')),
+    [turns],
+  )
 
   if (turns.length === 0) {
-    return <p className="b5-empty">暂无 conversation_turns。完成一次主对话并等待 B5 后台写入后再刷新。</p>
+    return <p className="b5-empty">暂无对话轮次。完成一次主对话并等待 B5 后台写入后再刷新。</p>
   }
 
   return (
@@ -199,7 +178,7 @@ function TurnCompressionView({
       <div className="b5-board-head turn">轮对话压缩</div>
       <div className="b5-board-head block">块级压缩</div>
 
-      {turns.map((turn) => {
+      {displayTurns.map((turn) => {
         const turnId = getString(turn, 'id', '')
         const turnIndex = getNumber(turn, 'turn_index')
         const summary = summariesByTurnId.get(turnId)
@@ -215,8 +194,8 @@ function TurnCompressionView({
               style={{ gridColumn: 1, gridRow: rowByTurnIndex.get(turnIndex) ?? 'auto' }}
             >
               <header>
-                <span>turn {turnIndex || '?'}</span>
-                <em>{toolCount} tool</em>
+                <span>第 {turnIndex || '?'} 轮</span>
+                <em>{toolCount} 个工具</em>
               </header>
               <p><strong>用户</strong>{compact(userMessage?.['content'], 140)}</p>
               <p><strong>AI</strong>{compact(assistantMessage?.['content'], 140)}</p>
@@ -229,14 +208,13 @@ function TurnCompressionView({
             >
               <header>
                 <FileText size={14} strokeWidth={1.9} aria-hidden="true" />
-                <strong>turn_summary</strong>
-                <em>{summary ? getString(summary, 'summary_source') : '暂无'}</em>
+                <strong>轮次摘要</strong>
               </header>
               {summary ? (
                 <>
                   <p>{compact(summary['summary'], 220)}</p>
                   <div className="b5-tags">
-                    {labels.length > 0 ? labels.map((label) => <span key={label}>{label}</span>) : <span>no labels</span>}
+                    {labels.length > 0 ? labels.map((label) => <span key={label}>{label}</span>) : <span>无标签</span>}
                   </div>
                 </>
               ) : (
@@ -251,12 +229,14 @@ function TurnCompressionView({
         const start = getNumber(block, 'start_turn_index')
         const end = getNumber(block, 'end_turn_index')
         const startRow = rowByTurnIndex.get(start) ?? 2
-        const endRow = (rowByTurnIndex.get(end) ?? startRow) + 1
+        const endRow = rowByTurnIndex.get(end) ?? startRow
+        const topRow = Math.min(startRow, endRow)
+        const bottomRow = Math.max(startRow, endRow) + 1
         return (
           <article
             className="b5-block-card"
             key={getString(block, 'id')}
-            style={{ gridColumn: 3, gridRow: `${startRow} / ${endRow}` }}
+            style={{ gridColumn: 3, gridRow: `${topRow} / ${bottomRow}` }}
           >
             <div className="b5-block-range" aria-hidden="true">
               <span />
@@ -266,7 +246,7 @@ function TurnCompressionView({
                 <Archive size={14} strokeWidth={1.9} aria-hidden="true" />
                 <strong>{getString(block, 'title')}</strong>
               </header>
-              <small>turn {start}-{end}</small>
+              <small>第 {start}-{end} 轮</small>
               <p>{compact(block['summary'], 180)}</p>
             </div>
           </article>
@@ -283,8 +263,8 @@ function TurnCompressionView({
               <Archive size={14} strokeWidth={1.9} aria-hidden="true" />
               <strong>暂无块级压缩</strong>
             </header>
-            <small>waiting</small>
-            <p>多轮完成并等待 B5 后台反思后，这里会显示真实 memory_blocks。</p>
+            <small>等待中</small>
+            <p>多轮完成并等待 B5 后台反思后，这里会显示真实块级压缩。</p>
           </div>
         </article>
       )}
@@ -294,7 +274,7 @@ function TurnCompressionView({
 
 function TaskMemoryList({ tasks }: { tasks: Record<string, unknown>[] }) {
   if (tasks.length === 0) {
-    return <p className="b5-empty">暂无 task_memories。只有 B5 判断为任务状态的轮次才会更新任务记忆。</p>
+    return <p className="b5-empty">暂无任务记忆。只有 B5 判断为任务状态的轮次才会更新任务记忆。</p>
   }
   return (
     <div className="b5-card-list">
@@ -322,7 +302,7 @@ function TaskMemoryList({ tasks }: { tasks: Record<string, unknown>[] }) {
 
 function MemoryBlockList({ blocks }: { blocks: Record<string, unknown>[] }) {
   if (blocks.length === 0) {
-    return <p className="b5-empty">暂无 memory_blocks。块级压缩通常需要多个已完成 turn。</p>
+    return <p className="b5-empty">暂无块级压缩。块级压缩通常需要多个已完成轮次。</p>
   }
   return (
     <div className="b5-card-list">
@@ -332,7 +312,7 @@ function MemoryBlockList({ blocks }: { blocks: Record<string, unknown>[] }) {
             <strong>{getString(block, 'title')}</strong>
             <em>{getString(block, 'status')}</em>
           </header>
-          <small>turn {getNumber(block, 'start_turn_index')}-{getNumber(block, 'end_turn_index')}</small>
+          <small>第 {getNumber(block, 'start_turn_index')}-{getNumber(block, 'end_turn_index')} 轮</small>
           <p>{compact(block['summary'], 220)}</p>
           <div className="b5-tags">
             {getList(block, 'keywords', 6).map((item) => <span key={item}>{item}</span>)}
@@ -345,7 +325,7 @@ function MemoryBlockList({ blocks }: { blocks: Record<string, unknown>[] }) {
 
 function RetrievalLogList({ logs }: { logs: Record<string, unknown>[] }) {
   if (logs.length === 0) {
-    return <p className="b5-empty">暂无 retrieval log。运行一次 B5 召回演示后会生成真实记录。</p>
+    return <p className="b5-empty">暂无召回日志。运行一次 B5 召回演示后会生成真实记录。</p>
   }
   return (
     <div className="b5-card-list">
@@ -355,15 +335,12 @@ function RetrievalLogList({ logs }: { logs: Record<string, unknown>[] }) {
             <strong>{compact(log['query_text'], 72)}</strong>
             <em>{getString(log, 'created_at')}</em>
           </header>
-          <dl className="b5-kv">
-            <dt>candidate</dt>
-            <dd>{asArray(log['candidate_blocks']).length} blocks</dd>
-            <dt>selected</dt>
-            <dd>{asArray(log['selected_turns']).length} turns</dd>
-            <dt>loaded</dt>
-            <dd>{Array.isArray(log['loaded_message_ids']) ? log['loaded_message_ids'].length : 0} messages</dd>
-          </dl>
-          <JsonBlock value={log['query_context']} maxHeight={150} />
+          <div className="b5-log-stats">
+            <span>候选 {asArray(log['candidate_blocks']).length} 块</span>
+            <span>命中 {asArray(log['selected_turns']).length} 轮</span>
+            <span>加载 {Array.isArray(log['loaded_message_ids']) ? log['loaded_message_ids'].length : 0} 条消息</span>
+          </div>
+          <JsonBlock value={log['query_context']} />
         </article>
       ))}
     </div>
@@ -430,9 +407,6 @@ function ObservationPanel({
     <div className="b5-module">
       <SnapshotHeader
         title="记忆文档存储与查找模块"
-        modeLabel="只读观察"
-        loading={loading}
-        onRefresh={onRefresh}
       />
 
       {!conversationId ? (
@@ -450,14 +424,20 @@ function ObservationPanel({
               <Database size={15} strokeWidth={1.9} aria-hidden="true" />
               <strong>历史记录与压缩</strong>
             </div>
-            <dl className="b5-kv b5-wide-kv">
-              <dt>conversation</dt>
-              <dd>{snapshot.conversation_id}</dd>
-              <dt>status</dt>
-              <dd>{snapshot.status}</dd>
-              <dt>title</dt>
-              <dd>{getString(snapshot.conversation, 'title')}</dd>
-            </dl>
+            <div className="b5-conversation-meta">
+              <div>
+                <span>conversation</span>
+                <strong>{snapshot.conversation_id}</strong>
+              </div>
+              <div>
+                <span>status</span>
+                <strong>{snapshot.status}</strong>
+              </div>
+              <div>
+                <span>title</span>
+                <strong>{getString(snapshot.conversation, 'title')}</strong>
+              </div>
+            </div>
 
             <section className="b5-section">
               <TurnCompressionView turns={turns} summaries={summaries} blocks={blocks} messages={messages} />
@@ -501,25 +481,25 @@ function ObservationPanel({
                 ) : previewRecentHistory.length > 0 ? (
                   <pre>{previewRecentHistory.map((message) => `${getString(message, 'role')}: ${compact(message['content'], 160)}`).join('\n')}</pre>
                 ) : latestLog ? (
-                  <JsonBlock value={latestLog['query_context']} maxHeight={260} />
+                  <JsonBlock value={latestLog['query_context']} />
                 ) : (
-                  <p className="b5-empty">演示页运行一次真实召回后，这里会显示本次 memory_messages。</p>
+                  <p className="b5-empty">演示页运行一次真实召回后，这里会显示本次记忆上下文。</p>
                 )}
               </section>
             </div>
 
             <section className="b5-section">
-              <h3>task_memories</h3>
+              <h3>任务记忆</h3>
               <TaskMemoryList tasks={tasks} />
             </section>
 
             <section className="b5-section">
-              <h3>memory_blocks</h3>
+              <h3>块级压缩</h3>
               <MemoryBlockList blocks={blocks} />
             </section>
 
             <section className="b5-section">
-              <h3>latest retrieval logs</h3>
+              <h3>最近召回日志</h3>
               <RetrievalLogList logs={logs} />
             </section>
           </section>
@@ -529,125 +509,143 @@ function ObservationPanel({
   )
 }
 
-function PreviewResult({ preview }: { preview: B5RecallPreviewResponse }) {
-  const workspace = isRecord(preview.workspace_memory) ? preview.workspace_memory : {}
-  const recentHistory = asArray(preview.recent_history_messages)
-  const memoryMessages = asArray(preview.memory_messages)
-  const recalledBlocks = asArray(preview.recalled_blocks)
-  const recalledTurns = asArray(preview.recalled_turns)
-  const sourceMessages = asArray(preview.source_messages)
-  const sourceToolSteps = asArray(preview.source_tool_steps)
-  const meaningfulSourceToolSteps = sourceToolSteps
-    .map((step) => ({ step, evidence: toolStepEvidence(step) }))
-    .filter((item) => item.evidence)
+function CompressionResult({ snapshot }: { snapshot: B5MemorySnapshot | null }) {
+  const summaries = asArray(snapshot?.turn_summaries)
+  const blocks = asArray(snapshot?.memory_blocks)
+
+  return (
+    <section className="b5-demo-result-card">
+      <header>
+        <Archive size={16} strokeWidth={1.9} aria-hidden="true" />
+        <div>
+          <h3>压缩结果</h3>
+          <p>展示当前会话已生成的轮级压缩和块级压缩。</p>
+        </div>
+      </header>
+
+      <div className="b5-result-columns">
+        <section>
+          <h4>轮级压缩</h4>
+          {summaries.length === 0 ? (
+            <p className="b5-empty">暂无轮级压缩。完成对话后等待 B5 后台反思写入。</p>
+          ) : (
+            <div className="b5-card-list">
+              {summaries.map((summary) => (
+                <article className="b5-mini-card" key={getString(summary, 'id', getString(summary, 'turn_id'))}>
+                  <span>第 {getString(summary, 'turn_index', '?')} 轮</span>
+                  <p>{compact(summary['summary'], 220)}</p>
+                  <div className="b5-tags">
+                    {getList(summary, 'labels', 5).map((label) => <span key={label}>{label}</span>)}
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <section>
+          <h4>块级压缩</h4>
+          {blocks.length === 0 ? (
+            <p className="b5-empty">暂无块级压缩。块级压缩通常需要多个已完成轮次。</p>
+          ) : (
+            <div className="b5-card-list">
+              {blocks.map((block) => (
+                <article className="b5-mini-card" key={getString(block, 'id')}>
+                  <span>{getString(block, 'title')}</span>
+                  <em>第 {getNumber(block, 'start_turn_index')}-{getNumber(block, 'end_turn_index')} 轮</em>
+                  <p>{compact(block['summary'], 220)}</p>
+                </article>
+              ))}
+            </div>
+          )}
+        </section>
+      </div>
+    </section>
+  )
+}
+
+function RecallResult({
+  query,
+  preview,
+  snapshot,
+}: {
+  query: string
+  preview: B5RecallPreviewResponse | null
+  snapshot: B5MemorySnapshot | null
+}) {
+  const workspace = preview && isRecord(preview.workspace_memory) ? preview.workspace_memory : {}
+  const latestLog = asArray(snapshot?.retrieval_logs)[0]
+  const recentHistory = preview ? asArray(preview.recent_history_messages) : asArray(snapshot?.messages).slice(0, 4)
+  const recalledBlocks = preview ? asArray(preview.recalled_blocks) : asArray(latestLog?.['selected_blocks'])
+  const recalledTurns = preview ? asArray(preview.recalled_turns) : asArray(latestLog?.['selected_turns'])
+  const sourceMessages = preview ? asArray(preview.source_messages) : recentHistory
+  const memoryMessages = preview ? asArray(preview.memory_messages) : []
   const memoryText = getString(memoryMessages[0], 'content', '')
 
   return (
-    <div className="b5-preview-result">
-      <section className="b5-demo-card">
-        <h3>本次 B5 召回状态</h3>
-        <dl className="b5-kv">
-          <dt>status</dt>
-          <dd>{preview.status}</dd>
-          <dt>context</dt>
-          <dd>{getString(workspace, 'context_chars')} / {getString(workspace, 'max_context_chars')}</dd>
-          <dt>truncated</dt>
-          <dd>{boolText(workspace['truncated'])}</dd>
-          <dt>loaded</dt>
-          <dd>{getList(workspace, 'loaded_message_ids', 20).length} messages, {getList(workspace, 'loaded_tool_step_ids', 20).length} tool steps</dd>
-          <dt>recent</dt>
-          <dd>{recentHistory.length} raw messages</dd>
-        </dl>
-        <JsonBlock value={{
-          vector_retrieval: preview.vector_retrieval,
-          llm_rerank: preview.llm_rerank,
-          retrieval_log: preview.retrieval_log,
-        }} maxHeight={220} />
-      </section>
-
-      <section className="b5-demo-card">
-        <h3>近期原文历史</h3>
-        {recentHistory.length === 0 ? (
-          <p className="b5-empty">本次 B5 返回中没有 recent_history_messages。</p>
-        ) : (
-          <div className="b5-card-list">
-            {recentHistory.map((message, index) => (
-              <article className="b5-mini-card" key={`${getString(message, 'role')}-${index}`}>
-                <span>{getString(message, 'role')}</span>
-                <p>{compact(message['content'], 180)}</p>
-              </article>
-            ))}
-          </div>
-        )}
-      </section>
-
-      <section className="b5-demo-card">
-        <h3>拼给 B1 的 memory_messages</h3>
-        {memoryText ? <pre>{memoryText}</pre> : <p className="b5-empty">本次没有额外生成 memory_messages；如果近期原文历史已有足够信息，这是正常情况。</p>}
-      </section>
-
-      <section className="b5-demo-card">
-        <h3>召回命中</h3>
-        <div className="b5-mini-columns">
-          <div>
-            <strong>recent_history {recentHistory.length}</strong>
-            {recentHistory.length === 0 ? <p className="b5-note">无近期原文历史。</p> : recentHistory.map((message, index) => (
-              <article className="b5-mini-card" key={`recent-${index}`}>
-                <span>{getString(message, 'role')}</span>
-                <p>{compact(message['content'], 120)}</p>
-              </article>
-            ))}
-          </div>
-          <div>
-            <strong>blocks {recalledBlocks.length}</strong>
-            {recalledBlocks.length === 0 ? <p className="b5-note">无 block 命中。</p> : recalledBlocks.map((block) => (
-              <article className="b5-mini-card" key={getString(block, 'id')}>
-                <span>{getString(block, 'title')}</span>
-                <em>{getString(block, 'score')}</em>
-                <p>{compact(block['summary'], 120)}</p>
-              </article>
-            ))}
-          </div>
-          <div>
-            <strong>turns {recalledTurns.length}</strong>
-            {recalledTurns.length === 0 ? <p className="b5-note">无 turn 命中。</p> : recalledTurns.map((turn) => (
-              <article className="b5-mini-card" key={getString(turn, 'turn_id')}>
-                <span>turn {getString(turn, 'turn_index')}</span>
-                <em>{getString(turn, 'score')}</em>
-                <p>{compact(turn['summary'], 120)}</p>
-              </article>
-            ))}
-          </div>
+    <section className="b5-demo-result-card">
+      <header>
+        <Search size={16} strokeWidth={1.9} aria-hidden="true" />
+        <div>
+          <h3>召回结果</h3>
+          <p>{query ? `当前查询：${query}` : '输入查询后运行召回演示。'}</p>
         </div>
-      </section>
+      </header>
 
-      <section className="b5-demo-card">
-        <h3>源证据</h3>
-        <div className="b5-mini-columns">
-          <div>
-            <strong>source_messages {sourceMessages.length}</strong>
-            {sourceMessages.length === 0 ? <p className="b5-note">未加载源消息。</p> : sourceMessages.map((message) => (
-              <article className="b5-mini-card" key={getString(message, 'message_id')}>
-                <span>{getString(message, 'role')}</span>
-                <p>{compact(message['content'], 140)}</p>
-              </article>
-            ))}
+      <div className="b5-result-meta">
+        <span>状态 {preview?.status ?? '未运行'}</span>
+        <span>上下文 {getString(workspace, 'context_chars', '-')}</span>
+        <span>日志 {snapshot?.counts.retrieval_logs ?? 0}</span>
+      </div>
+
+      <div className="b5-result-columns">
+        <section>
+          <h4>召回到的历史内容</h4>
+          {sourceMessages.length === 0 ? (
+            <p className="b5-empty">暂无可展示的历史内容。选择有历史消息的会话后再试。</p>
+          ) : (
+            <div className="b5-card-list">
+              {sourceMessages.map((message, index) => (
+                <article className="b5-mini-card" key={`${getString(message, 'id', getString(message, 'message_id'))}-${index}`}>
+                  <span>{getString(message, 'role')}</span>
+                  <p>{compact(message['content'], 190)}</p>
+                </article>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <section>
+          <h4>命中范围</h4>
+          <div className="b5-mini-columns">
+            <div>
+              <strong>轮次 {recalledTurns.length}</strong>
+              {recalledTurns.length === 0 ? <p className="b5-note">暂无轮次命中。</p> : recalledTurns.map((turn) => (
+                <article className="b5-mini-card" key={getString(turn, 'turn_id')}>
+                  <span>第 {getString(turn, 'turn_index')} 轮</span>
+                  <p>{compact(turn['summary'], 120)}</p>
+                </article>
+              ))}
+            </div>
+            <div>
+              <strong>块 {recalledBlocks.length}</strong>
+              {recalledBlocks.length === 0 ? <p className="b5-note">暂无块命中。</p> : recalledBlocks.map((block) => (
+                <article className="b5-mini-card" key={getString(block, 'id')}>
+                  <span>{getString(block, 'title')}</span>
+                  <p>{compact(block['summary'], 120)}</p>
+                </article>
+              ))}
+            </div>
           </div>
-          <div>
-            <strong>source_tool_steps {sourceToolSteps.length}</strong>
-            {sourceToolSteps.length === 0 ? <p className="b5-note">未加载源工具步骤。</p> : meaningfulSourceToolSteps.length === 0 ? (
-              <p className="b5-note">已加载源工具步骤，但本次没有有效 input / output / error；事实证据主要来自 source_messages。</p>
-            ) : meaningfulSourceToolSteps.map(({ step, evidence }) => (
-              <article className="b5-mini-card" key={getString(step, 'tool_step_id')}>
-                <span>{getString(step, 'tool_name')}</span>
-                <em>{getString(step, 'status')}</em>
-                <p>{evidence}</p>
-              </article>
-            ))}
-          </div>
-        </div>
-      </section>
-    </div>
+          {memoryText && (
+            <div className="b5-inline-context">
+              <h4>拼给 B1 的上下文</h4>
+              <pre>{memoryText}</pre>
+            </div>
+          )}
+        </section>
+      </div>
+    </section>
   )
 }
 
@@ -655,109 +653,117 @@ function DemoPanel({
   conversationId,
   state,
   preview,
-  onPreview,
-  onRefresh,
 }: {
   conversationId: string | null
   state: SnapshotState
   preview: B5RecallPreviewResponse | null
-  onPreview: (preview: B5RecallPreviewResponse | null) => void
-  onRefresh: () => Promise<void>
 }) {
   const messages = asArray(state.snapshot?.messages)
+  const conversationOptions = useMemo(() => {
+    const options = new Set<string>()
+    if (conversationId) options.add(conversationId)
+    if (state.snapshot?.conversation_id) options.add(state.snapshot.conversation_id)
+    return Array.from(options)
+  }, [conversationId, state.snapshot?.conversation_id])
   const suggestedInput = useMemo(() => {
     const lastUser = [...messages].reverse().find((message) => getString(message, 'role', '') === 'user')
     return getString(lastUser, 'content', '继续当前任务，读取相关历史上下文。')
   }, [messages])
+  const [selectedConversationId, setSelectedConversationId] = useState(conversationId ?? '')
+  const [uploadedSourceName, setUploadedSourceName] = useState('')
   const [query, setQuery] = useState('')
   const [queryTouched, setQueryTouched] = useState(false)
-  const [running, setRunning] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [activeResult, setActiveResult] = useState<B5DemoTarget>('compression')
 
   useEffect(() => {
+    setSelectedConversationId(conversationId ?? '')
+    setUploadedSourceName('')
     setQuery('')
     setQueryTouched(false)
-    setError(null)
+    setActiveResult('compression')
   }, [conversationId])
 
   useEffect(() => {
     if (!queryTouched && suggestedInput) setQuery(suggestedInput)
   }, [queryTouched, suggestedInput])
 
-  async function handleRunPreview() {
-    if (!conversationId || !query.trim() || running) return
-    setRunning(true)
-    setError(null)
-    try {
-      const result = await runB5RecallPreview(API_BASE, conversationId, query.trim())
-      onPreview(result)
-      await onRefresh()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setRunning(false)
-    }
-  }
+  const hasSource = Boolean(selectedConversationId || uploadedSourceName)
 
   return (
     <div className="b5-module">
       <SnapshotHeader
-        title="B5 真实召回演示"
-        modeLabel="真实运行"
-        loading={state.loading}
-        onRefresh={() => {
-          void onRefresh()
-        }}
+        title="B5 记忆演示"
       />
 
       {!conversationId ? (
         <EmptyState conversationId={conversationId} />
       ) : (
-        <div className="b5-demo-grid">
-          <section className="b5-demo-card">
-            <h3>构造召回输入</h3>
-            <p className="b5-note">点击运行会真实调用 B5 prepare_workspace_memory_context，并写入一次 retrieval log。</p>
-            <label>
-              conversation_id
-              <input value={conversationId} readOnly />
-            </label>
-            <label>
-              current_user_input
-              <textarea
-                value={query}
-                onChange={(event) => {
-                  setQueryTouched(true)
-                  setQuery(event.target.value)
-                }}
-              />
-            </label>
-            <button type="button" disabled={running || !query.trim()} onClick={handleRunPreview}>
-              <Play size={14} strokeWidth={1.9} aria-hidden="true" />
-              {running ? '运行中' : '运行 B5 召回'}
-            </button>
-            {error && <p className="b5-error-text">{error}</p>}
-          </section>
-
-          <section className="b5-demo-card">
-            <h3>输入预览</h3>
-            <JsonBlock value={{
-              operation: 'prepare_workspace_memory_context',
-              conversation_id: conversationId,
-              current_user_input: query,
-              history_messages: state.snapshot?.counts.messages ?? 0,
-              turns: state.snapshot?.counts.turns ?? 0,
-              memory_blocks: state.snapshot?.counts.memory_blocks ?? 0,
-            }} maxHeight={280} />
-          </section>
-
-          {preview ? (
-            <PreviewResult preview={preview} />
-          ) : (
-            <section className="b5-demo-card b5-demo-placeholder">
-              <h3>运行结果</h3>
-              <p className="b5-empty">尚未运行本页演示。运行后这里会展示真实 workspace_memory、召回结果、源证据和 retrieval log。</p>
+        <div className="b5-demo-workbench">
+          <aside className="b5-demo-controls" aria-label="B5 演示输入">
+            <section className="b5-demo-card">
+              <h3>数据源</h3>
+              <label>
+                当前会话
+                <select
+                  value={selectedConversationId}
+                  onChange={(event) => setSelectedConversationId(event.target.value)}
+                >
+                  {conversationOptions.length === 0 ? (
+                    <option value="">暂无会话</option>
+                  ) : (
+                    conversationOptions.map((id) => <option key={id} value={id}>{id}</option>)
+                  )}
+                </select>
+              </label>
+              <label className="b5-file-source">
+                <span>
+                  <Upload size={14} strokeWidth={1.9} aria-hidden="true" />
+                  上传会话数据
+                </span>
+                <input
+                  type="file"
+                  accept=".json,application/json"
+                  onChange={(event) => setUploadedSourceName(event.target.files?.[0]?.name ?? '')}
+                />
+                {uploadedSourceName && <em>{uploadedSourceName}</em>}
+              </label>
             </section>
-          )}
+
+            <section className="b5-demo-card">
+              <h3>测试压缩</h3>
+              <p className="b5-note">读取当前会话历史，展示轮级压缩和块级压缩结构。</p>
+              <button type="button" disabled={!hasSource} onClick={() => setActiveResult('compression')}>
+                <Archive size={14} strokeWidth={1.9} aria-hidden="true" />
+                运行压缩演示
+              </button>
+            </section>
+
+            <section className="b5-demo-card">
+              <h3>测试召回</h3>
+              <label>
+                召回输入
+                <textarea
+                  value={query}
+                  onChange={(event) => {
+                    setQueryTouched(true)
+                    setQuery(event.target.value)
+                  }}
+                />
+              </label>
+              <button type="button" disabled={!hasSource || !query.trim()} onClick={() => setActiveResult('recall')}>
+                <Play size={14} strokeWidth={1.9} aria-hidden="true" />
+                运行召回演示
+              </button>
+            </section>
+          </aside>
+
+          <main className="b5-demo-results" aria-label="B5 演示结果">
+            {activeResult === 'compression' ? (
+              <CompressionResult snapshot={state.snapshot} />
+            ) : (
+              <RecallResult query={query} preview={preview} snapshot={state.snapshot} />
+            )}
+          </main>
         </div>
       )}
     </div>
@@ -802,8 +808,6 @@ export function B5ModuleView({ mode, conversationId }: B5ModuleViewProps) {
       conversationId={conversationId}
       state={state}
       preview={preview}
-      onPreview={setPreview}
-      onRefresh={refreshSnapshot}
     />
   )
 }

@@ -937,9 +937,10 @@ function App() {
                 className="history-open"
                 type="button"
                 onClick={() => {
-                  setActiveView('chat')
-                  setAttachments([])
-                  setDraft('')
+                  if (activeView === 'chat') {
+                    setAttachments([])
+                    setDraft('')
+                  }
                   void loadConversation(item.id)
                 }}
               >
