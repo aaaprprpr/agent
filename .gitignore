@@ -16,3 +16,4 @@ outputs/full_demo
 .env
 
 data/uploads/
+checkpoints
