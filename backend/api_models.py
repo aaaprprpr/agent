@@ -63,7 +63,8 @@ class ConversationMessage(BaseModel):
     content: str
     message_order: int
     created_at: str
-    status: Literal["pending", "error"] | None = None
+    status: Literal["pending", "error", "cancelled"] | None = None
+    resumable: bool = False
     tool_steps: list[dict] = Field(default_factory=list)
     attachments: list[UploadedFileRef] = Field(default_factory=list)
 

@@ -53,12 +53,14 @@ export function ChatMessageList({
   conversationRef,
   onScroll,
   onToggleTool,
+  onResumeMessage,
 }: {
   messages: ChatMessage[]
   apiBase: string
   conversationRef: RefObject<HTMLElement | null>
   onScroll: UIEventHandler<HTMLElement>
   onToggleTool: (messageId: number | string) => void
+  onResumeMessage: (messageId: number | string) => void
 }) {
   return (
     <section className="conversation" aria-label="消息列表" ref={conversationRef} onScroll={onScroll}>
@@ -85,6 +87,13 @@ export function ChatMessageList({
                   : <p>{message.body}</p>}
               {message.role === 'assistant' && message.artifacts && (
                 <ArtifactList artifacts={message.artifacts} apiBase={apiBase} />
+              )}
+              {message.role === 'assistant' && message.status === 'cancelled' && message.resumable && (
+                <div className="message-actions">
+                  <button type="button" onClick={() => onResumeMessage(message.id)}>
+                    恢复
+                  </button>
+                </div>
               )}
             </div>
           </article>

@@ -66,3 +66,30 @@ export async function startRunStream(
   }
   return response as StreamResponse
 }
+
+export async function startResumeStream(
+  apiBase: string,
+  conversationId: string,
+  assistantMessageId: number | string,
+  signal: AbortSignal,
+): Promise<StreamResponse> {
+  const response = await fetch(
+    apiUrl(
+      apiBase,
+      `/api/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(String(assistantMessageId))}/resume`,
+    ),
+    {
+      method: 'POST',
+      signal,
+    },
+  )
+  if (!response.ok) {
+    const payload = await jsonOrNull(response)
+    const detail = payload?.detail ?? `HTTP ${response.status}`
+    throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
+  }
+  if (!response.body) {
+    throw new Error('浏览器没有返回可读的流式响应')
+  }
+  return response as StreamResponse
+}

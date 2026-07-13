@@ -3,6 +3,7 @@ from __future__ import annotations
 from common.conversation_store import (
     append_message,
     delete_conversation,
+    delete_tool_steps,
     init_store,
     list_conversations,
     list_messages,
@@ -141,6 +142,9 @@ def list_conversation_history(config_path: str, conversation_id: str) -> list[di
 
 def list_message_tool_steps(config_path: str, assistant_message_id: str) -> list[dict]:
     return list_tool_steps(_conversation_db_path(config_path), assistant_message_id)
+
+def clear_message_tool_steps(config_path: str, assistant_message_id: str) -> dict:
+    return delete_tool_steps(_conversation_db_path(config_path), assistant_message_id)
 
 def list_conversation_tasks(config_path: str, conversation_id: str, status: str | None = None) -> list[dict]:
     _safe_conversation_id(conversation_id)

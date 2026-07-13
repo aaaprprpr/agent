@@ -267,7 +267,7 @@ def _record_no_tool_action(workspace: dict, ai_message: dict) -> None:
     _merge_unique(workspace["tools"]["rejected_evidence"], [note])
     _merge_unique(workspace["draft"]["missing_info"], ["缺少本轮工具动作实际执行后的结果。"])
     if _required_outputs_pending(workspace):
-        workspace["task"]["stage"] = "failed"
+        workspace["task"]["stage"] = "tool_calling"
         _merge_unique(workspace["draft"]["missing_info"], ["用户要求生成文件，但本轮没有成功的文件产物。"])
     else:
         workspace["task"]["stage"] = "answering"

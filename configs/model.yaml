@@ -1,7 +1,7 @@
 runtime:
   default_mode: prompt_json
   # local: 本机 transformers 直连；fastapi: 学校算力服务器；qwen_api: 本地代理转 Qwen API。
-  llm_source: fastapi
+  llm_source: qwen_api
 
 model:
   backend: transformers

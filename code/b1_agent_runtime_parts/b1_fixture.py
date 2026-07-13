@@ -5,6 +5,7 @@ from pathlib import Path
 
 from common.io_utils import read_json
 from common.path_utils import resolve_from_file
+from common.schemas import validate_ai_message
 
 
 def _load_fixture_inputs(input_file: Path, runtime: dict) -> dict:

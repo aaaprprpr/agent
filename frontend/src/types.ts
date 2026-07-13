@@ -26,7 +26,8 @@ export type ChatMessage = {
   id: number | string
   role: Role
   body: string
-  status?: 'pending' | 'error'
+  status?: 'pending' | 'error' | 'cancelled'
+  resumable?: boolean
   toolDetails?: ToolDetail[]
   toolPanelOpen?: boolean
   attachments?: MessageAttachment[]
@@ -63,7 +64,8 @@ export type BackendMessage = {
   id: string
   role: Role
   content: string
-  status?: 'pending' | 'error' | null
+  status?: 'pending' | 'error' | 'cancelled' | null
+  resumable?: boolean
   tool_steps?: Record<string, unknown>[]
   attachments?: MessageAttachment[]
 }
@@ -113,6 +115,7 @@ export type RunStreamEvent =
         final_state?: string
         finish_reason?: string
         memory_save?: { status?: string }
+        checkpoint?: { exists?: boolean }
       }
       tool_steps?: Record<string, unknown>[]
     }

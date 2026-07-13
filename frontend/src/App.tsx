@@ -7,6 +7,7 @@ import {
   fetchConversationList,
   fetchConversationMessages,
   requestConversationCancel,
+  startResumeStream,
   startRunStream,
 } from './backendApi'
 import { ChatMessageList } from './ChatMessageList'
@@ -93,15 +94,28 @@ function App() {
     if (!conversationId || !runningConversationIdsRef.current.has(conversationId)) return
     if (cancellingConversationIdsRef.current.has(conversationId)) return
     setConversationCancelling(conversationId, true)
-    void requestConversationCancel(API_BASE, conversationId)
-      .then((cancelRequested) => {
-        if (!cancelRequested) {
-          abortControllersRef.current.get(conversationId)?.abort()
-        }
-      })
-      .catch(() => {
-        abortControllersRef.current.get(conversationId)?.abort()
-      })
+    const markStopped = (items: ChatMessage[]) =>
+      items.map((message): ChatMessage =>
+        message.role === 'assistant' && message.status === 'pending'
+          ? {
+              ...message,
+              body: message.body && message.body !== '...' ? `${message.body.trimEnd()}\n\n（回答已终止）` : '已终止回答。',
+              status: 'cancelled',
+              resumable: true,
+              toolPanelOpen: false,
+              toolDetails: message.toolDetails?.map((detail) =>
+                detail.status === 'pending' ? { ...detail, status: 'done' } : detail,
+              ),
+            }
+          : message,
+      )
+    setMessages((current) => {
+      const next = markStopped(current)
+      updateHistoryMessages(conversationId, next)
+      return next
+    })
+    abortControllersRef.current.get(conversationId)?.abort()
+    void requestConversationCancel(API_BASE, conversationId).catch(() => undefined)
   }
 
   function updateHistoryMessages(conversationId: string, nextMessages: ChatMessage[], memoryReady?: boolean) {
@@ -303,7 +317,7 @@ function App() {
       updateHistoryMessages(conversationId, nextMessages, memoryReady)
     }
 
-    function replaceAssistant(body: string, status?: 'pending' | 'error', memoryReady?: boolean) {
+    function replaceAssistant(body: string, status?: ChatMessage['status'], memoryReady?: boolean) {
       applyMessageState(
         currentMessages.map((message): ChatMessage =>
           message.id === activeAssistantId
@@ -343,27 +357,21 @@ function App() {
         return
       }
       if (event.type === 'state') {
-        const phase = typeof event.agent_step?.phase === 'string' ? event.agent_step.phase : ''
-        if (phase === 'observation') {
-          const toolDetails = toolDetailsFromAgentStep(event.agent_step)
-          const hasToolTrace = currentMessages.some(
-            (message) => message.id === activeAssistantId && (message.toolDetails?.length ?? 0) > 0,
+        const toolDetails = toolDetailsFromAgentStep(event.agent_step)
+        if (toolDetails.length > 0) {
+          applyMessageState(
+            currentMessages.map((message): ChatMessage =>
+              message.id === activeAssistantId
+                ? {
+                    ...message,
+                    body: message.body || '...',
+                    status: 'pending',
+                    toolDetails: [...(message.toolDetails ?? []), ...toolDetails],
+                    toolPanelOpen: true,
+                  }
+                : message,
+            ),
           )
-          if (hasToolTrace && toolDetails.length > 0) {
-            applyMessageState(
-              currentMessages.map((message): ChatMessage =>
-                message.id === activeAssistantId
-                  ? {
-                      ...message,
-                      body: message.body || '...',
-                      status: 'pending',
-                      toolDetails: [...(message.toolDetails ?? []), ...toolDetails],
-                      toolPanelOpen: true,
-                    }
-                  : message,
-              ),
-            )
-          }
         }
         return
       }
@@ -421,7 +429,8 @@ function App() {
               ? {
                   ...message,
                   body: finalAnswer,
-                  status: undefined,
+                  status: event.status === 'cancelled' ? 'cancelled' : undefined,
+                  resumable: event.status === 'cancelled' ? Boolean(event.trace?.checkpoint?.exists) : false,
                   toolDetails: savedToolDetails.length > 0 ? savedToolDetails : message.toolDetails,
                   toolPanelOpen: false,
                   artifacts: mergeArtifacts(message.artifacts, savedArtifacts),
@@ -481,7 +490,8 @@ function App() {
                   ? `${streamedAnswer.trimEnd()}\n\n（回答已终止）`
                   : '已终止回答。'
                 : `请求失败：${message}`,
-              status: aborted ? undefined : 'error',
+              status: aborted ? 'cancelled' : 'error',
+              resumable: aborted ? true : item.resumable,
               toolPanelOpen: aborted ? false : item.toolPanelOpen,
               toolDetails: aborted
                 ? item.toolDetails?.map((detail) =>
@@ -500,6 +510,203 @@ function App() {
       abortControllersRef.current.delete(conversationId)
       setConversationCancelling(conversationId, false)
       setConversationRunning(conversationId, false)
+    }
+  }
+
+  async function handleResumeMessage(assistantMessageId: number | string) {
+    const conversationId = currentConversationIdRef.current
+    if (!conversationId || runningConversationIdsRef.current.has(conversationId)) return
+    const resumeConversationId = conversationId
+    stickToBottomRef.current = isConversationAtBottom()
+    setConversationRunning(resumeConversationId, true)
+    setConversationCancelling(resumeConversationId, false)
+    const abortController = new AbortController()
+    abortControllersRef.current.set(resumeConversationId, abortController)
+    let streamedAnswer = ''
+    let currentMessages = messages.map((message): ChatMessage =>
+      message.id === assistantMessageId
+        ? {
+            ...message,
+            body: '...',
+            status: 'pending',
+          }
+        : message,
+    )
+
+    function applyMessageState(nextMessages: ChatMessage[], memoryReady?: boolean) {
+      currentMessages = nextMessages
+      if (currentConversationIdRef.current === resumeConversationId) {
+        stickToBottomRef.current = isConversationAtBottom()
+        setMessages(nextMessages)
+      }
+      updateHistoryMessages(resumeConversationId, nextMessages, memoryReady)
+    }
+
+    function replaceAssistant(body: string, status?: ChatMessage['status'], memoryReady?: boolean) {
+      applyMessageState(
+        currentMessages.map((message): ChatMessage =>
+          message.id === assistantMessageId
+            ? {
+                ...message,
+                body,
+                status,
+              }
+            : message,
+        ),
+        memoryReady,
+      )
+    }
+
+    applyMessageState(currentMessages)
+
+    function handleStreamEvent(event: RunStreamEvent) {
+      if (event.type === 'start') return
+      if (event.type === 'delta') {
+        streamedAnswer += event.text
+        replaceAssistant(streamedAnswer, 'pending')
+        return
+      }
+      if (event.type === 'state') {
+        const toolDetails = toolDetailsFromAgentStep(event.agent_step)
+        if (toolDetails.length > 0) {
+          applyMessageState(
+            currentMessages.map((message): ChatMessage =>
+              message.id === assistantMessageId
+                ? {
+                    ...message,
+                    body: message.body || '...',
+                    status: 'pending',
+                    toolDetails: [...(message.toolDetails ?? []), ...toolDetails],
+                    toolPanelOpen: true,
+                  }
+                : message,
+            ),
+          )
+        }
+        return
+      }
+      if (event.type === 'tool_start') {
+        streamedAnswer = ''
+        const toolDetails = [
+          ...toolDetailsFromAgentStep(event.agent_step),
+          ...toolDetailsFromProgress(event.assistant_content),
+          ...toolDetailsFromCalls(event.tool_calls),
+        ]
+        applyMessageState(
+          currentMessages.map((message): ChatMessage =>
+            message.id === assistantMessageId
+              ? {
+                  ...message,
+                  body: '...',
+                  status: 'pending',
+                  toolDetails: toolDetails.length > 0 ? [...(message.toolDetails ?? []), ...toolDetails] : message.toolDetails,
+                  toolPanelOpen: true,
+                }
+              : message,
+          ),
+        )
+        return
+      }
+      if (event.type === 'tool_done') {
+        const resultDetails = toolDetailsFromMessages(event.tool_messages)
+        const resultArtifacts = artifactsFromToolMessages(event.tool_messages)
+        applyMessageState(
+          currentMessages.map((message): ChatMessage =>
+            message.id === assistantMessageId
+              ? {
+                  ...message,
+                  toolDetails: [
+                    ...(message.toolDetails ?? []).map((detail) =>
+                      detail.status === 'pending' ? { ...detail, status: 'done' } : detail,
+                    ),
+                    ...resultDetails,
+                  ],
+                  artifacts: mergeArtifacts(message.artifacts, resultArtifacts),
+                }
+              : message,
+          ),
+        )
+        return
+      }
+      if (event.type === 'done') {
+        const finalAnswer = event.final_answer || streamedAnswer || 'Agent 没有返回内容。'
+        const memorySaved = event.trace?.memory_save?.status === 'success'
+        const savedToolDetails = toolDetailsFromSteps(event.tool_steps)
+        const savedArtifacts = artifactsFromToolSteps(event.tool_steps)
+        applyMessageState(
+          currentMessages.map((message): ChatMessage =>
+            message.id === assistantMessageId
+              ? {
+                  ...message,
+                  body: finalAnswer,
+                  status: event.status === 'cancelled' ? 'cancelled' : undefined,
+                  resumable: event.status === 'cancelled' ? Boolean(event.trace?.checkpoint?.exists) : false,
+                  toolDetails: savedToolDetails.length > 0 ? savedToolDetails : message.toolDetails,
+                  toolPanelOpen: false,
+                  artifacts: mergeArtifacts(message.artifacts, savedArtifacts),
+                }
+              : message,
+          ),
+          memorySaved,
+        )
+        return
+      }
+      if (event.type === 'error') {
+        throw new Error(event.message)
+      }
+    }
+
+    function consumeStreamLine(line: string) {
+      const trimmed = line.trim()
+      if (!trimmed) return
+      handleStreamEvent(JSON.parse(trimmed) as RunStreamEvent)
+    }
+
+    try {
+      const response = await startResumeStream(API_BASE, resumeConversationId, assistantMessageId, abortController.signal)
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      while (true) {
+        const { value, done } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() ?? ''
+        for (const line of lines) consumeStreamLine(line)
+      }
+      buffer += decoder.decode()
+      consumeStreamLine(buffer)
+    } catch (error) {
+      const aborted = error instanceof DOMException
+        ? error.name === 'AbortError'
+        : error instanceof Error && error.name === 'AbortError'
+      const message = error instanceof Error ? error.message : String(error)
+      applyMessageState(
+        currentMessages.map((item): ChatMessage =>
+          item.id === assistantMessageId
+            ? {
+                ...item,
+                body: aborted
+                  ? streamedAnswer.trim()
+                    ? `${streamedAnswer.trimEnd()}\n\n（回答已终止）`
+                    : '已终止回答。'
+                  : `恢复失败：${message}`,
+                status: aborted ? 'cancelled' : 'error',
+                toolPanelOpen: aborted ? false : item.toolPanelOpen,
+                toolDetails: aborted
+                  ? item.toolDetails?.map((detail) =>
+                      detail.status === 'pending' ? { ...detail, status: 'done' } : detail,
+                    )
+                  : item.toolDetails,
+              }
+            : item,
+        ),
+      )
+    } finally {
+      abortControllersRef.current.delete(resumeConversationId)
+      setConversationCancelling(resumeConversationId, false)
+      setConversationRunning(resumeConversationId, false)
     }
   }
 
@@ -635,6 +842,7 @@ function App() {
           conversationRef={conversationRef}
           onScroll={updateScrollButton}
           onToggleTool={toggleToolPanel}
+          onResumeMessage={handleResumeMessage}
         />
 
         {showScrollBottom && (

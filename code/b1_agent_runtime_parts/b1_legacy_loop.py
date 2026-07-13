@@ -47,6 +47,7 @@ def _legacy_cancelled_result(
         "execution_mode": execution_mode,
         "status": "cancelled",
         "toolset": runtime["toolset"],
+        "max_turns": runtime["max_turns"],
         "tool_rounds_used": tool_rounds,
         "llm_call_count": llm_calls,
         "final_state": final_control["state"],
@@ -121,6 +122,7 @@ def run_legacy_loop(
     final_control = None
     if selected_memory.get("status") in {"partial", "error"}:
         warnings.append("memory selection completed with errors")
+    max_turns = runtime["max_turns"]
 
     while True:
         llm_calls += 1
@@ -194,6 +196,22 @@ def run_legacy_loop(
             turn["latency_ms"] = round((perf_counter() - turn_start) * 1000, 3)
             turns.append(turn)
             break
+        if tool_rounds >= max_turns:
+            final_answer = ai_message.get("content", "").strip() or f"已达到最大工具轮数 max_turns={max_turns}，停止继续调用工具。"
+            status = "agent_failed"
+            final_control = {
+                "state": "failed",
+                "action": "finish",
+                "reason": f"max_turns reached: {max_turns}",
+            }
+            terminal_error = {
+                "type": "MaxTurnsExceeded",
+                "message": final_control["reason"],
+                "llm_call_index": llm_calls,
+            }
+            turn["latency_ms"] = round((perf_counter() - turn_start) * 1000, 3)
+            turns.append(turn)
+            break
         if execution_mode == "fixture":
             tool_messages = _fixture_tool_messages(
                 tool_calls,
@@ -227,6 +245,7 @@ def run_legacy_loop(
         "execution_mode": execution_mode,
         "status": status,
         "toolset": runtime["toolset"],
+        "max_turns": runtime["max_turns"],
         "tool_rounds_used": tool_rounds,
         "llm_call_count": llm_calls,
         "final_state": final_control["state"] if final_control else "failed",
@@ -329,6 +348,7 @@ def run_legacy_stream_loop(
     if selected_memory.get("status") in {"partial", "error"}:
         warnings.append("memory selection completed with errors")
     partial_chunks: list[str] = []
+    max_turns = runtime["max_turns"]
 
     while True:
         if _cancel_requested(should_cancel):
@@ -477,6 +497,23 @@ def run_legacy_stream_loop(
             turn["latency_ms"] = round((perf_counter() - turn_start) * 1000, 3)
             turns.append(turn)
             break
+        if tool_rounds >= max_turns:
+            final_answer = ai_message.get("content", "").strip() or f"已达到最大工具轮数 max_turns={max_turns}，停止继续调用工具。"
+            status = "agent_failed"
+            final_control = {
+                "state": "failed",
+                "action": "finish",
+                "reason": f"max_turns reached: {max_turns}",
+            }
+            terminal_error = {
+                "type": "MaxTurnsExceeded",
+                "message": final_control["reason"],
+                "llm_call_index": llm_calls,
+            }
+            turn["latency_ms"] = round((perf_counter() - turn_start) * 1000, 3)
+            turns.append(turn)
+            yield {"type": "state", **final_control, "llm_call_index": llm_calls}
+            break
         yield {
             "type": "tool_start",
             "tool_calls": tool_calls,
@@ -538,6 +575,7 @@ def run_legacy_stream_loop(
         "execution_mode": execution_mode,
         "status": status,
         "toolset": runtime["toolset"],
+        "max_turns": runtime["max_turns"],
         "tool_rounds_used": tool_rounds,
         "llm_call_count": llm_calls,
         "final_state": final_control["state"] if final_control else "failed",

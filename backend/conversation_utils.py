@@ -31,6 +31,7 @@ def read_trace(trace_path: str) -> dict:
         "final_state": trace.get("final_state"),
         "finish_reason": trace.get("finish_reason"),
         "memory_save": trace.get("memory_save"),
+        "checkpoint": trace.get("checkpoint"),
         "warnings": trace.get("warnings", []),
         "error": trace.get("error"),
     }
@@ -150,7 +151,12 @@ def assistant_metadata(result: dict, trace: dict) -> dict:
 def message_ui_status(message: dict) -> str | None:
     metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
     status = metadata.get("ui_status")
-    return status if status in {"pending", "error"} else None
+    return status if status in {"pending", "error", "cancelled"} else None
+
+
+def message_resumable(message: dict) -> bool:
+    metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
+    return bool(metadata.get("resumable"))
 
 
 def message_attachments(message: dict) -> list[UploadedFileRef]:

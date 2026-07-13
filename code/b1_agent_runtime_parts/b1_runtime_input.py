@@ -22,6 +22,9 @@ def _validate_runtime_input(payload: dict) -> dict:
         raise ValueError("user_input must be a non-empty string")
     if payload["save_memory"] not in {"none", "conversation", "global"}:
         raise ValueError("save_memory must be none, conversation, or global")
+    max_turns = payload.setdefault("max_turns", 10)
+    if not isinstance(max_turns, int) or isinstance(max_turns, bool) or max_turns <= 0:
+        raise ValueError("max_turns must be a positive integer")
     payload["history_messages"] = normalize_history_messages(payload.get("history_messages", []))
     input_images = payload.setdefault("input_images", [])
     if not isinstance(input_images, list) or not all(

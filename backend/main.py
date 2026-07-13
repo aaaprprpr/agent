@@ -35,6 +35,7 @@ from backend.conversation_utils import (  # noqa: E402
     is_trivial_conversation as _is_trivial_conversation,
     is_trivial_text as _is_trivial_text,
     message_attachments as _message_attachments,
+    message_resumable as _message_resumable,
     message_ui_status as _message_ui_status,
     read_trace as _read_trace,
     read_trace_full as _read_trace_full,
@@ -64,11 +65,13 @@ from backend.uploads import (  # noqa: E402
 if str(CODE_DIR) not in sys.path:
     sys.path.insert(0, str(CODE_DIR))
 
+from b1_agent_runtime import resume_stream as resume_agent_runtime_stream  # noqa: E402
 from b1_agent_runtime import run as run_agent_runtime  # noqa: E402
 from b1_agent_runtime import run_stream as run_agent_runtime_stream  # noqa: E402
 from common.identifiers import validate_conversation_id  # noqa: E402
 from b5_memory import (  # noqa: E402
     append_conversation_message,
+    clear_message_tool_steps,
     delete_conversation_record,
     init_conversation_db,
     list_conversation_history,
@@ -243,6 +246,7 @@ def _finish_run_message(
     if result.get("status") == "cancelled":
         metadata["ui_status"] = "cancelled"
         metadata["cancelled"] = True
+        metadata["resumable"] = True
     elif result.get("status") != "success":
         metadata["ui_status"] = "error"
     update_conversation_message(
@@ -356,6 +360,7 @@ def _mark_run_cancelled(assistant_message_id: str, partial_answer: str = "") -> 
             "ui_status": "cancelled",
             "agent_status": "cancelled",
             "cancelled": True,
+            "resumable": True,
         },
     )
 
@@ -514,24 +519,16 @@ def _stream_agent(request: RunRequest) -> Iterator[str]:
                 if not delta:
                     continue
                 candidate_chunks.append(delta)
+                streamed_answer += delta
+                yield _stream_event(
+                    {
+                        "type": "delta",
+                        "conversation_id": conversation_id,
+                        "assistant_message_id": assistant_message_id,
+                        "text": delta,
+                    }
+                )
             elif event_type == "state":
-                action = event.get("action")
-                if action == "finish" and candidate_chunks:
-                    streamed_answer = "".join(candidate_chunks)
-                    update_conversation_message(
-                        str(MEMORY_CONFIG),
-                        assistant_message_id,
-                        content=streamed_answer,
-                        metadata={"ui_status": "pending", "agent_status": "running_stream"},
-                    )
-                    yield _stream_event(
-                        {
-                            "type": "delta",
-                            "conversation_id": conversation_id,
-                            "assistant_message_id": assistant_message_id,
-                            "text": streamed_answer,
-                        }
-                    )
                 candidate_chunks = []
                 yield _stream_event(
                     {
@@ -696,6 +693,241 @@ def _safe_stream_agent(request: RunRequest) -> Iterator[str]:
         )
 
 
+def _resume_message_context(conversation_id: str, assistant_message_id: str) -> dict:
+    messages = list_conversation_messages(str(MEMORY_CONFIG), conversation_id)
+    target = None
+    previous_user = None
+    for message in messages:
+        if message.get("id") == assistant_message_id:
+            target = message
+            break
+        if message.get("role") == "user":
+            previous_user = message
+    if target is None or target.get("role") != "assistant":
+        raise HTTPException(status_code=404, detail="assistant message not found")
+    if previous_user is None:
+        raise HTTPException(status_code=400, detail="cannot resume without a previous user message")
+    return {
+        "run_id": target.get("run_id") or _now_stamp(),
+        "user_message_id": previous_user["id"],
+        "raw_user_input": previous_user["content"],
+    }
+
+
+def _stream_resume_agent(conversation_id: str, assistant_message_id: str) -> Iterator[str]:
+    safe_conversation_id = _safe_conversation_id(conversation_id)
+    init_conversation_db(str(MEMORY_CONFIG))
+    context = _resume_message_context(safe_conversation_id, assistant_message_id)
+    run_id = context["run_id"]
+    user_message_id = context["user_message_id"]
+    raw_user_input = context["raw_user_input"]
+    update_conversation_message(
+        str(MEMORY_CONFIG),
+        assistant_message_id,
+        content="...",
+        metadata={"ui_status": "pending", "agent_status": "resuming", "resumable": True},
+    )
+    clear_message_tool_steps(str(MEMORY_CONFIG), assistant_message_id)
+    cancel_event = _register_cancel_event(safe_conversation_id)
+    streamed_answer = ""
+    candidate_chunks: list[str] = []
+    run_finished = False
+    output_dir = OUTPUT_ROOT / safe_conversation_id / run_id
+    try:
+        yield _stream_event(
+            {
+                "type": "start",
+                "conversation_id": safe_conversation_id,
+                "user_message_id": user_message_id,
+                "assistant_message_id": assistant_message_id,
+                "resumed": True,
+            }
+        )
+        for event in resume_agent_runtime_stream(safe_conversation_id, should_cancel=cancel_event.is_set):
+            if not isinstance(event, dict):
+                continue
+            event_type = event.get("type")
+            if event_type == "delta":
+                delta = str(event.get("text", ""))
+                if not delta:
+                    continue
+                candidate_chunks.append(delta)
+                streamed_answer += delta
+                yield _stream_event(
+                    {
+                        "type": "delta",
+                        "conversation_id": safe_conversation_id,
+                        "assistant_message_id": assistant_message_id,
+                        "text": delta,
+                    }
+                )
+            elif event_type == "state":
+                candidate_chunks = []
+                yield _stream_event(
+                    {
+                        "type": "state",
+                        "conversation_id": safe_conversation_id,
+                        "assistant_message_id": assistant_message_id,
+                        "state": event.get("state"),
+                        "action": event.get("action"),
+                        "reason": event.get("reason"),
+                        "agent_step": event.get("agent_step"),
+                        "llm_call_index": event.get("llm_call_index"),
+                        "tool_round_index": event.get("tool_round_index"),
+                        "detail": event.get("detail"),
+                    }
+                )
+            elif event_type == "tool_start":
+                streamed_answer = ""
+                candidate_chunks = []
+                update_conversation_message(
+                    str(MEMORY_CONFIG),
+                    assistant_message_id,
+                    content="...",
+                    metadata={"ui_status": "pending", "agent_status": "running_tool", "resumable": True},
+                )
+                yield _stream_event(
+                    {
+                        "type": "tool_start",
+                        "conversation_id": safe_conversation_id,
+                        "assistant_message_id": assistant_message_id,
+                        "tool_calls": event.get("tool_calls", []),
+                        "assistant_content": event.get("assistant_content", ""),
+                        "agent_step": event.get("agent_step"),
+                    }
+                )
+            elif event_type == "tool_done":
+                yield _stream_event(
+                    {
+                        "type": "tool_done",
+                        "conversation_id": safe_conversation_id,
+                        "assistant_message_id": assistant_message_id,
+                        "tool_messages": event.get("tool_messages", []),
+                    }
+                )
+            elif event_type == "done":
+                result = event.get("result")
+                if not isinstance(result, dict):
+                    raise ValueError("resume runtime finished without a result object")
+                full_trace = _read_trace_full(result["trace_path"])
+                clear_message_tool_steps(str(MEMORY_CONFIG), assistant_message_id)
+                _finish_run_message(
+                    safe_conversation_id,
+                    assistant_message_id,
+                    run_id,
+                    result,
+                    full_trace,
+                )
+                if result.get("status") == "cancelled":
+                    full_trace["memory_save"] = {
+                        "requested": "database",
+                        "status": "skipped",
+                        "reason": "cancelled",
+                        "conversation_id": safe_conversation_id,
+                        "user_message_id": user_message_id,
+                        "assistant_message_id": assistant_message_id,
+                        "storage": "sqlite",
+                        "turn_memory": {"status": "skipped", "reason": "cancelled"},
+                    }
+                    _write_json_file(result["trace_path"], full_trace)
+                else:
+                    full_trace["memory_save"] = {
+                        "requested": "database",
+                        "status": "success",
+                        "conversation_id": safe_conversation_id,
+                        "user_message_id": user_message_id,
+                        "assistant_message_id": assistant_message_id,
+                        "storage": "sqlite",
+                        "turn_memory": {
+                            "status": "scheduled",
+                            "mode": "background",
+                            "reason": "memory reflection and layered memory writes run after the user response",
+                        },
+                    }
+                    _write_json_file(result["trace_path"], full_trace)
+                    _schedule_completed_turn_memory(
+                        safe_conversation_id,
+                        run_id,
+                        user_message_id,
+                        assistant_message_id,
+                        raw_user_input,
+                        result,
+                        full_trace,
+                        None,
+                        output_dir,
+                        result["trace_path"],
+                    )
+                tool_steps = list_message_tool_steps(str(MEMORY_CONFIG), assistant_message_id)
+                run_finished = True
+                yield _stream_event(
+                    {
+                        "type": "done",
+                        "conversation_id": result["conversation_id"],
+                        "user_message_id": user_message_id,
+                        "assistant_message_id": assistant_message_id,
+                        "status": result["status"],
+                        "final_answer": result["final_answer"],
+                        "elapsed_ms": result["elapsed_ms"],
+                        "output_dir": str(output_dir),
+                        "trace": _read_trace(result["trace_path"]),
+                        "tool_steps": tool_steps,
+                    }
+                )
+                return
+    except GeneratorExit:
+        if not run_finished:
+            _mark_run_cancelled(assistant_message_id, streamed_answer or "".join(candidate_chunks))
+        raise
+    except Exception as exc:
+        if cancel_event.is_set():
+            cancelled_answer = streamed_answer or "".join(candidate_chunks)
+            _mark_run_cancelled(assistant_message_id, cancelled_answer)
+            yield _stream_event(
+                {
+                    "type": "done",
+                    "conversation_id": safe_conversation_id,
+                    "user_message_id": user_message_id,
+                    "assistant_message_id": assistant_message_id,
+                    "status": "cancelled",
+                    "final_answer": cancelled_answer.strip() or "已终止回答。",
+                    "elapsed_ms": None,
+                    "output_dir": str(output_dir),
+                    "trace": {
+                        "final_state": "failed",
+                        "finish_reason": "user cancelled",
+                        "memory_save": {"status": "skipped", "reason": "cancelled"},
+                    },
+                    "tool_steps": list_message_tool_steps(str(MEMORY_CONFIG), assistant_message_id),
+                }
+            )
+            return
+        _mark_run_failed(assistant_message_id, exc)
+        yield _stream_event(
+            {
+                "type": "error",
+                "conversation_id": safe_conversation_id,
+                "assistant_message_id": assistant_message_id,
+                "message": f"{type(exc).__name__}: {exc}",
+            }
+        )
+    finally:
+        _clear_cancel_event(safe_conversation_id, cancel_event)
+
+
+def _safe_stream_resume_agent(conversation_id: str, assistant_message_id: str) -> Iterator[str]:
+    try:
+        yield from _stream_resume_agent(conversation_id, assistant_message_id)
+    except Exception as exc:
+        yield _stream_event(
+            {
+                "type": "error",
+                "conversation_id": conversation_id,
+                "assistant_message_id": assistant_message_id,
+                "message": f"{type(exc).__name__}: {exc}",
+            }
+        )
+
+
 @app.get("/api/health")
 def health() -> dict:
     return {
@@ -745,6 +977,7 @@ def get_conversation(conversation_id: str) -> ConversationDetail:
             message_order=message["message_order"],
             created_at=message["created_at"],
             status=_message_ui_status(message),
+            resumable=_message_resumable(message),
             tool_steps=list_message_tool_steps(str(MEMORY_CONFIG), message["id"]) if message["role"] == "assistant" else [],
             attachments=_message_attachments(message) if message["role"] == "user" else [],
         )
@@ -805,6 +1038,14 @@ def cancel_conversation_run(conversation_id: str) -> dict:
         "conversation_id": safe_conversation_id,
         "cancel_requested": _request_cancel(safe_conversation_id),
     }
+
+
+@app.post("/api/conversations/{conversation_id}/messages/{assistant_message_id}/resume")
+def resume_conversation_run(conversation_id: str, assistant_message_id: str) -> StreamingResponse:
+    return StreamingResponse(
+        _safe_stream_resume_agent(conversation_id, assistant_message_id),
+        media_type="application/x-ndjson; charset=utf-8",
+    )
 
 
 @app.post("/api/run", response_model=RunResponse)

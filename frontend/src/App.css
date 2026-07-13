@@ -372,6 +372,30 @@
   color: #666;
 }
 
+.message-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.message-actions button {
+  min-height: 30px;
+  padding: 0 12px;
+  border: 1px solid #d8d8d8;
+  border-radius: 9px;
+  background: #f7f7f7;
+  color: #333;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.16s ease, border-color 0.16s ease;
+}
+
+.message-actions button:hover {
+  border-color: #c8c8c8;
+  background: #ededed;
+}
+
 .tool-trace {
   margin: -4px 0 8px;
   color: #777;

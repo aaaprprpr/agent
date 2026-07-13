@@ -8,6 +8,7 @@ from common.path_utils import resolve_cli_path
 
 from b5_memory_parts.conversation_api import (
     append_conversation_message,
+    clear_message_tool_steps,
     delete_conversation_record,
     init_conversation_db,
     list_conversation_history,
@@ -25,6 +26,7 @@ from b5_memory_parts.retrieval import build_layered_memory_context, prepare_work
 
 __all__ = [
     "append_conversation_message",
+    "clear_message_tool_steps",
     "build_layered_memory_context",
     "build_parser",
     "delete_conversation_record",

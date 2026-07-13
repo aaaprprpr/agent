@@ -24,7 +24,7 @@ from b1_agent_runtime_parts.b1_runtime_input import (
     _validate_runtime_input,
 )
 from b1_agent_runtime_parts.b1_workspace import _prepare_workspace_runtime_context
-from b1_agent_runtime_parts.b1_workspace_loop import _run_workspace, _run_workspace_stream
+from b1_agent_runtime_parts.b1_workspace_loop import _run_workspace, _run_workspace_stream, resume_workspace_stream
 
 
 def run(
@@ -202,6 +202,14 @@ def run_stream(
         started,
         should_cancel,
     )
+
+
+def resume_stream(
+    conversation_id: str,
+    should_cancel: Callable[[], bool] | None = None,
+) -> Iterator[dict]:
+    """Resume a paused workspace run from checkpoints/<conversation_id>.json."""
+    yield from resume_workspace_stream(conversation_id, should_cancel)
 
 
 def run_agent(

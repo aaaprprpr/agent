@@ -9,6 +9,7 @@ export function backendMessagesToChatMessages(messages: BackendMessage[]) {
       role: message.role,
       body: message.content,
       status: message.status ?? undefined,
+      resumable: message.resumable,
       toolDetails: toolDetailsFromSteps(message.tool_steps),
       artifacts: artifactsFromToolSteps(message.tool_steps),
       attachments: message.attachments,

@@ -9,6 +9,7 @@ from common.io_utils import append_jsonl, write_json, write_text
 from common.logging_utils import now_iso
 from common.schemas import make_ai_message
 
+from .b1_checkpoint import checkpoint_metadata, load_checkpoint, save_checkpoint
 from .b1_llm_bridge import generate_ai_message, generate_json_object, stream_ai_message
 from .b1_prompting import (
     _workspace_answer_messages,
@@ -62,6 +63,7 @@ def _write_runtime_outputs(
         "execution_mode": execution_mode,
         "status": status,
         "toolset": runtime["toolset"],
+        "max_turns": runtime["max_turns"],
         "tool_rounds_used": tool_rounds,
         "llm_call_count": llm_calls,
         "final_state": final_control["state"] if final_control else "failed",
@@ -71,6 +73,7 @@ def _write_runtime_outputs(
         "memory_save": memory_save,
         "warnings": warnings,
         "error": terminal_error,
+        "checkpoint": checkpoint_metadata(runtime["conversation_id"]),
     }
     if workspace is not None:
         trace["workspace"] = workspace
@@ -279,6 +282,57 @@ def _cancel_requested(should_cancel: Callable[[], bool] | None) -> bool:
     return bool(should_cancel and should_cancel())
 
 
+def _save_workspace_checkpoint(
+    *,
+    runtime: dict,
+    execution_mode: str,
+    mode: str,
+    output_dir: Path,
+    selected_memory: dict,
+    tools_schema: list[dict],
+    tools_file: Path,
+    memory_file: Path,
+    model_file: Path,
+    system_prompt: str,
+    messages: list[dict],
+    all_tool_messages: list[dict],
+    tool_rounds: int,
+    llm_calls: int,
+    turns: list[dict],
+    warnings: list[str],
+    workspace: dict,
+    next_stage: str | None = None,
+    status: str = "running",
+    partial_answer: str = "",
+) -> Path:
+    stage = next_stage or workspace.get("task", {}).get("stage") or "planning"
+    return save_checkpoint(
+        runtime["conversation_id"],
+        {
+            "status": status,
+            "stage": stage,
+            "partial_answer": partial_answer,
+            "runtime": deepcopy(runtime),
+            "execution_mode": execution_mode,
+            "mode": mode,
+            "output_dir": str(output_dir),
+            "selected_memory": deepcopy(selected_memory),
+            "tools_schema": deepcopy(tools_schema),
+            "tools_file": str(tools_file),
+            "memory_file": str(memory_file),
+            "model_file": str(model_file),
+            "system_prompt": system_prompt,
+            "messages": deepcopy(messages),
+            "all_tool_messages": deepcopy(all_tool_messages),
+            "tool_rounds": tool_rounds,
+            "llm_calls": llm_calls,
+            "turns": deepcopy(turns),
+            "warnings": deepcopy(warnings),
+            "workspace": deepcopy(workspace),
+        },
+    )
+
+
 def _workspace_cancelled_result(
     runtime: dict,
     execution_mode: str,
@@ -295,8 +349,34 @@ def _workspace_cancelled_result(
     warnings: list[str],
     memory_file: Path | None,
     workspace: dict,
+    system_prompt: str | None = None,
+    tools_schema: list[dict] | None = None,
+    tools_file: Path | None = None,
+    model_file: Path | None = None,
 ) -> dict:
     final_answer = partial_answer.strip() or "已终止回答。"
+    if system_prompt is not None and memory_file is not None and tools_file is not None and model_file is not None:
+        _save_workspace_checkpoint(
+            runtime=runtime,
+            execution_mode=execution_mode,
+            mode=mode,
+            output_dir=output_dir,
+            selected_memory=selected_memory,
+            tools_schema=tools_schema or [],
+            tools_file=tools_file,
+            memory_file=memory_file,
+            model_file=model_file,
+            system_prompt=system_prompt,
+            messages=messages,
+            all_tool_messages=all_tool_messages,
+            tool_rounds=tool_rounds,
+            llm_calls=llm_calls,
+            turns=turns,
+            warnings=warnings,
+            workspace=workspace,
+            status="paused",
+            partial_answer=partial_answer,
+        )
     final_control = {
         "state": "failed",
         "action": "finish",
@@ -368,6 +448,8 @@ def _run_workspace(
         warnings.append("layered memory context failed")
     llm_calls = 0
     tool_rounds = 0
+    max_turns = runtime["max_turns"]
+    max_turns_reached = False
     status = "success"
     terminal_error = None
     final_control = None
@@ -438,6 +520,22 @@ def _run_workspace(
 
     next_stage = workspace["task"]["stage"]
     while next_stage == "tool_calling":
+        if tool_rounds >= max_turns:
+            max_turns_reached = True
+            status = "agent_failed"
+            final_control = {
+                "state": "failed",
+                "action": "finish",
+                "reason": f"max_turns reached: {max_turns}",
+            }
+            terminal_error = {
+                "type": "MaxTurnsExceeded",
+                "message": final_control["reason"],
+                "llm_call_index": llm_calls,
+            }
+            workspace["task"]["stage"] = "failed"
+            workspace["task"]["reason"] = final_control["reason"]
+            break
         llm_calls += 1
         turn_start = perf_counter()
         tool_result = generate_ai_message(
@@ -466,6 +564,26 @@ def _run_workspace(
             "latency_ms": None,
         }
         messages.append(ai_message)
+        _save_workspace_checkpoint(
+            runtime=runtime,
+            execution_mode=execution_mode,
+            mode=mode,
+            output_dir=output_dir,
+            selected_memory=selected_memory,
+            tools_schema=tools_schema,
+            tools_file=tools_file,
+            memory_file=memory_file,
+            model_file=model_file,
+            system_prompt=system_prompt,
+            messages=messages,
+            all_tool_messages=all_tool_messages,
+            tool_rounds=tool_rounds,
+            llm_calls=llm_calls,
+            turns=turns,
+            warnings=warnings,
+            workspace=workspace,
+            next_stage="tool_calling",
+        )
         if llm_status != "success":
             turn["latency_ms"] = round((perf_counter() - turn_start) * 1000, 3)
             turns.append(turn)
@@ -501,10 +619,50 @@ def _run_workspace(
                 "tool_calls": tool_calls,
             },
         )
+        _save_workspace_checkpoint(
+            runtime=runtime,
+            execution_mode=execution_mode,
+            mode=mode,
+            output_dir=output_dir,
+            selected_memory=selected_memory,
+            tools_schema=tools_schema,
+            tools_file=tools_file,
+            memory_file=memory_file,
+            model_file=model_file,
+            system_prompt=system_prompt,
+            messages=messages,
+            all_tool_messages=all_tool_messages,
+            tool_rounds=tool_rounds,
+            llm_calls=llm_calls,
+            turns=turns,
+            warnings=warnings,
+            workspace=workspace,
+            next_stage="tool_calling",
+        )
         if not tool_calls:
             _record_no_tool_action(workspace, ai_message)
             turns.append(turn)
             next_stage = workspace["task"]["stage"]
+            _save_workspace_checkpoint(
+                runtime=runtime,
+                execution_mode=execution_mode,
+                mode=mode,
+                output_dir=output_dir,
+                selected_memory=selected_memory,
+                tools_schema=tools_schema,
+                tools_file=tools_file,
+                memory_file=memory_file,
+                model_file=model_file,
+                system_prompt=system_prompt,
+                messages=messages,
+                all_tool_messages=all_tool_messages,
+                tool_rounds=tool_rounds,
+                llm_calls=llm_calls,
+                turns=turns,
+                warnings=warnings,
+                workspace=workspace,
+                next_stage=next_stage,
+            )
             continue
         tool_messages = execute_tool_calls(
             tool_calls,
@@ -611,6 +769,19 @@ def _run_workspace(
             "message": final_control.get("reason", ""),
             "llm_call_index": llm_calls,
         }
+    if max_turns_reached:
+        status = "agent_failed"
+        final_control = {
+            "state": "failed",
+            "action": "finish",
+            "reason": f"max_turns reached: {max_turns}",
+        }
+        final_ai_message["control"] = final_control
+        terminal_error = {
+            "type": "MaxTurnsExceeded",
+            "message": final_control["reason"],
+            "llm_call_index": llm_calls,
+        }
     workspace["final"] = {"answer": final_answer, "status": status}
     _record_stage(
         workspace,
@@ -693,9 +864,31 @@ def _run_workspace_stream(
         warnings.append("layered memory context failed")
     llm_calls = 0
     tool_rounds = 0
+    max_turns = runtime["max_turns"]
+    max_turns_reached = False
     status = "success"
     terminal_error = None
     final_control = None
+    _save_workspace_checkpoint(
+        runtime=runtime,
+        execution_mode=execution_mode,
+        mode=mode,
+        output_dir=output_dir,
+        selected_memory=selected_memory,
+        tools_schema=tools_schema,
+        tools_file=tools_file,
+        memory_file=memory_file,
+        model_file=model_file,
+        system_prompt=system_prompt,
+        messages=messages,
+        all_tool_messages=all_tool_messages,
+        tool_rounds=tool_rounds,
+        llm_calls=llm_calls,
+        turns=turns,
+        warnings=warnings,
+        workspace=workspace,
+        next_stage="planning",
+    )
 
     def cancelled_done(partial_answer: str = "") -> dict:
         return {
@@ -716,6 +909,10 @@ def _run_workspace_stream(
                 warnings,
                 memory_file,
                 workspace,
+                system_prompt,
+                tools_schema,
+                tools_file,
+                model_file,
             ),
         }
 
@@ -792,6 +989,26 @@ def _run_workspace_stream(
             "latency_ms": None,
         }
     )
+    _save_workspace_checkpoint(
+        runtime=runtime,
+        execution_mode=execution_mode,
+        mode=mode,
+        output_dir=output_dir,
+        selected_memory=selected_memory,
+        tools_schema=tools_schema,
+        tools_file=tools_file,
+        memory_file=memory_file,
+        model_file=model_file,
+        system_prompt=system_prompt,
+        messages=messages,
+        all_tool_messages=all_tool_messages,
+        tool_rounds=tool_rounds,
+        llm_calls=llm_calls,
+        turns=turns,
+        warnings=warnings,
+        workspace=workspace,
+        next_stage=workspace["task"]["stage"],
+    )
     yield {
         "type": "state",
         "state": "planning",
@@ -806,6 +1023,23 @@ def _run_workspace_stream(
         if _cancel_requested(should_cancel):
             yield cancelled_done()
             return
+        if tool_rounds >= max_turns:
+            max_turns_reached = True
+            status = "agent_failed"
+            final_control = {
+                "state": "failed",
+                "action": "finish",
+                "reason": f"max_turns reached: {max_turns}",
+            }
+            terminal_error = {
+                "type": "MaxTurnsExceeded",
+                "message": final_control["reason"],
+                "llm_call_index": llm_calls,
+            }
+            workspace["task"]["stage"] = "failed"
+            workspace["task"]["reason"] = final_control["reason"]
+            yield {"type": "state", **final_control, "llm_call_index": llm_calls}
+            break
         llm_calls += 1
         turn_start = perf_counter()
         tool_result = generate_ai_message(
@@ -906,6 +1140,27 @@ def _run_workspace_stream(
         turn["tool_messages"] = tool_messages
         turn["latency_ms"] = round((perf_counter() - turn_start) * 1000, 3)
         turns.append(turn)
+        workspace["task"]["stage"] = "observation"
+        _save_workspace_checkpoint(
+            runtime=runtime,
+            execution_mode=execution_mode,
+            mode=mode,
+            output_dir=output_dir,
+            selected_memory=selected_memory,
+            tools_schema=tools_schema,
+            tools_file=tools_file,
+            memory_file=memory_file,
+            model_file=model_file,
+            system_prompt=system_prompt,
+            messages=messages,
+            all_tool_messages=all_tool_messages,
+            tool_rounds=tool_rounds,
+            llm_calls=llm_calls,
+            turns=turns,
+            warnings=warnings,
+            workspace=workspace,
+            next_stage="observation",
+        )
         yield {"type": "tool_done", "tool_messages": tool_messages, "llm_call_index": llm_calls}
         if _cancel_requested(should_cancel):
             yield cancelled_done()
@@ -976,6 +1231,26 @@ def _run_workspace_stream(
                 "latency_ms": None,
             }
         )
+        _save_workspace_checkpoint(
+            runtime=runtime,
+            execution_mode=execution_mode,
+            mode=mode,
+            output_dir=output_dir,
+            selected_memory=selected_memory,
+            tools_schema=tools_schema,
+            tools_file=tools_file,
+            memory_file=memory_file,
+            model_file=model_file,
+            system_prompt=system_prompt,
+            messages=messages,
+            all_tool_messages=all_tool_messages,
+            tool_rounds=tool_rounds,
+            llm_calls=llm_calls,
+            turns=turns,
+            warnings=warnings,
+            workspace=workspace,
+            next_stage=next_stage,
+        )
         yield {
             "type": "state",
             "state": "observing",
@@ -989,6 +1264,27 @@ def _run_workspace_stream(
         yield cancelled_done()
         return
 
+    workspace["task"]["stage"] = "answering"
+    _save_workspace_checkpoint(
+        runtime=runtime,
+        execution_mode=execution_mode,
+        mode=mode,
+        output_dir=output_dir,
+        selected_memory=selected_memory,
+        tools_schema=tools_schema,
+        tools_file=tools_file,
+        memory_file=memory_file,
+        model_file=model_file,
+        system_prompt=system_prompt,
+        messages=messages,
+        all_tool_messages=all_tool_messages,
+        tool_rounds=tool_rounds,
+        llm_calls=llm_calls,
+        turns=turns,
+        warnings=warnings,
+        workspace=workspace,
+        next_stage="answering",
+    )
     llm_calls += 1
     final_result = None
     final_chunks: list[str] = []
@@ -1035,6 +1331,19 @@ def _run_workspace_stream(
             "message": final_control.get("reason", ""),
             "llm_call_index": llm_calls,
         }
+    if max_turns_reached:
+        status = "agent_failed"
+        final_control = {
+            "state": "failed",
+            "action": "finish",
+            "reason": f"max_turns reached: {max_turns}",
+        }
+        final_ai_message["control"] = final_control
+        terminal_error = {
+            "type": "MaxTurnsExceeded",
+            "message": final_control["reason"],
+            "llm_call_index": llm_calls,
+        }
     workspace["final"] = {"answer": final_answer, "status": status}
     _record_stage(
         workspace,
@@ -1059,6 +1368,525 @@ def _run_workspace_stream(
             "latency_ms": None,
         }
     )
+    _save_workspace_checkpoint(
+        runtime=runtime,
+        execution_mode=execution_mode,
+        mode=mode,
+        output_dir=output_dir,
+        selected_memory=selected_memory,
+        tools_schema=tools_schema,
+        tools_file=tools_file,
+        memory_file=memory_file,
+        model_file=model_file,
+        system_prompt=system_prompt,
+        messages=messages,
+        all_tool_messages=all_tool_messages,
+        tool_rounds=tool_rounds,
+        llm_calls=llm_calls,
+        turns=turns,
+        warnings=warnings,
+        workspace=workspace,
+        next_stage="done",
+        status="done",
+    )
+    yield {"type": "state", **(final_control or {}), "agent_step": final_ai_message.get("agent_step"), "llm_call_index": llm_calls}
+    result = _write_runtime_outputs(
+        runtime,
+        execution_mode,
+        mode,
+        output_dir,
+        started,
+        selected_memory,
+        messages,
+        all_tool_messages,
+        final_answer,
+        status,
+        tool_rounds,
+        llm_calls,
+        turns,
+        final_control,
+        warnings,
+        terminal_error,
+        memory_file,
+        workspace,
+        streaming=True,
+    )
+    yield {"type": "done", "result": result}
+
+
+def _last_pending_tool_call(messages: list[dict], turns: list[dict]) -> tuple[dict, dict] | None:
+    if not messages:
+        return None
+    ai_message = messages[-1]
+    if not isinstance(ai_message, dict) or ai_message.get("role") != "assistant":
+        return None
+    tool_calls = ai_message.get("tool_calls")
+    if not isinstance(tool_calls, list) or not tool_calls:
+        return None
+    for turn in reversed(turns):
+        if turn.get("ai_message") == ai_message:
+            return None
+    turn = {
+        "turn_index": 0,
+        "ai_message": ai_message,
+        "llm_prompt_messages": None,
+        "llm_status": "success",
+        "llm_error": None,
+        "tool_messages": [],
+        "control": ai_message.get("control"),
+        "agent_step": ai_message.get("agent_step"),
+        "latency_ms": None,
+    }
+    return ai_message, turn
+
+
+def _last_tool_messages(turns: list[dict]) -> list[dict]:
+    for turn in reversed(turns):
+        messages = turn.get("tool_messages")
+        if isinstance(messages, list) and messages:
+            return messages
+    return []
+
+
+def resume_workspace_stream(
+    conversation_id: str,
+    should_cancel: Callable[[], bool] | None = None,
+) -> Iterator[dict]:
+    from b3_tool_layer import execute_tool_calls
+
+    checkpoint = load_checkpoint(conversation_id)
+    runtime = deepcopy(checkpoint["runtime"])
+    execution_mode = str(checkpoint.get("execution_mode") or "integrated")
+    mode = str(checkpoint.get("mode") or "prompt_json")
+    output_dir = Path(checkpoint["output_dir"]).resolve()
+    selected_memory = deepcopy(checkpoint.get("selected_memory") or {})
+    tools_schema = deepcopy(checkpoint.get("tools_schema") or [])
+    tools_file = Path(checkpoint["tools_file"]).resolve()
+    memory_file = Path(checkpoint["memory_file"]).resolve()
+    model_file = Path(checkpoint["model_file"]).resolve()
+    system_prompt = str(checkpoint.get("system_prompt") or "")
+    messages = deepcopy(checkpoint.get("messages") or [])
+    all_tool_messages = deepcopy(checkpoint.get("all_tool_messages") or [])
+    turns = deepcopy(checkpoint.get("turns") or [])
+    warnings = deepcopy(checkpoint.get("warnings") or [])
+    workspace = deepcopy(checkpoint.get("workspace") or _workspace_from_runtime(runtime, selected_memory))
+    llm_calls = int(checkpoint.get("llm_calls") or 0)
+    tool_rounds = int(checkpoint.get("tool_rounds") or 0)
+    next_stage = str(checkpoint.get("stage") or workspace.get("task", {}).get("stage") or "planning")
+    started = perf_counter()
+    max_turns = runtime["max_turns"]
+    max_turns_reached = False
+    status = "success"
+    terminal_error = None
+    final_control = None
+
+    if checkpoint.get("status") == "done":
+        result = _write_runtime_outputs(
+            runtime,
+            execution_mode,
+            mode,
+            output_dir,
+            started,
+            selected_memory,
+            messages,
+            all_tool_messages,
+            str(workspace.get("final", {}).get("answer") or ""),
+            "success",
+            tool_rounds,
+            llm_calls,
+            turns,
+            {"state": "completed", "action": "finish", "reason": "checkpoint already completed"},
+            warnings,
+            None,
+            memory_file,
+            workspace,
+            streaming=True,
+        )
+        yield {"type": "done", "result": result}
+        return
+
+    def save(stage: str, checkpoint_status: str = "running", partial_answer: str = "") -> None:
+        _save_workspace_checkpoint(
+            runtime=runtime,
+            execution_mode=execution_mode,
+            mode=mode,
+            output_dir=output_dir,
+            selected_memory=selected_memory,
+            tools_schema=tools_schema,
+            tools_file=tools_file,
+            memory_file=memory_file,
+            model_file=model_file,
+            system_prompt=system_prompt,
+            messages=messages,
+            all_tool_messages=all_tool_messages,
+            tool_rounds=tool_rounds,
+            llm_calls=llm_calls,
+            turns=turns,
+            warnings=warnings,
+            workspace=workspace,
+            next_stage=stage,
+            status=checkpoint_status,
+            partial_answer=partial_answer,
+        )
+
+    def cancelled_done(partial_answer: str = "") -> dict:
+        return {
+            "type": "done",
+            "result": _workspace_cancelled_result(
+                runtime,
+                execution_mode,
+                mode,
+                output_dir,
+                started,
+                selected_memory,
+                messages,
+                all_tool_messages,
+                partial_answer,
+                tool_rounds,
+                llm_calls,
+                turns,
+                warnings,
+                memory_file,
+                workspace,
+                system_prompt,
+                tools_schema,
+                tools_file,
+                model_file,
+            ),
+        }
+
+    if next_stage == "planning":
+        yield from _run_workspace_stream(
+            runtime,
+            execution_mode,
+            system_prompt,
+            selected_memory,
+            tools_schema,
+            tools_file,
+            memory_file,
+            model_file,
+            mode,
+            output_dir,
+            started,
+            should_cancel,
+        )
+        return
+
+    while next_stage == "tool_calling":
+        if _cancel_requested(should_cancel):
+            yield cancelled_done()
+            return
+        if tool_rounds >= max_turns:
+            max_turns_reached = True
+            status = "agent_failed"
+            final_control = {
+                "state": "failed",
+                "action": "finish",
+                "reason": f"max_turns reached: {max_turns}",
+            }
+            terminal_error = {
+                "type": "MaxTurnsExceeded",
+                "message": final_control["reason"],
+                "llm_call_index": llm_calls,
+            }
+            workspace["task"]["stage"] = "failed"
+            workspace["task"]["reason"] = final_control["reason"]
+            yield {"type": "state", **final_control, "llm_call_index": llm_calls}
+            break
+
+        pending = _last_pending_tool_call(messages, turns)
+        if pending is None:
+            llm_calls += 1
+            turn_start = perf_counter()
+            tool_result = generate_ai_message(
+                str(model_file),
+                _workspace_tool_messages(system_prompt, workspace, tools_schema),
+                [],
+                mode,
+                str(output_dir / "llm_calls"),
+                f"workspace_{llm_calls:03d}_tool_calling",
+                prompt_ready=True,
+            )
+            if not isinstance(tool_result, dict) or not isinstance(tool_result.get("ai_message"), dict):
+                raise ValueError("B4 result must contain an ai_message object")
+            ai_message = tool_result["ai_message"]
+            llm_status = tool_result.get("status")
+            llm_error = tool_result.get("error")
+            turn = {
+                "turn_index": llm_calls,
+                "ai_message": ai_message,
+                "llm_prompt_messages": tool_result.get("prompt_messages"),
+                "llm_status": llm_status,
+                "llm_error": llm_error,
+                "tool_messages": [],
+                "control": ai_message.get("control"),
+                "agent_step": ai_message.get("agent_step"),
+                "latency_ms": None,
+            }
+            messages.append(ai_message)
+            save("tool_calling")
+            if llm_status != "success":
+                turn["latency_ms"] = round((perf_counter() - turn_start) * 1000, 3)
+                turns.append(turn)
+                result = _workspace_parse_failure(
+                    runtime,
+                    execution_mode,
+                    system_prompt,
+                    model_file,
+                    mode,
+                    output_dir,
+                    started,
+                    selected_memory,
+                    messages,
+                    turns,
+                    llm_calls,
+                    warnings,
+                    memory_file,
+                    workspace,
+                    "tool_calling",
+                    llm_error,
+                    tool_result.get("raw_text"),
+                    all_tool_messages,
+                    tool_rounds,
+                    streaming=True,
+                )
+                yield {"type": "done", "result": result}
+                return
+            control = ai_message.get("control", {})
+            yield {"type": "state", **control, "agent_step": ai_message.get("agent_step"), "llm_call_index": llm_calls}
+        else:
+            ai_message, turn = pending
+            turn_start = perf_counter()
+            turn["turn_index"] = llm_calls
+
+        if _cancel_requested(should_cancel):
+            yield cancelled_done()
+            return
+        tool_calls = ai_message.get("tool_calls", [])
+        workspace["tools"]["last_tool_intent"] = ai_message.get("content", "")
+        _record_stage(
+            workspace,
+            "tool_calling",
+            {
+                "assistant_content": ai_message.get("content", ""),
+                "agent_step": ai_message.get("agent_step"),
+                "tool_calls": tool_calls,
+            },
+        )
+        save("tool_calling")
+        if not tool_calls:
+            _record_no_tool_action(workspace, ai_message)
+            turns.append(turn)
+            next_stage = workspace["task"]["stage"]
+            save(next_stage)
+            continue
+        yield {
+            "type": "tool_start",
+            "tool_calls": tool_calls,
+            "assistant_content": ai_message.get("content", ""),
+            "agent_step": ai_message.get("agent_step"),
+            "llm_call_index": llm_calls,
+        }
+        if _cancel_requested(should_cancel):
+            yield cancelled_done()
+            return
+        tool_messages = execute_tool_calls(
+            tool_calls,
+            str(tools_file),
+            runtime["toolset"],
+            str(output_dir),
+        )
+        tool_rounds += 1
+        messages.extend(tool_messages)
+        all_tool_messages.extend(tool_messages)
+        workspace["tools"]["calls"].extend(deepcopy(tool_calls))
+        workspace["tools"]["results"].extend(deepcopy(tool_messages))
+        turn["tool_messages"] = tool_messages
+        turn["latency_ms"] = round((perf_counter() - turn_start) * 1000, 3)
+        turns.append(turn)
+        workspace["task"]["stage"] = "observation"
+        next_stage = "observation"
+        save("observation")
+        yield {"type": "tool_done", "tool_messages": tool_messages, "llm_call_index": llm_calls}
+
+    if next_stage == "observation":
+        tool_messages = _last_tool_messages(turns)
+        if not tool_messages:
+            next_stage = "tool_calling"
+            workspace["task"]["stage"] = "tool_calling"
+            save("tool_calling")
+            yield from resume_workspace_stream(conversation_id, should_cancel)
+            return
+        if _cancel_requested(should_cancel):
+            yield cancelled_done()
+            return
+        llm_calls += 1
+        observation_result = generate_json_object(
+            str(model_file),
+            _workspace_observation_messages(system_prompt, workspace, tool_messages),
+            mode,
+            str(output_dir / "llm_calls"),
+            f"workspace_{llm_calls:03d}_observation",
+            prompt_ready=True,
+        )
+        if observation_result.get("status") != "success" or not isinstance(observation_result.get("json"), dict):
+            result = _workspace_parse_failure(
+                runtime,
+                execution_mode,
+                system_prompt,
+                model_file,
+                mode,
+                output_dir,
+                started,
+                selected_memory,
+                messages,
+                turns,
+                llm_calls,
+                warnings,
+                memory_file,
+                workspace,
+                "observation",
+                observation_result.get("error"),
+                observation_result.get("raw_text"),
+                all_tool_messages,
+                tool_rounds,
+                streaming=True,
+            )
+            yield {"type": "done", "result": result}
+            return
+        if _cancel_requested(should_cancel):
+            yield cancelled_done()
+            return
+        observation = observation_result["json"]
+        _merge_unique(workspace["tools"]["accepted_evidence"], observation.get("accepted_evidence"))
+        _merge_unique(workspace["tools"]["rejected_evidence"], observation.get("rejected_evidence"))
+        _merge_unique(workspace["draft"]["known_facts"], observation.get("known_facts"))
+        _merge_unique(workspace["draft"]["missing_info"], observation.get("missing_info"))
+        workspace["tools"]["observations"].append(str(observation.get("observation") or ""))
+        next_stage = _apply_observation_next_stage(workspace, observation)
+        _record_stage(workspace, "observation", observation)
+        observation_ai_message = make_ai_message(
+            str(observation.get("observation") or observation.get("reason") or "已观察工具结果。"),
+            [],
+            {"state": "completed", "action": "finish", "reason": "workspace observation"},
+            _agent_step_from_observation(observation),
+        )
+        messages.append(observation_ai_message)
+        turns.append(
+            {
+                "turn_index": llm_calls,
+                "ai_message": observation_ai_message,
+                "llm_prompt_messages": observation_result.get("prompt_messages"),
+                "llm_status": observation_result.get("status"),
+                "llm_error": observation_result.get("error"),
+                "tool_messages": [],
+                "control": observation_ai_message.get("control"),
+                "agent_step": observation_ai_message.get("agent_step"),
+                "latency_ms": None,
+            }
+        )
+        save(next_stage)
+        yield {
+            "type": "state",
+            "state": "observing",
+            "action": "workspace_observe",
+            "reason": workspace["task"].get("reason", ""),
+            "agent_step": observation_ai_message.get("agent_step"),
+            "llm_call_index": llm_calls,
+        }
+        if next_stage == "tool_calling":
+            yield from resume_workspace_stream(conversation_id, should_cancel)
+            return
+
+    if _cancel_requested(should_cancel):
+        yield cancelled_done()
+        return
+    workspace["task"]["stage"] = "answering"
+    save("answering")
+    llm_calls += 1
+    final_result = None
+    final_chunks: list[str] = []
+    for event in stream_ai_message(
+        str(model_file),
+        _workspace_answer_messages(system_prompt, workspace),
+        [],
+        mode,
+        str(output_dir / "llm_calls"),
+        f"workspace_{llm_calls:03d}_answering",
+        prompt_ready=True,
+    ):
+        if _cancel_requested(should_cancel):
+            yield cancelled_done("".join(final_chunks))
+            return
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") == "delta":
+            text = str(event.get("text", ""))
+            final_chunks.append(text)
+            yield {"type": "delta", "text": text, "llm_call_index": llm_calls}
+        elif event.get("type") == "done":
+            final_result = event.get("result")
+    if _cancel_requested(should_cancel):
+        yield cancelled_done("".join(final_chunks))
+        return
+    if not isinstance(final_result, dict) or not isinstance(final_result.get("ai_message"), dict):
+        raise ValueError("B4 stream result must contain an ai_message object")
+    final_ai_message = final_result["ai_message"]
+    final_answer = final_ai_message.get("content", "")
+    final_control = final_ai_message.get("control")
+    if final_result.get("status") != "success":
+        status = "llm_parse_error"
+        terminal_error = {
+            "type": "LLMParseError",
+            "message": "B4 failed to parse final answer output.",
+            "llm_call_index": llm_calls,
+            "cause": final_result.get("error"),
+        }
+    elif final_control and final_control.get("state") == "failed":
+        status = "agent_failed"
+        terminal_error = {
+            "type": "AgentDeclaredFailure",
+            "message": final_control.get("reason", ""),
+            "llm_call_index": llm_calls,
+        }
+    if max_turns_reached:
+        status = "agent_failed"
+        final_control = {
+            "state": "failed",
+            "action": "finish",
+            "reason": f"max_turns reached: {max_turns}",
+        }
+        final_ai_message["control"] = final_control
+        terminal_error = {
+            "type": "MaxTurnsExceeded",
+            "message": final_control["reason"],
+            "llm_call_index": llm_calls,
+        }
+    workspace["final"] = {"answer": final_answer, "status": status}
+    _record_stage(
+        workspace,
+        "answering",
+        {
+            "content": final_answer,
+            "control": final_control,
+            "agent_step": final_ai_message.get("agent_step"),
+        },
+    )
+    messages.append(final_ai_message)
+    turns.append(
+        {
+            "turn_index": llm_calls,
+            "ai_message": final_ai_message,
+            "llm_prompt_messages": final_result.get("prompt_messages"),
+            "llm_status": final_result.get("status"),
+            "llm_error": final_result.get("error"),
+            "tool_messages": [],
+            "control": final_ai_message.get("control"),
+            "agent_step": final_ai_message.get("agent_step"),
+            "latency_ms": None,
+        }
+    )
+    save("done", "done")
     yield {"type": "state", **(final_control or {}), "agent_step": final_ai_message.get("agent_step"), "llm_call_index": llm_calls}
     result = _write_runtime_outputs(
         runtime,

@@ -490,6 +490,20 @@ def record_tool_step(
     }
 
 
+def delete_tool_steps(db_path: str | Path, assistant_message_id: str) -> dict:
+    init_store(db_path)
+    with _connect(db_path) as connection:
+        cursor = connection.execute(
+            "DELETE FROM tool_steps WHERE assistant_message_id = ?",
+            (assistant_message_id,),
+        )
+    return {
+        "status": "success",
+        "assistant_message_id": assistant_message_id,
+        "deleted_count": cursor.rowcount,
+    }
+
+
 def upsert_conversation_turn(
     db_path: str | Path,
     conversation_id: str,
