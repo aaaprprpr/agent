@@ -12,7 +12,9 @@ TOOLS_CONFIG = PROJECT_ROOT / "configs" / "tools.yaml"
 MEMORY_CONFIG = PROJECT_ROOT / "configs" / "memory.yaml"
 MODEL_CONFIG = PROJECT_ROOT / "configs" / "model.yaml"
 RUNTIME_BASE = PROJECT_ROOT / "data" / "__frontend_runtime__.json"
-SYSTEM_PROMPT_PATH = "../prompts/local_tool_agent.txt"
+SYSTEM_PROMPT_PATH = "../prompts/agent_system_prompts.json"
+DEFAULT_SYSTEM_PROMPTS_PATH = PROJECT_ROOT / "prompts" / "agent_system_prompts.json"
+PROMPT_STORE_PATH = PROJECT_ROOT / "prompts" / "conversation_prompts.json"
 
 MAX_UPLOAD_FILES = 5
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024

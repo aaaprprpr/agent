@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -244,16 +245,19 @@ def _request_embeddings(endpoint: dict, texts: list[str], batch_size: int) -> tu
 
 
 def _cosine_similarity(query_vector: list[float], item_vector: list[float]) -> float:
-    import numpy as np
-
-    query = np.asarray(query_vector, dtype=np.float32)
-    item = np.asarray(item_vector, dtype=np.float32)
-    if query.shape != item.shape or query.size == 0:
+    if len(query_vector) != len(item_vector) or not query_vector:
         return 0.0
-    denominator = float(np.linalg.norm(query) * np.linalg.norm(item))
+    dot = 0.0
+    query_norm_sq = 0.0
+    item_norm_sq = 0.0
+    for query_value, item_value in zip(query_vector, item_vector):
+        dot += query_value * item_value
+        query_norm_sq += query_value * query_value
+        item_norm_sq += item_value * item_value
+    denominator = math.sqrt(query_norm_sq) * math.sqrt(item_norm_sq)
     if denominator <= 0.0:
         return 0.0
-    return float(np.dot(query, item) / denominator)
+    return dot / denominator
 
 
 def _candidate_key(item_type: str, item: dict) -> str | None:

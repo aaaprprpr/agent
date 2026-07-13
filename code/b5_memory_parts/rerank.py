@@ -6,6 +6,30 @@ from typing import Any
 
 from b5_memory_parts.text_utils import MAX_RECALLED_BLOCKS, MAX_RECALLED_TURNS, _compact_text, _safe_list
 
+_PROMPT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "prompts" / "b5_memory_prompts.json"
+
+
+def _load_prompt_config() -> dict:
+    with _PROMPT_CONFIG_PATH.open("r", encoding="utf-8") as file:
+        payload = json.load(file)
+    if not isinstance(payload, dict):
+        raise ValueError("b5_memory_prompts.json must contain an object")
+    return payload
+
+
+_PROMPTS = _load_prompt_config()
+
+
+def _prompt(*keys: str) -> str:
+    value: object = _PROMPTS
+    for key in keys:
+        if not isinstance(value, dict):
+            raise KeyError(".".join(keys))
+        value = value[key]
+    if not isinstance(value, str):
+        raise KeyError(".".join(keys))
+    return value
+
 
 def _candidate_id(item: dict, key: str) -> str | None:
     value = item.get(key)
@@ -115,19 +139,14 @@ def _rerank_messages(
             "max_selected_turns": max_selected_turns,
         },
     }
-    system = (
-        "You rerank B5 memory candidates. Return exactly one JSON object. "
-        "Use only candidate ids. Do not create facts, summaries, tool outputs, paths, commands, or code. "
-        "Summaries are only locators; exact facts will be loaded from source messages after selection. "
-        "Use candidate facts, decisions, corrections, labels, source references, task state, and score breakdown to judge relevance and evidence value. "
-        "Do not apply hard-coded topic rules; choose the source ids that best support the current input and current task context. "
-        "When exact facts matter, select candidates that can load source messages or tool steps for verification. "
-        "If uncertain, keep the strongest existing candidates instead of returning an empty selection."
-    )
+    system = _prompt("rerank", "system")
     user = (
-        "Return JSON matching this schema:\n"
+        _prompt("rerank", "user_prefix")
+        + "\n"
         + json.dumps(schema, ensure_ascii=False, indent=2)
-        + "\n\nRerank payload:\n"
+        + "\n\n"
+        + _prompt("rerank", "payload_label")
+        + "\n"
         + json.dumps(payload, ensure_ascii=False, indent=2)
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]

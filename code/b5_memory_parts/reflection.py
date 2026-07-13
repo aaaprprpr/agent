@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 from common.conversation_store import (
@@ -33,9 +34,38 @@ BOUNDARY_TASK_COMPLETE = "boundary:task_complete"
 BOUNDARY_PHASE_COMPLETE = "boundary:phase_complete"
 NON_TASK_CATEGORIES = {"category:casual_chat", "category:noise", "category:preference"}
 TASK_BOUNDARY_LABELS = {BOUNDARY_TASK_SWITCH, BOUNDARY_TASK_COMPLETE, BOUNDARY_PHASE_COMPLETE}
+_PROMPT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "prompts" / "b5_memory_prompts.json"
 
 
-def _neutral_locator_summary() -> str:
+def _load_prompt_config() -> dict:
+    with _PROMPT_CONFIG_PATH.open("r", encoding="utf-8") as file:
+        payload = json.load(file)
+    if not isinstance(payload, dict):
+        raise ValueError("b5_memory_prompts.json must contain an object")
+    return payload
+
+
+_PROMPTS = _load_prompt_config()
+
+
+def _prompt(*keys: str) -> str:
+    value: object = _PROMPTS
+    for key in keys:
+        if not isinstance(value, dict):
+            raise KeyError(".".join(keys))
+        value = value[key]
+    if not isinstance(value, str):
+        raise KeyError(".".join(keys))
+    return value
+
+
+def _contains_cjk(text: Any) -> bool:
+    return any("\u4e00" <= char <= "\u9fff" for char in str(text or ""))
+
+
+def _neutral_locator_summary(raw_user_input: str = "", final_answer: str = "") -> str:
+    if _contains_cjk(raw_user_input) or _contains_cjk(final_answer):
+        return "本轮记忆反思暂不可用。需要事实、路径、命令、代码、错误和输出时，请以关联的原始消息和工具步骤为准。"
     return (
         "Memory reflection was unavailable for this turn. "
         "Use the linked source messages and tool steps for all facts, paths, commands, code, errors, and outputs."
@@ -156,7 +186,7 @@ def _neutral_memory_decision(
         "labels": ["model_reflection_unavailable"],
     }
     summary = {
-        "summary": _neutral_locator_summary(),
+        "summary": _neutral_locator_summary(raw_user_input, final_answer),
         "keywords": [],
         "facts": [],
         "decisions": [],
@@ -277,42 +307,21 @@ def _memory_reflection_messages(
             "confidence": "0..1",
         },
     }
-    system = (
-        "You are the B5 memory reflector. Decide what should be remembered from one completed Agent turn. "
-        "Return exactly one JSON object matching the requested memory schema. "
-        "Do not wrap it in an AIMessage. Do not output content, tool_calls, control, or agent_step. "
-        "Summaries are only locators: do not copy exact file paths, commands, code, parameters, traceback text, or tool output values. "
-        "When exact facts are needed later, the system will load source messages and tool steps. "
-        "Classify the turn by memory role: task state, durable preference, user decision/correction, casual chat, or low-priority noise. "
-        "Memory tags affect retrieval priority only; raw source turns must remain available for later source loading. "
-        "A preference can be long-term memory without being a task. Casual chat and random noise must not update task memory. "
-        "A task memory update is allowed only when the turn changes a concrete task goal, phase, constraint, file/resource, result, blocker, or next action. "
-        "A task_memory action other than no_change requires category:task_state; boundary labels alone are not enough. "
-        "Do not create a task just to remember a user preference. "
-        "Use boundary labels only when the completed turn clearly switches topics/tasks, completes a phase, or completes a task. "
-        "Do not infer a project, file, model, or task id unless it is present in the observation."
-    )
+    system = _prompt("reflection", "system")
     user = (
-        "Return a JSON object with exactly these top-level keys: turn_tags, turn_summary, task_memory.\n\n"
-        "Classification rules:\n"
-        "- category:task_state: only when the turn changes an active task's goal, phase, constraints, files, results, blockers, or next actions.\n"
-        "- category:preference: durable user preference or stable requirement; store it as ordinary memory, not task progress unless it directly constrains a task.\n"
-        "- category:decision: user or agent made a durable decision that future turns may need.\n"
-        "- category:correction: user corrected previous content, assumptions, files, commands, or results.\n"
-        "- category:casual_chat: greeting, thanks, brief social exchange, or normal small talk.\n"
-        "- category:noise: random text, accidental input, empty intent, or content with no obvious future use; this is a low-priority signal, not deletion.\n"
-        "- allow_drop means the turn may be omitted from an unrelated assembled context; it must not remove the raw source turn.\n"
-        "- task_memory.action must be no_change unless labels include category:task_state.\n"
-        "- Do not use boundary:task_switch, boundary:phase_complete, or boundary:task_complete for ordinary preferences.\n"
-        "- For category:casual_chat or category:noise, task_memory.action must be no_change unless the turn explicitly references an existing task.\n"
-        "- Use boundary:topic_shift or boundary:task_switch only when this turn clearly starts a new topic/task after previous task context.\n"
-        "- Use boundary:phase_complete or boundary:task_complete only when the completed turn itself closes a phase/task.\n"
-        "- keywords should include retrieval facets when explicitly present: project:<name>, file:<name>, model:<name>, tool:<name>, task:<id-or-title>.\n\n"
-        "Memory schema:\n"
+        _prompt("reflection", "user_prefix")
+        + "\n\n"
+        + _prompt("reflection", "classification_rules")
+        + "\n\n"
+        + _prompt("reflection", "schema_label")
+        + "\n"
         + json.dumps(schema_hint, ensure_ascii=False, indent=2)
-        + "\n\nCompleted turn observation:\n"
+        + "\n\n"
+        + _prompt("reflection", "observation_label")
+        + "\n"
         + json.dumps(observation, ensure_ascii=False, indent=2)
-        + "\n\nReturn the memory JSON object now."
+        + "\n\n"
+        + _prompt("reflection", "return_instruction")
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
@@ -322,6 +331,8 @@ def _coerce_memory_decision(
     source_message_ids: list[str],
     source_tool_step_ids: list[str],
     tool_steps: list[dict],
+    raw_user_input: str = "",
+    final_answer: str = "",
 ) -> dict:
     if not isinstance(candidate, dict):
         raise ValueError("memory decision must be an object")
@@ -374,7 +385,7 @@ def _coerce_memory_decision(
     summary["source_message_ids"] = source_message_ids
     summary["source_tool_step_ids"] = source_tool_step_ids
     if not isinstance(summary.get("summary"), str) or not summary["summary"].strip():
-        summary["summary"] = _neutral_locator_summary()
+        summary["summary"] = _neutral_locator_summary(raw_user_input, final_answer)
     task = dict(task)
     action = task.get("action")
     if action not in {"no_change", "update_foreground", "switch_task", "resume_task", "pause_task", "complete_task"}:
@@ -422,7 +433,14 @@ def _reflect_memory_with_model(
     )
     if result.get("status") != "success" or not isinstance(result.get("json"), dict):
         raise ValueError(f"memory reflection failed: {result.get('error')}")
-    return _coerce_memory_decision(result["json"], source_message_ids, source_tool_step_ids, tool_steps)
+    return _coerce_memory_decision(
+        result["json"],
+        source_message_ids,
+        source_tool_step_ids,
+        tool_steps,
+        raw_user_input,
+        final_answer,
+    )
 
 
 def _apply_task_memory_decision(
@@ -537,15 +555,15 @@ def _maybe_create_memory_block(config_path: str, conversation_id: str) -> dict:
     for summary in selected_summaries[:4]:
         text = summary.get("summary")
         if isinstance(text, str) and text.strip():
-            representative.append(f"turn {summary.get('turn_index')}: {_compact_text(text, 120)}")
+            representative.append(f"轮次 {summary.get('turn_index')}: {_compact_text(text, 120)}")
     topic_text = _format_block_topic(keywords)
     task_keys = _unique_strings([key for summary in selected_summaries for key in _summary_task_keys(summary)], 3)
     block = {
-        "title": f"Turns {start}-{end}: {topic_text}",
+        "title": f"轮次 {start}-{end}: {topic_text}",
         "summary": (
-            f"Block covering turns {start}-{end}. Boundary: {boundary_reason}. Topics: {topic_text}. "
-            + ("Representative turn summaries: " + " | ".join(representative) + ". " if representative else "")
-            + "Use linked turn summaries first, then load original messages/tool steps for exact facts."
+            f"记忆块覆盖轮次 {start}-{end}。边界原因：{boundary_reason}。主题：{topic_text}。"
+            + ("代表性轮摘要：" + " | ".join(representative) + "。 " if representative else "")
+            + "优先使用关联轮摘要定位信息；需要精确事实时，再加载原始消息或工具步骤。"
         ),
         "status": "active",
         "keywords": keywords,

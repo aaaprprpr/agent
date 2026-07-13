@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from threading import Event, Lock, Thread
 from typing import Iterator
+from urllib.parse import quote
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
@@ -18,12 +20,17 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from backend.api_models import (  # noqa: E402
+    B2SkillRunRequest,
+    B3ToolCallsPreviewRequest,
+    B5RecallPreviewRequest,
     ConversationDetail,
     ConversationMessage,
+    ConversationPromptResponse,
     ConversationSummary,
     DeleteConversationResponse,
     RunRequest,
     RunResponse,
+    UpdateConversationPromptRequest,
     UploadRequest,
     UploadResponse,
     UploadedFileRef,
@@ -44,11 +51,13 @@ from backend.conversation_utils import (  # noqa: E402
 )
 from backend.settings import (  # noqa: E402
     CODE_DIR,
+    DEFAULT_SYSTEM_PROMPTS_PATH,
     HOST,
     MEMORY_CONFIG,
     MODEL_CONFIG,
     OUTPUT_ROOT,
     PORT,
+    PROMPT_STORE_PATH,
     RUNTIME_BASE,
     SYSTEM_PROMPT_PATH,
     TOOLS_CONFIG,
@@ -68,16 +77,30 @@ if str(CODE_DIR) not in sys.path:
 from b1_agent_runtime import resume_stream as resume_agent_runtime_stream  # noqa: E402
 from b1_agent_runtime import run as run_agent_runtime  # noqa: E402
 from b1_agent_runtime import run_stream as run_agent_runtime_stream  # noqa: E402
+from b2_run_skill import run_skill as run_b2_skill  # noqa: E402
+from b3_tool_layer import execute_tool_calls as execute_b3_tool_calls  # noqa: E402
+from b3_tool_layer import get_tools_schema as get_b3_tools_schema  # noqa: E402
 from common.identifiers import validate_conversation_id  # noqa: E402
+from common.io_utils import append_jsonl, write_json  # noqa: E402
+from common.logging_utils import now_iso  # noqa: E402
+from common.prompt_store import (  # noqa: E402
+    delete_conversation_prompt,
+    default_system_prompt,
+    get_conversation_prompt,
+    update_conversation_prompt,
+)
+from common.tool_config import get_tool_definition, load_tools_config, resolve_toolset  # noqa: E402
 from b5_memory import (  # noqa: E402
     append_conversation_message,
     clear_message_tool_steps,
     delete_conversation_record,
+    get_conversation_memory_snapshot,
     init_conversation_db,
     list_conversation_history,
     list_conversation_records,
     list_conversation_messages,
     list_message_tool_steps,
+    prepare_workspace_memory_context,
     record_completed_turn_memory,
     record_conversation_tool_step,
     update_conversation_message,
@@ -129,6 +152,79 @@ def _safe_generated_artifact_path(relative_path: str) -> Path:
     return Path(*path.parts)
 
 
+def _artifact_download_url(output_dir: Path, relative_output_path: object) -> str | None:
+    if not isinstance(relative_output_path, str) or not relative_output_path.strip():
+        return None
+    try:
+        artifact_path = _safe_generated_artifact_path(relative_output_path)
+        output_dir.resolve().relative_to(OUTPUT_ROOT.resolve())
+    except (HTTPException, ValueError):
+        return None
+    conversation_id = output_dir.parent.name
+    run_id = output_dir.name
+    if not conversation_id or not run_id:
+        return None
+    encoded_path = "/".join(quote(part, safe="") for part in PurePosixPath(artifact_path.as_posix()).parts)
+    return f"/api/artifacts/{quote(conversation_id, safe='')}/{quote(run_id, safe='')}/{encoded_path}"
+
+
+def _attach_artifact_download_urls(result: dict, output_dir: Path) -> None:
+    output = result.get("output")
+    if isinstance(output, dict):
+        download_url = _artifact_download_url(output_dir, output.get("relative_output_path"))
+        if download_url:
+            output.setdefault("download_url", download_url)
+    artifacts = result.get("artifacts")
+    if not isinstance(artifacts, list):
+        return
+    for artifact in artifacts:
+        if not isinstance(artifact, dict):
+            continue
+        download_url = _artifact_download_url(output_dir, artifact.get("relative_output_path"))
+        if download_url:
+            artifact.setdefault("download_url", download_url)
+
+
+def _b2_skill_summary(name: str, definition: dict, enabled: bool) -> dict:
+    parameters = definition.get("parameters") if isinstance(definition.get("parameters"), dict) else {}
+    returns = definition.get("returns") if isinstance(definition.get("returns"), dict) else {}
+    required = definition.get("required") if isinstance(definition.get("required"), list) else []
+    return {
+        "name": name,
+        "enabled": enabled,
+        "module": definition.get("module"),
+        "function": definition.get("function"),
+        "description": definition.get("description"),
+        "side_effects": bool(definition.get("side_effects")),
+        "parameters": parameters,
+        "required": required,
+        "returns": returns,
+        "parameter_count": len(parameters),
+        "return_count": len(returns),
+    }
+
+
+def _b3_tool_calls_from_request(request: B3ToolCallsPreviewRequest) -> list:
+    if request.tool_calls:
+        return request.tool_calls
+    if isinstance(request.ai_message, dict):
+        tool_calls = request.ai_message.get("tool_calls")
+        if isinstance(tool_calls, list):
+            return tool_calls
+    return []
+
+
+def _parse_b3_tool_message(message: dict) -> dict | None:
+    content = message.get("content")
+    if not isinstance(content, str):
+        return None
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
 def _register_cancel_event(conversation_id: str) -> Event:
     cancel_event = Event()
     with _RUN_CANCEL_LOCK:
@@ -162,12 +258,27 @@ def _build_runtime_payload(
     # legacy markdown memory still flows through B1 when explicitly selected.
     selected_memory_ids = request.selected_memory_ids
     use_global_memory = request.use_global_memory
+    prompt_text = request.system_prompt.strip() if isinstance(request.system_prompt, str) and request.system_prompt.strip() else None
+    if prompt_text is None:
+        prompt_text = get_conversation_prompt(
+            conversation_id,
+            PROMPT_STORE_PATH,
+            DEFAULT_SYSTEM_PROMPTS_PATH,
+        )["content"]
+    else:
+        update_conversation_prompt(
+            conversation_id,
+            prompt_text,
+            PROMPT_STORE_PATH,
+            DEFAULT_SYSTEM_PROMPTS_PATH,
+        )
     return {
         "conversation_id": conversation_id,
         "user_input": user_input,
         "history_messages": history_messages,
         "input_images": input_images,
         "system_prompt_path": SYSTEM_PROMPT_PATH,
+        "system_prompt": prompt_text,
         "selected_memory_ids": selected_memory_ids,
         "use_global_memory": use_global_memory,
         "toolset": request.toolset,
@@ -987,6 +1098,229 @@ def get_conversation(conversation_id: str) -> ConversationDetail:
     return ConversationDetail(conversation_id=conversation_id, messages=visible)
 
 
+@app.get("/api/b2/skills")
+def get_b2_skills(toolset: str | None = None) -> dict:
+    try:
+        _, config = load_tools_config(str(TOOLS_CONFIG))
+        selected, enabled_tools = resolve_toolset(config, toolset)
+        enabled = set(enabled_tools)
+        tools = [
+            _b2_skill_summary(name, get_tool_definition(config, name), name in enabled)
+            for name in enabled_tools
+        ]
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    settings = config.get("settings") if isinstance(config.get("settings"), dict) else {}
+    workspace_roots = settings.get("workspace_roots") if isinstance(settings.get("workspace_roots"), dict) else {}
+    return {
+        "status": "success",
+        "module": "B2",
+        "toolset": selected,
+        "tool_count": len(tools),
+        "tools": tools,
+        "toolsets": config.get("toolsets", {}),
+        "settings": {
+            "data_root": settings.get("data_root"),
+            "default_workspace_root": settings.get("default_workspace_root"),
+            "workspace_roots": sorted(workspace_roots.keys()),
+        },
+    }
+
+
+@app.post("/api/b2/skills/run")
+def run_b2_skill_preview(request: B2SkillRunRequest) -> dict:
+    skill_name = request.skill_name.strip()
+    if not skill_name:
+        raise HTTPException(status_code=400, detail="skill_name is required")
+    try:
+        _, config = load_tools_config(str(TOOLS_CONFIG))
+        selected, enabled_tools = resolve_toolset(config, request.toolset)
+        if skill_name not in enabled_tools:
+            raise ValueError(f"skill is not available in {selected}: {skill_name}")
+        get_tool_definition(config, skill_name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    run_id = _now_stamp()
+    output_dir = OUTPUT_ROOT / "b2_demo" / run_id
+    output_dir.mkdir(parents=True, exist_ok=True)
+    result = run_b2_skill(
+        skill_name,
+        request.input,
+        None,
+        str(output_dir),
+        str(TOOLS_CONFIG),
+    )
+    _attach_artifact_download_urls(result, output_dir)
+    write_json(result, output_dir / "b2_skill_result.json")
+    append_jsonl(
+        {
+            "timestamp": now_iso(),
+            "module": "B2",
+            "toolset": selected,
+            "skill_name": skill_name,
+            "status": result.get("status"),
+            "latency_ms": result.get("latency_ms"),
+            "result_path": str(output_dir / "b2_skill_result.json"),
+        },
+        output_dir / "b2_skill_run_log.jsonl",
+    )
+    return {
+        "status": "success",
+        "module": "B2",
+        "toolset": selected,
+        "skill_name": skill_name,
+        "run_id": run_id,
+        "output_dir": str(output_dir),
+        "result": result,
+    }
+
+
+@app.get("/api/b3/tools-schema")
+def get_b3_schema(toolset: str | None = None) -> dict:
+    try:
+        _, config = load_tools_config(str(TOOLS_CONFIG))
+        selected, enabled_tools = resolve_toolset(config, toolset)
+        schema = get_b3_tools_schema(str(TOOLS_CONFIG), selected, None)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "status": "success",
+        "module": "B3",
+        "toolset": selected,
+        "tool_count": len(schema),
+        "tools": enabled_tools,
+        "tools_schema": schema,
+        "toolsets": config.get("toolsets", {}),
+    }
+
+
+@app.post("/api/b3/tool-calls/preview")
+def run_b3_tool_calls_preview(request: B3ToolCallsPreviewRequest) -> dict:
+    tool_calls = _b3_tool_calls_from_request(request)
+    if not tool_calls:
+        raise HTTPException(status_code=400, detail="tool_calls is required")
+    try:
+        _, config = load_tools_config(str(TOOLS_CONFIG))
+        selected, enabled_tools = resolve_toolset(config, request.toolset)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    run_id = _now_stamp()
+    output_dir = OUTPUT_ROOT / "b3_demo" / run_id
+    output_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        schema = get_b3_tools_schema(str(TOOLS_CONFIG), selected, str(output_dir))
+        tool_messages = execute_b3_tool_calls(tool_calls, str(TOOLS_CONFIG), selected, str(output_dir))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
+
+    results = []
+    success_count = 0
+    error_count = 0
+    for index, message in enumerate(tool_messages):
+        parsed = _parse_b3_tool_message(message)
+        status = str(message.get("status") or (parsed or {}).get("status") or "unknown")
+        if status == "success":
+            success_count += 1
+        elif status == "error":
+            error_count += 1
+        results.append(
+            {
+                "index": index,
+                "tool_call_id": message.get("tool_call_id"),
+                "name": message.get("name"),
+                "status": status,
+                "skill_result": parsed,
+            }
+        )
+
+    return {
+        "status": "success",
+        "module": "B3",
+        "toolset": selected,
+        "run_id": run_id,
+        "output_dir": str(output_dir),
+        "tool_count": len(enabled_tools),
+        "tools": enabled_tools,
+        "tools_schema": schema,
+        "tool_calls": tool_calls,
+        "tool_messages": tool_messages,
+        "results": results,
+        "summary": {
+            "tool_call_count": len(tool_calls),
+            "tool_message_count": len(tool_messages),
+            "success_count": success_count,
+            "error_count": error_count,
+            "schema_count": len(schema),
+            "artifacts": [
+                artifact
+                for result in results
+                for artifact in (
+                    (result.get("skill_result") or {}).get("artifacts", [])
+                    if isinstance(result.get("skill_result"), dict)
+                    and isinstance((result.get("skill_result") or {}).get("artifacts"), list)
+                    else []
+                )
+                if isinstance(artifact, dict)
+            ],
+        },
+    }
+
+
+@app.get("/api/b5/conversations/{conversation_id}/memory")
+def get_b5_conversation_memory(conversation_id: str) -> dict:
+    conversation_id = _safe_conversation_id(conversation_id)
+    init_conversation_db(str(MEMORY_CONFIG))
+    snapshot = get_conversation_memory_snapshot(str(MEMORY_CONFIG), conversation_id)
+    if snapshot.get("status") == "not_found":
+        raise HTTPException(status_code=404, detail="conversation not found")
+    return snapshot
+
+
+@app.post("/api/b5/conversations/{conversation_id}/recall-preview")
+def run_b5_recall_preview(conversation_id: str, request: B5RecallPreviewRequest) -> dict:
+    conversation_id = _safe_conversation_id(conversation_id)
+    current_user_input = request.current_user_input.strip()
+    if not current_user_input:
+        raise HTTPException(status_code=400, detail="current_user_input is required")
+    init_conversation_db(str(MEMORY_CONFIG))
+    snapshot = get_conversation_memory_snapshot(str(MEMORY_CONFIG), conversation_id)
+    if snapshot.get("status") == "not_found":
+        raise HTTPException(status_code=404, detail="conversation not found")
+    try:
+        history = list_conversation_history(str(MEMORY_CONFIG), conversation_id)
+        result = prepare_workspace_memory_context(
+            str(MEMORY_CONFIG),
+            conversation_id,
+            current_user_input,
+            history,
+            None,
+            None,
+            str(MODEL_CONFIG),
+            None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
+
+    layered = result.get("layered_memory_context") if isinstance(result.get("layered_memory_context"), dict) else {}
+    response = dict(result)
+    response["current_user_input"] = current_user_input
+    response["memory_messages"] = layered.get("memory_messages", [])
+    response["recalled_blocks"] = layered.get("recalled_blocks", [])
+    response["recalled_turns"] = layered.get("recalled_turns", [])
+    response["source_messages"] = layered.get("source_messages", [])
+    response["source_tool_steps"] = layered.get("source_tool_steps", [])
+    response["vector_retrieval"] = layered.get("vector_retrieval")
+    response["llm_rerank"] = layered.get("llm_rerank")
+    response["retrieval_log"] = layered.get("retrieval_log")
+    return response
+
+
 @app.delete("/api/conversations/{conversation_id}", response_model=DeleteConversationResponse)
 def delete_conversation(conversation_id: str) -> DeleteConversationResponse:
     conversation_id = _safe_conversation_id(conversation_id)
@@ -996,12 +1330,53 @@ def delete_conversation(conversation_id: str) -> DeleteConversationResponse:
         raise HTTPException(status_code=404, detail="conversation not found")
     upload_dir_deleted = delete_child_directory(UPLOAD_ROOT, conversation_id)
     output_dir_deleted = delete_child_directory(OUTPUT_ROOT, conversation_id)
+    delete_conversation_prompt(conversation_id, PROMPT_STORE_PATH)
     return DeleteConversationResponse(
         conversation_id=conversation_id,
         deleted=bool(record.get("deleted")),
         upload_dir_deleted=upload_dir_deleted,
         output_dir_deleted=output_dir_deleted,
     )
+
+
+@app.get("/api/conversations/{conversation_id}/prompt", response_model=ConversationPromptResponse)
+def get_conversation_system_prompt(conversation_id: str) -> ConversationPromptResponse:
+    safe_conversation_id = _safe_conversation_id(conversation_id)
+    prompt = get_conversation_prompt(
+        safe_conversation_id,
+        PROMPT_STORE_PATH,
+        DEFAULT_SYSTEM_PROMPTS_PATH,
+    )
+    return ConversationPromptResponse(**prompt)
+
+
+@app.get("/api/prompts/default", response_model=ConversationPromptResponse)
+def get_default_system_prompt() -> ConversationPromptResponse:
+    return ConversationPromptResponse(
+        conversation_id="__default__",
+        prompt_id="default_local_tool_agent",
+        content=default_system_prompt(DEFAULT_SYSTEM_PROMPTS_PATH),
+        default_content=default_system_prompt(DEFAULT_SYSTEM_PROMPTS_PATH),
+        locked_default=True,
+    )
+
+
+@app.put("/api/conversations/{conversation_id}/prompt", response_model=ConversationPromptResponse)
+def update_conversation_system_prompt(
+    conversation_id: str,
+    request: UpdateConversationPromptRequest,
+) -> ConversationPromptResponse:
+    safe_conversation_id = _safe_conversation_id(conversation_id)
+    try:
+        prompt = update_conversation_prompt(
+            safe_conversation_id,
+            request.content,
+            PROMPT_STORE_PATH,
+            DEFAULT_SYSTEM_PROMPTS_PATH,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ConversationPromptResponse(**prompt)
 
 
 @app.get("/api/messages/{message_id}/tool-steps")

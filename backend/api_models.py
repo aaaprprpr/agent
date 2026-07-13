@@ -28,6 +28,7 @@ class UploadResponse(BaseModel):
 class RunRequest(BaseModel):
     user_input: str = Field(..., min_length=1)
     conversation_id: str | None = None
+    system_prompt: str | None = None
     uploaded_files: list[UploadedFileRef] = Field(default_factory=list)
     uploaded_file_payloads: list[UploadFilePayload] = Field(default_factory=list)
     selected_memory_ids: list[str] = Field(default_factory=list)
@@ -79,3 +80,31 @@ class DeleteConversationResponse(BaseModel):
     deleted: bool
     upload_dir_deleted: bool
     output_dir_deleted: bool
+
+
+class ConversationPromptResponse(BaseModel):
+    conversation_id: str
+    prompt_id: str
+    content: str
+    default_content: str
+    locked_default: bool = False
+
+
+class UpdateConversationPromptRequest(BaseModel):
+    content: str = Field(..., min_length=1)
+
+
+class B2SkillRunRequest(BaseModel):
+    skill_name: str = Field(..., min_length=1)
+    input: dict = Field(default_factory=dict)
+    toolset: str = "basic_tools"
+
+
+class B3ToolCallsPreviewRequest(BaseModel):
+    ai_message: dict | None = None
+    tool_calls: list = Field(default_factory=list)
+    toolset: str = "basic_tools"
+
+
+class B5RecallPreviewRequest(BaseModel):
+    current_user_input: str = Field(..., min_length=1)

@@ -12,7 +12,9 @@ def _validate_runtime_input(payload: dict) -> dict:
     execution_mode = payload.setdefault("execution_mode", "integrated")
     if execution_mode not in {"integrated", "fixture"}:
         raise ValueError("execution_mode must be integrated or fixture")
-    required = ["conversation_id", "user_input", "system_prompt_path", "toolset", "save_memory"]
+    if "system_prompt_path" not in payload and "system_prompt" not in payload:
+        payload["system_prompt_path"] = "../prompts/agent_system_prompts.json"
+    required = ["conversation_id", "user_input", "toolset", "save_memory"]
     missing = [field for field in required if field not in payload]
     if missing:
         raise ValueError(f"runtime input missing: {', '.join(missing)}")

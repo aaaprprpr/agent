@@ -14,4 +14,5 @@ outputs/full_demo
 .gitignore
 .env
 data/uploads/
-configs/model.yaml
+checkpoints
+prompts/conversation_prompts.jsonconfigs/model.yaml

@@ -13,12 +13,16 @@ python test.py
 # -------------------------7.13------------------------------
 
 补五模块验收辅助文档
-补 memory_index 兼容样例
-做 python 代码执行沙箱工具
-检查沙箱前端测试结果
+补memory_index兼容样例
+做python 代码执行沙箱工具
 修沙箱超时反馈
-取消代码沙箱默认弹出 json 下载
-不改 B1/B3 主链路
+取消代码沙箱默认弹出json下载
+实现B5验收页，后端API，封装读取记忆
+修复bug：页面JSX文本`->`导致Vite/OXC解析失败
+修B5的bug x N
+实现B2验收页后端API
+实现B3验收页后端API
+
 
 # -------------------------7.12------------------------------
 
@@ -247,3 +251,44 @@ tool/skill 第一批增强：
 - 根据前端测试反馈优化：正常计算、`1/0` 异常、无限循环超时均能进入工具链；超时结果新增明确诊断，避免 Agent 误以为必须读取报告文件。
 - 取消默认弹出 `execution_report.json` 下载卡片：执行报告仍本地保存，但默认不返回 `generated_file_path/relative_output_path`；只有用户明确要求导出/下载执行报告时，模型传 `export_report=true` 才暴露下载入口。
 - 按要求不改 B1、不改 B3，不改变 B5 记忆主线；本次由你通过前端运行 Agent 测试，我只做静态检查和日志分析。
+
+# -------------------------7.13 B5 验收页召回排查修正------------------------------
+
+- 根据前端复制的 B5 演示结果排查：本次召回链路已真实写入 `memory_retrieval_log`，且能召回近期原文、memory block、turn summary 和 source evidence；但向量召回状态为 `unavailable`，错误为后端运行环境缺少 `numpy`。
+- 静态对比确认 `code/b5_memory_parts/vector_retrieval.py`、`configs/memory.yaml` 的向量召回主逻辑和配置不是本次验收页改动引入；`requirements.txt` 与 `requirements_fastapi.txt` 已声明 `numpy==2.2.6`，问题表现为当前启动环境依赖未安装或不一致。
+- 为降低运行环境脆弱性，将 B5 `_cosine_similarity` 从 `numpy` 实现改为标准库 `math` 实现，保持接口和召回策略不变，不改 B1/B2/B3/B4，不改 memory 配置。
+- 确认 `max_memory_chars: 2000`、最近 4 轮原文、最多 3 个 block/5 个 turn 为当前 B5 既有设计；本次未调整上下文预算，避免影响主 Agent 行为。
+- 调整 B5 演示页 `source_tool_steps` 展示：保留真实加载数量，但空 input/output/error 不再渲染成连续“无”，改为说明本次事实证据主要来自 `source_messages`。
+- 本次未启动项目、未跑训练、未跑测试、未调用模型；只做静态 diff 检查，需要你重启后端后在前端复测 B5 演示页。
+
+# -------------------------7.13 B5 记忆语言保持最小修正------------------------------
+
+- 针对中文对话在 B5 `turn_summaries`、`memory_blocks`、`task_memories` 中变成英文的问题，最小范围调整 B5 记忆层，不改 B1/B2/B3/B4 主链路，不改数据库结构，不回填历史 SQLite 数据。
+- 在 `prompts/b5_memory_prompts.json` 的 reflection system prompt 中加入语言保持约束：自然语言记忆字段跟随用户主要语言；中文输入/回答时使用简洁中文，同时保留文件路径、工具名、代码标识符、labels 和 scoped retrieval keys 原样。
+- 将 B5 自身生成的 fallback summary、memory block 标题/摘要、召回上下文固定说明改为中文表达，减少新记忆和演示页中由模板带来的英文混入。
+- 本次未启动项目、未跑训练、未跑测试、未调用模型；只做静态 diff 和文本检查。旧数据库中已经生成的英文摘要不会自动改变，需要后续新对话或重新生成记忆才能体现效果。
+
+# -------------------------7.13 B3 验收页真实化实现------------------------------
+
+- 新增 B3 后端验收 API：`GET /api/b3/tools-schema` 真实调用 `get_tools_schema` 返回当前 toolset 的 OpenAI-style tools schema；`POST /api/b3/tool-calls/preview` 真实调用 `execute_tool_calls` 执行 AIMessage/tool_calls，并返回 ToolMessage、解析后的 SkillResult、schema 和本次输出目录。
+- B3 API 只做 HTTP 包装，不改 `code/b3_tool_layer.py` 核心逻辑，不改 B1/B2/B4/B5 主链路；演示输出隔离写入 `outputs/backend_runs/b3_demo/<run_id>/`。
+- 前端 B3 观察页保留从当前对话 toolDetails 读取真实闭环的逻辑，并补充真实 schema 概览；演示页提供计算、文件读取、多工具、缺参错误、未知工具和 Markdown 文件生成等 AIMessage 样例，也允许手动编辑 JSON 后真实调用 B3，非法 tool_calls 会保留给 B3 校验并返回 ToolMessage error。
+- 页面明确区分不会调用 B4 模型；文件生成类样例会真实产生 demo 输出。支持展示 ToolMessage、SkillResult、schema、错误和 artifact 下载入口。
+- 本次未启动项目、未跑训练、未跑测试、未执行工具；只做静态 diff 检查。需要你前端实际复测 B3 观察页和演示页各样例。
+
+# -------------------------7.13 B5 块级压缩展示溢出修正------------------------------
+
+- 最小范围调整 B5 验收页块级压缩卡片样式：给 block card 内容列和长文本增加 `min-width: 0`、`overflow-wrap: anywhere`、`word-break: break-word`，避免 `task:...`、`project:...` 等长检索 key 冲出边框。
+- 不改 B5 数据、后端 API、召回/压缩逻辑和页面结构；本次未启动项目、未跑测试，只做静态样式检查。
+
+# -------------------------7.13 B5 演示页召回按钮回归检查------------------------------
+
+- 跟进当前 B5 UI 后发现演示页“运行召回演示”只切换到召回结果面板，没有调用 `runB5RecallPreview`，导致 `preview` 一直为空，页面只能显示旧 retrieval log 或空状态。
+- 最小修复前端 B5 演示页：恢复按钮对 `/api/b5/conversations/{conversation_id}/recall-preview` 的真实调用，增加召回中和错误展示；成功后写入本次 preview 并刷新当前会话 snapshot。
+- 不改后端 API、B5 记忆写入/召回算法和数据库结构；本次未启动项目、未跑测试，等待前端实际复测。
+
+# -------------------------7.13 B5 演示页压缩演示移除------------------------------
+
+- 判断 B5 压缩不适合放在演示页作为“点击运行”的演示项：轮级摘要和块级压缩来自主对话完成后的 B5 后台反思/聚合流程，块级压缩还依赖多轮边界，临时点击演示容易被误解为即时压缩链路。
+- 移除 B5 演示页中的“测试压缩/运行压缩演示”和对应 `CompressionResult`，演示页只保留真实召回演示；观察页中的真实轮级压缩、块级压缩展示保留。
+- 不改 B5 后端 API、压缩/召回算法和数据库结构；本次未启动项目、未跑测试，只做静态检查，等待前端复测。

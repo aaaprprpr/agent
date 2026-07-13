@@ -2,7 +2,7 @@
   "execution_mode": "fixture",
   "conversation_id": "conv_b1_fixture_001",
   "user_input": "帮我阅读 docs/agent_intro.txt，总结三条中文要点。",
-  "system_prompt_path": "../../prompts/local_tool_agent.txt",
+  "system_prompt_path": "../../prompts/agent_system_prompts.json",
   "toolset": "basic_tools",
   "save_memory": "none",
   "fixtures": {

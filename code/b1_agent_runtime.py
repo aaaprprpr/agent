@@ -7,8 +7,9 @@ from pathlib import Path
 from time import perf_counter
 from typing import Callable, Iterator
 
-from common.io_utils import read_json, read_text
+from common.io_utils import read_json
 from common.path_utils import resolve_cli_path, resolve_from_file
+from common.prompt_store import load_system_prompt_from_path
 
 from b1_agent_runtime_parts.b1_fixture import _load_fixture_inputs
 from b1_agent_runtime_parts.b1_legacy_loop import run_legacy_loop, run_legacy_stream_loop
@@ -25,6 +26,14 @@ from b1_agent_runtime_parts.b1_runtime_input import (
 )
 from b1_agent_runtime_parts.b1_workspace import _prepare_workspace_runtime_context
 from b1_agent_runtime_parts.b1_workspace_loop import _run_workspace, _run_workspace_stream, resume_workspace_stream
+
+
+def _runtime_system_prompt(runtime: dict, base_file: Path) -> str:
+    direct = runtime.get("system_prompt")
+    if isinstance(direct, str) and direct.strip():
+        return direct.strip()
+    prompt_path = resolve_from_file(runtime["system_prompt_path"], base_file)
+    return load_system_prompt_from_path(prompt_path)
 
 
 def run(
@@ -48,8 +57,7 @@ def run(
     runtime = _validate_runtime_input(deepcopy(runtime_input))
     print(f"user_input: {runtime['user_input']}")
     execution_mode = runtime["execution_mode"]
-    prompt_path = resolve_from_file(runtime["system_prompt_path"], base_file)
-    system_prompt = read_text(prompt_path).strip()
+    system_prompt = _runtime_system_prompt(runtime, base_file)
     fixture_data = None
     tools_file = memory_file = model_file = None
     if execution_mode == "fixture":
@@ -135,8 +143,7 @@ def run_stream(
     output_dir.mkdir(parents=True, exist_ok=True)
     runtime = _validate_runtime_input(deepcopy(runtime_input))
     execution_mode = runtime["execution_mode"]
-    prompt_path = resolve_from_file(runtime["system_prompt_path"], base_file)
-    system_prompt = read_text(prompt_path).strip()
+    system_prompt = _runtime_system_prompt(runtime, base_file)
     fixture_data = None
     tools_file = memory_file = model_file = None
     if execution_mode == "fixture":

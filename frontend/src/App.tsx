@@ -4,11 +4,14 @@ import { Trash2 } from 'lucide-react'
 import { API_BASE, ACTIVE_CONVERSATION_KEY } from './appConfig'
 import {
   deleteBackendConversation,
+  fetchConversationPrompt,
+  fetchDefaultPrompt,
   fetchConversationList,
   fetchConversationMessages,
   requestConversationCancel,
   startResumeStream,
   startRunStream,
+  updateBackendConversationPrompt,
 } from './backendApi'
 import { ChatMessageList } from './ChatMessageList'
 import { Composer } from './Composer'
@@ -27,6 +30,9 @@ import {
 import { buildUploadPayloads } from './uploadUtils'
 import type { Attachment, ChatMessage, HistoryItem, RunStreamEvent } from './types'
 import { B1ModuleView } from './B1ModuleView'
+import { B2ModuleView } from './B2ModuleView'
+import { B3ModuleView } from './B3ModuleView'
+import { B5ModuleView } from './B5ModuleView'
 import './App.css'
 
 const MODULE_VIEWS = [
@@ -58,6 +64,8 @@ function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [draft, setDraft] = useState('')
+  const [systemPrompt, setSystemPrompt] = useState('')
+  const [promptPanelOpen, setPromptPanelOpen] = useState(false)
   const [dragActive, setDragActive] = useState(false)
   const [runningConversationIds, setRunningConversationIds] = useState<Set<string>>(() => new Set())
   const [cancellingConversationIds, setCancellingConversationIds] = useState<Set<string>>(() => new Set())
@@ -223,6 +231,7 @@ function App() {
     stickToBottomRef.current = true
     setActiveConversation(conversationId)
     setMessages(cached?.messages ?? [])
+    void loadConversationSystemPrompt(conversationId)
     if (runningConversationIdsRef.current.has(conversationId) && cached) return
     setIsLoadingHistory(true)
     try {
@@ -232,6 +241,7 @@ function App() {
       if (currentConversationIdRef.current !== conversationId) return
       setMessages(loadedMessages)
       updateHistoryMessages(conversationId, loadedMessages, true)
+      void loadConversationSystemPrompt(conversationId)
     } finally {
       setIsLoadingHistory(false)
     }
@@ -248,6 +258,7 @@ function App() {
         setMessages([])
         setAttachments([])
         setDraft('')
+        void loadDefaultSystemPrompt()
       }
     } catch (error) {
       window.alert(error instanceof Error ? `删除失败：${error.message}` : '删除失败')
@@ -279,7 +290,7 @@ function App() {
     const text = draft.trim()
     if (!text) return
     stickToBottomRef.current = isConversationAtBottom()
-    const conversationId = currentConversationId ?? createConversationId()
+    const conversationId = currentConversationIdRef.current ?? createConversationId()
     if (runningConversationIdsRef.current.has(conversationId)) return
     const filesToUpload = attachments
     const existingHistory = histories.find((item) => item.id === conversationId)
@@ -482,6 +493,7 @@ function App() {
         {
           user_input: text,
           conversation_id: conversationId,
+          system_prompt: systemPrompt,
           uploaded_file_payloads: uploadPayloads,
         },
         abortController.signal,
@@ -534,6 +546,66 @@ function App() {
       setConversationCancelling(conversationId, false)
       setConversationRunning(conversationId, false)
     }
+  }
+
+  async function loadDefaultSystemPrompt() {
+    try {
+      const payload = await fetchDefaultPrompt(API_BASE)
+      if (payload && !currentConversationIdRef.current) {
+        setSystemPrompt(payload.content)
+      }
+    } catch {
+      // Prompt editing is optional for the chat UI; backend still has defaults.
+    }
+  }
+
+  async function loadConversationSystemPrompt(conversationId: string) {
+    try {
+      const payload = await fetchConversationPrompt(API_BASE, conversationId)
+      if (payload && currentConversationIdRef.current === conversationId) {
+        setSystemPrompt(payload.content)
+      }
+    } catch {
+      // Keep the current local prompt if the side-channel prompt API is unavailable.
+    }
+  }
+
+  function ensurePromptConversationId() {
+    if (currentConversationIdRef.current) return currentConversationIdRef.current
+    const conversationId = createConversationId()
+    setActiveConversation(conversationId)
+    return conversationId
+  }
+
+  function handleSystemPromptChange(value: string) {
+    setSystemPrompt(value)
+  }
+
+  async function saveCurrentSystemPrompt() {
+    const content = systemPrompt.trim()
+    if (!content) return
+    const conversationId = ensurePromptConversationId()
+    try {
+      const payload = await updateBackendConversationPrompt(API_BASE, conversationId, content)
+      setSystemPrompt(payload.content)
+    } catch {
+      // The current in-memory prompt remains active for the next send.
+    }
+  }
+
+  function togglePromptPanel() {
+    if (promptPanelOpen) {
+      void saveCurrentSystemPrompt()
+      setPromptPanelOpen(false)
+      return
+    }
+    const conversationId = currentConversationIdRef.current
+    if (conversationId) {
+      void loadConversationSystemPrompt(conversationId)
+    } else if (!systemPrompt.trim()) {
+      void loadDefaultSystemPrompt()
+    }
+    setPromptPanelOpen(true)
   }
 
   async function handleResumeMessage(assistantMessageId: number | string) {
@@ -760,6 +832,7 @@ function App() {
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
+      void loadDefaultSystemPrompt()
       void loadConversationList()
     }, 0)
     return () => window.clearTimeout(timer)
@@ -847,6 +920,7 @@ function App() {
             setActiveConversation(null)
             setAttachments([])
             setDraft('')
+            void loadDefaultSystemPrompt()
           }}
         >
           <span aria-hidden="true">＋</span>
@@ -863,9 +937,10 @@ function App() {
                 className="history-open"
                 type="button"
                 onClick={() => {
-                  setActiveView('chat')
-                  setAttachments([])
-                  setDraft('')
+                  if (activeView === 'chat') {
+                    setAttachments([])
+                    setDraft('')
+                  }
                   void loadConversation(item.id)
                 }}
               >
@@ -928,6 +1003,11 @@ function App() {
               isRunning={isCurrentConversationRunning}
               isStopping={isCurrentConversationStopping}
               onStop={() => stopConversation(currentConversationId)}
+              promptOpen={promptPanelOpen}
+              systemPrompt={systemPrompt}
+              onPromptToggle={togglePromptPanel}
+              onPromptSave={() => void saveCurrentSystemPrompt()}
+              onSystemPromptChange={handleSystemPromptChange}
             />
           </>
         ) : (
@@ -953,6 +1033,24 @@ function App() {
                 conversationId={currentConversationId}
                 isRunning={isCurrentConversationRunning}
                 isStopping={isCurrentConversationStopping}
+              />
+            )}
+            {activeModule?.id === 'b2' && (
+              <B2ModuleView
+                mode={activeModuleMode}
+                messages={messages}
+              />
+            )}
+            {activeModule?.id === 'b3' && (
+              <B3ModuleView
+                mode={activeModuleMode}
+                messages={messages}
+              />
+            )}
+            {activeModule?.id === 'b5' && (
+              <B5ModuleView
+                mode={activeModuleMode}
+                conversationId={currentConversationId}
               />
             )}
           </section>
