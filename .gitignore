@@ -17,3 +17,4 @@ outputs/full_demo
 
 data/uploads/
 checkpoints
+prompts/conversation_prompts.json
