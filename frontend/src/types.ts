@@ -78,6 +78,40 @@ export type BackendMessage = {
   attachments?: MessageAttachment[]
 }
 
+export type B2SkillDefinition = {
+  name: string
+  enabled: boolean
+  module?: string
+  function?: string
+  description?: string
+  side_effects?: boolean
+  parameters?: Record<string, Record<string, unknown>>
+  required?: string[]
+  returns?: Record<string, Record<string, unknown>>
+  parameter_count?: number
+  return_count?: number
+}
+
+export type B2SkillsResponse = {
+  status: string
+  module: string
+  toolset: string
+  tool_count: number
+  tools: B2SkillDefinition[]
+  toolsets?: Record<string, string[]>
+  settings?: Record<string, unknown>
+}
+
+export type B2SkillRunResponse = {
+  status: string
+  module: string
+  toolset: string
+  skill_name: string
+  run_id: string
+  output_dir: string
+  result: Record<string, unknown>
+}
+
 export type B5MemorySnapshot = {
   status: string
   conversation_id: string

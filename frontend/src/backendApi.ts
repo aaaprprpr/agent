@@ -1,4 +1,6 @@
 import type {
+  B2SkillRunResponse,
+  B2SkillsResponse,
   B5MemorySnapshot,
   B5RecallPreviewResponse,
   BackendConversation,
@@ -64,6 +66,35 @@ export async function updateBackendConversationPrompt(apiBase: string, conversat
     throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
   }
   return (await response.json()) as ConversationPrompt
+}
+
+export async function fetchB2Skills(apiBase: string, toolset = 'basic_tools') {
+  const response = await fetch(apiUrl(apiBase, `/api/b2/skills?toolset=${encodeURIComponent(toolset)}`))
+  if (!response.ok) {
+    const payload = await jsonOrNull(response)
+    const detail = payload?.detail ?? `HTTP ${response.status}`
+    throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
+  }
+  return (await response.json()) as B2SkillsResponse
+}
+
+export async function runB2SkillPreview(
+  apiBase: string,
+  skillName: string,
+  input: Record<string, unknown>,
+  toolset = 'basic_tools',
+) {
+  const response = await fetch(apiUrl(apiBase, '/api/b2/skills/run'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ skill_name: skillName, input, toolset }),
+  })
+  if (!response.ok) {
+    const payload = await jsonOrNull(response)
+    const detail = payload?.detail ?? `HTTP ${response.status}`
+    throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
+  }
+  return (await response.json()) as B2SkillRunResponse
 }
 
 export async function fetchB5MemorySnapshot(apiBase: string, conversationId: string) {

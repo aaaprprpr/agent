@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 from threading import Event, Lock, Thread
 from typing import Iterator
+from urllib.parse import quote
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
@@ -18,6 +19,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from backend.api_models import (  # noqa: E402
+    B2SkillRunRequest,
     B5RecallPreviewRequest,
     ConversationDetail,
     ConversationMessage,
@@ -73,13 +75,17 @@ if str(CODE_DIR) not in sys.path:
 from b1_agent_runtime import resume_stream as resume_agent_runtime_stream  # noqa: E402
 from b1_agent_runtime import run as run_agent_runtime  # noqa: E402
 from b1_agent_runtime import run_stream as run_agent_runtime_stream  # noqa: E402
+from b2_run_skill import run_skill as run_b2_skill  # noqa: E402
 from common.identifiers import validate_conversation_id  # noqa: E402
+from common.io_utils import append_jsonl, write_json  # noqa: E402
+from common.logging_utils import now_iso  # noqa: E402
 from common.prompt_store import (  # noqa: E402
     delete_conversation_prompt,
     default_system_prompt,
     get_conversation_prompt,
     update_conversation_prompt,
 )
+from common.tool_config import get_tool_definition, load_tools_config, resolve_toolset  # noqa: E402
 from b5_memory import (  # noqa: E402
     append_conversation_message,
     clear_message_tool_steps,
@@ -140,6 +146,58 @@ def _safe_generated_artifact_path(relative_path: str) -> Path:
     if any(part in {"", ".", ".."} for part in path.parts):
         raise HTTPException(status_code=400, detail="artifact path contains unsupported segments")
     return Path(*path.parts)
+
+
+def _artifact_download_url(output_dir: Path, relative_output_path: object) -> str | None:
+    if not isinstance(relative_output_path, str) or not relative_output_path.strip():
+        return None
+    try:
+        artifact_path = _safe_generated_artifact_path(relative_output_path)
+        output_dir.resolve().relative_to(OUTPUT_ROOT.resolve())
+    except (HTTPException, ValueError):
+        return None
+    conversation_id = output_dir.parent.name
+    run_id = output_dir.name
+    if not conversation_id or not run_id:
+        return None
+    encoded_path = "/".join(quote(part, safe="") for part in PurePosixPath(artifact_path.as_posix()).parts)
+    return f"/api/artifacts/{quote(conversation_id, safe='')}/{quote(run_id, safe='')}/{encoded_path}"
+
+
+def _attach_artifact_download_urls(result: dict, output_dir: Path) -> None:
+    output = result.get("output")
+    if isinstance(output, dict):
+        download_url = _artifact_download_url(output_dir, output.get("relative_output_path"))
+        if download_url:
+            output.setdefault("download_url", download_url)
+    artifacts = result.get("artifacts")
+    if not isinstance(artifacts, list):
+        return
+    for artifact in artifacts:
+        if not isinstance(artifact, dict):
+            continue
+        download_url = _artifact_download_url(output_dir, artifact.get("relative_output_path"))
+        if download_url:
+            artifact.setdefault("download_url", download_url)
+
+
+def _b2_skill_summary(name: str, definition: dict, enabled: bool) -> dict:
+    parameters = definition.get("parameters") if isinstance(definition.get("parameters"), dict) else {}
+    returns = definition.get("returns") if isinstance(definition.get("returns"), dict) else {}
+    required = definition.get("required") if isinstance(definition.get("required"), list) else []
+    return {
+        "name": name,
+        "enabled": enabled,
+        "module": definition.get("module"),
+        "function": definition.get("function"),
+        "description": definition.get("description"),
+        "side_effects": bool(definition.get("side_effects")),
+        "parameters": parameters,
+        "required": required,
+        "returns": returns,
+        "parameter_count": len(parameters),
+        "return_count": len(returns),
+    }
 
 
 def _register_cancel_event(conversation_id: str) -> Event:
@@ -1013,6 +1071,84 @@ def get_conversation(conversation_id: str) -> ConversationDetail:
         if message["role"] in {"user", "assistant"}
     ]
     return ConversationDetail(conversation_id=conversation_id, messages=visible)
+
+
+@app.get("/api/b2/skills")
+def get_b2_skills(toolset: str | None = None) -> dict:
+    try:
+        _, config = load_tools_config(str(TOOLS_CONFIG))
+        selected, enabled_tools = resolve_toolset(config, toolset)
+        enabled = set(enabled_tools)
+        tools = [
+            _b2_skill_summary(name, get_tool_definition(config, name), name in enabled)
+            for name in enabled_tools
+        ]
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    settings = config.get("settings") if isinstance(config.get("settings"), dict) else {}
+    workspace_roots = settings.get("workspace_roots") if isinstance(settings.get("workspace_roots"), dict) else {}
+    return {
+        "status": "success",
+        "module": "B2",
+        "toolset": selected,
+        "tool_count": len(tools),
+        "tools": tools,
+        "toolsets": config.get("toolsets", {}),
+        "settings": {
+            "data_root": settings.get("data_root"),
+            "default_workspace_root": settings.get("default_workspace_root"),
+            "workspace_roots": sorted(workspace_roots.keys()),
+        },
+    }
+
+
+@app.post("/api/b2/skills/run")
+def run_b2_skill_preview(request: B2SkillRunRequest) -> dict:
+    skill_name = request.skill_name.strip()
+    if not skill_name:
+        raise HTTPException(status_code=400, detail="skill_name is required")
+    try:
+        _, config = load_tools_config(str(TOOLS_CONFIG))
+        selected, enabled_tools = resolve_toolset(config, request.toolset)
+        if skill_name not in enabled_tools:
+            raise ValueError(f"skill is not available in {selected}: {skill_name}")
+        get_tool_definition(config, skill_name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    run_id = _now_stamp()
+    output_dir = OUTPUT_ROOT / "b2_demo" / run_id
+    output_dir.mkdir(parents=True, exist_ok=True)
+    result = run_b2_skill(
+        skill_name,
+        request.input,
+        None,
+        str(output_dir),
+        str(TOOLS_CONFIG),
+    )
+    _attach_artifact_download_urls(result, output_dir)
+    write_json(result, output_dir / "b2_skill_result.json")
+    append_jsonl(
+        {
+            "timestamp": now_iso(),
+            "module": "B2",
+            "toolset": selected,
+            "skill_name": skill_name,
+            "status": result.get("status"),
+            "latency_ms": result.get("latency_ms"),
+            "result_path": str(output_dir / "b2_skill_result.json"),
+        },
+        output_dir / "b2_skill_run_log.jsonl",
+    )
+    return {
+        "status": "success",
+        "module": "B2",
+        "toolset": selected,
+        "skill_name": skill_name,
+        "run_id": run_id,
+        "output_dir": str(output_dir),
+        "result": result,
+    }
 
 
 @app.get("/api/b5/conversations/{conversation_id}/memory")

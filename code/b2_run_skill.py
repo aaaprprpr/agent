@@ -8,12 +8,32 @@ from time import perf_counter
 
 from common.io_utils import append_jsonl, read_json, write_json
 from common.logging_utils import now_iso
-from common.path_utils import DEFAULT_DATA_ROOT, bootstrap_project_root, resolve_cli_path
+from common.path_utils import DEFAULT_DATA_ROOT, bootstrap_project_root, resolve_cli_path, resolve_from_file
 from common.schemas import make_skill_result
 from common.tool_config import DEFAULT_TOOLS_CONFIG, get_tool_definition, load_tool_function, load_tools_config
 
 
 bootstrap_project_root()
+
+
+def _workspace_root_settings(config: dict, config_path: Path, resolved_data_root: Path) -> tuple[dict[str, str], str]:
+    settings = config.get("settings", {})
+    if not isinstance(settings, dict):
+        settings = {}
+    configured = settings.get("workspace_roots", {})
+    roots: dict[str, str] = {"data": str(resolved_data_root)}
+    if isinstance(configured, dict):
+        for alias, raw_path in configured.items():
+            if not isinstance(alias, str) or not isinstance(raw_path, str):
+                continue
+            normalized_alias = alias.strip()
+            if not normalized_alias.replace("_", "").replace("-", "").isalnum():
+                continue
+            roots[normalized_alias] = str(resolve_from_file(raw_path, config_path))
+    default_root = settings.get("default_workspace_root", "data")
+    if not isinstance(default_root, str) or default_root not in roots:
+        default_root = "data"
+    return roots, default_root
 
 
 def run_skill(
@@ -25,13 +45,21 @@ def run_skill(
 ) -> dict:
     if not isinstance(input_data, dict):
         raise ValueError("skill input must be a JSON object")
-    _, config = load_tools_config(tools_config or DEFAULT_TOOLS_CONFIG)
+    config_path, config = load_tools_config(tools_config or DEFAULT_TOOLS_CONFIG)
     definition = get_tool_definition(config, skill_name)
     function = load_tool_function(definition)
+    settings = config.get("settings") if isinstance(config.get("settings"), dict) else {}
+    data_root_setting = data_root or settings.get("data_root", str(DEFAULT_DATA_ROOT))
+    resolved_data_root = resolve_from_file(data_root_setting, config_path) if isinstance(data_root_setting, str) else DEFAULT_DATA_ROOT
+    allowed_roots, default_root = _workspace_root_settings(config, config_path, resolved_data_root)
     kwargs = dict(input_data)
     signature = inspect.signature(function)
     if "data_root" in signature.parameters:
-        kwargs["data_root"] = data_root or str(DEFAULT_DATA_ROOT)
+        kwargs["data_root"] = str(resolved_data_root)
+    if "allowed_roots" in signature.parameters:
+        kwargs["allowed_roots"] = allowed_roots
+    if "default_root" in signature.parameters:
+        kwargs["default_root"] = default_root
     if "output_dir" in signature.parameters:
         kwargs["output_dir"] = output_dir
     start = perf_counter()
