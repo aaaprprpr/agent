@@ -1,4 +1,10 @@
-import type { BackendConversation, BackendMessage, ConversationPrompt, UploadedFilePayload } from './types'
+import type {
+  B5MemorySnapshot,
+  B5RecallPreviewResponse,
+  BackendConversation,
+  BackendMessage,
+  ConversationPrompt, UploadedFilePayload,
+} from './types'
 
 type StreamResponse = Response & { body: ReadableStream<Uint8Array> }
 
@@ -33,30 +39,28 @@ export async function deleteBackendConversation(apiBase: string, conversationId:
   }
 }
 
-export async function fetchConversationPrompt(apiBase: string, conversationId: string) {
-  const response = await fetch(apiUrl(apiBase, `/api/conversations/${encodeURIComponent(conversationId)}/prompt`))
-  if (!response.ok) return null
-  return (await response.json()) as ConversationPrompt
+export async function fetchB5MemorySnapshot(apiBase: string, conversationId: string) {
+  const response = await fetch(apiUrl(apiBase, `/api/b5/conversations/${encodeURIComponent(conversationId)}/memory`))
+  if (!response.ok) {
+    const payload = await jsonOrNull(response)
+    const detail = payload?.detail ?? `HTTP ${response.status}`
+    throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
+  }
+  return (await response.json()) as B5MemorySnapshot
 }
 
-export async function fetchDefaultPrompt(apiBase: string) {
-  const response = await fetch(apiUrl(apiBase, '/api/prompts/default'))
-  if (!response.ok) return null
-  return (await response.json()) as ConversationPrompt
-}
-
-export async function updateBackendConversationPrompt(apiBase: string, conversationId: string, content: string) {
-  const response = await fetch(apiUrl(apiBase, `/api/conversations/${encodeURIComponent(conversationId)}/prompt`), {
-    method: 'PUT',
+export async function runB5RecallPreview(apiBase: string, conversationId: string, currentUserInput: string) {
+  const response = await fetch(apiUrl(apiBase, `/api/b5/conversations/${encodeURIComponent(conversationId)}/recall-preview`), {
+    method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content }),
+    body: JSON.stringify({ current_user_input: currentUserInput }),
   })
   if (!response.ok) {
     const payload = await jsonOrNull(response)
     const detail = payload?.detail ?? `HTTP ${response.status}`
     throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
   }
-  return (await response.json()) as ConversationPrompt
+  return (await response.json()) as B5RecallPreviewResponse
 }
 
 export async function requestConversationCancel(apiBase: string, conversationId: string) {

@@ -82,13 +82,5 @@ class DeleteConversationResponse(BaseModel):
     output_dir_deleted: bool
 
 
-class ConversationPromptResponse(BaseModel):
-    conversation_id: str
-    prompt_id: str
-    content: str
-    default_content: str
-    locked_default: bool = True
-
-
-class UpdateConversationPromptRequest(BaseModel):
-    content: str = Field(..., min_length=1)
+class B5RecallPreviewRequest(BaseModel):
+    current_user_input: str = Field(..., min_length=1)

@@ -18,6 +18,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from backend.api_models import (  # noqa: E402
+    B5RecallPreviewRequest,
     ConversationDetail,
     ConversationMessage,
     ConversationPromptResponse,
@@ -83,11 +84,13 @@ from b5_memory import (  # noqa: E402
     append_conversation_message,
     clear_message_tool_steps,
     delete_conversation_record,
+    get_conversation_memory_snapshot,
     init_conversation_db,
     list_conversation_history,
     list_conversation_records,
     list_conversation_messages,
     list_message_tool_steps,
+    prepare_workspace_memory_context,
     record_completed_turn_memory,
     record_conversation_tool_step,
     update_conversation_message,
@@ -1010,6 +1013,57 @@ def get_conversation(conversation_id: str) -> ConversationDetail:
         if message["role"] in {"user", "assistant"}
     ]
     return ConversationDetail(conversation_id=conversation_id, messages=visible)
+
+
+@app.get("/api/b5/conversations/{conversation_id}/memory")
+def get_b5_conversation_memory(conversation_id: str) -> dict:
+    conversation_id = _safe_conversation_id(conversation_id)
+    init_conversation_db(str(MEMORY_CONFIG))
+    snapshot = get_conversation_memory_snapshot(str(MEMORY_CONFIG), conversation_id)
+    if snapshot.get("status") == "not_found":
+        raise HTTPException(status_code=404, detail="conversation not found")
+    return snapshot
+
+
+@app.post("/api/b5/conversations/{conversation_id}/recall-preview")
+def run_b5_recall_preview(conversation_id: str, request: B5RecallPreviewRequest) -> dict:
+    conversation_id = _safe_conversation_id(conversation_id)
+    current_user_input = request.current_user_input.strip()
+    if not current_user_input:
+        raise HTTPException(status_code=400, detail="current_user_input is required")
+    init_conversation_db(str(MEMORY_CONFIG))
+    snapshot = get_conversation_memory_snapshot(str(MEMORY_CONFIG), conversation_id)
+    if snapshot.get("status") == "not_found":
+        raise HTTPException(status_code=404, detail="conversation not found")
+    try:
+        history = list_conversation_history(str(MEMORY_CONFIG), conversation_id)
+        result = prepare_workspace_memory_context(
+            str(MEMORY_CONFIG),
+            conversation_id,
+            current_user_input,
+            history,
+            None,
+            None,
+            str(MODEL_CONFIG),
+            None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
+
+    layered = result.get("layered_memory_context") if isinstance(result.get("layered_memory_context"), dict) else {}
+    response = dict(result)
+    response["current_user_input"] = current_user_input
+    response["memory_messages"] = layered.get("memory_messages", [])
+    response["recalled_blocks"] = layered.get("recalled_blocks", [])
+    response["recalled_turns"] = layered.get("recalled_turns", [])
+    response["source_messages"] = layered.get("source_messages", [])
+    response["source_tool_steps"] = layered.get("source_tool_steps", [])
+    response["vector_retrieval"] = layered.get("vector_retrieval")
+    response["llm_rerank"] = layered.get("llm_rerank")
+    response["retrieval_log"] = layered.get("retrieval_log")
+    return response
 
 
 @app.delete("/api/conversations/{conversation_id}", response_model=DeleteConversationResponse)
