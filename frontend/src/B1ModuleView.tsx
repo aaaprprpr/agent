@@ -31,11 +31,6 @@ type B1Snapshot = {
   memory_ready: boolean
   memory_context_status: string
   runtime_status: string
-  messages_count: number
-  user_messages: number
-  assistant_messages: number
-  observed_intermediate_items: number
-  tool_rounds: number
   last_user_input: string | null
   last_final_answer: string | null
   checkpoint: string
@@ -173,11 +168,6 @@ function useB1Observation({
       memory_ready: memoryReady,
       memory_context_status: memoryReady ? 'conversation messages/tool steps loaded from B5 store' : 'raw selected memory context is not exposed to this frontend side channel yet',
       runtime_status: runtimeStatus,
-      messages_count: messages.length,
-      user_messages: userMessages.length,
-      assistant_messages: assistantMessages.length,
-      observed_intermediate_items: toolDetailCount,
-      tool_rounds: toolRoundCount,
       last_user_input: lastUser?.body ?? null,
       last_final_answer: lastAssistant?.body ?? null,
       checkpoint: 'not_loaded_by_frontend_side_channel',
@@ -212,17 +202,6 @@ function WorkspaceSnapshot({ snapshot, messages }: { snapshot: B1Snapshot; messa
           <dt>context</dt>
           <dd>{snapshot.memory_context_status}</dd>
         </dl>
-      </section>
-
-      <section className="b1-workspace-section">
-        <h4>消息缓冲</h4>
-        <div className="b1-stat-grid">
-          <div><strong>{snapshot.messages_count}</strong><span>总消息</span></div>
-          <div><strong>{snapshot.user_messages}</strong><span>用户</span></div>
-          <div><strong>{snapshot.assistant_messages}</strong><span>AI</span></div>
-          <div><strong>{snapshot.tool_rounds}</strong><span>工具轮</span></div>
-          <div><strong>{snapshot.observed_intermediate_items}</strong><span>中间项</span></div>
-        </div>
       </section>
 
       <section className="b1-workspace-section">
