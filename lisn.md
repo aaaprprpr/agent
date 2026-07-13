@@ -2,7 +2,7 @@
 
 lisnny日志。
 
-[已脱敏：临时连接密码不写入日志]
+KssAT6iTwb
 
 conda activate agent310 && cd /d E:\assignment_B\agent
 
@@ -308,3 +308,12 @@ tool/skill 第一批增强：
 - 顺手脱敏 `lisn.md` 开头旧记录中的临时连接密码，避免项目文档继续裸露敏感值；未修改 `start_all.py` 或其他运行逻辑。
 - 根据正式团队文档要求二次优化 `README.md`：去除模板提示语和助手口吻，明确读者对象为课程验收教师、项目协作成员和后续维护者；将“平替”“落库”“主线”等工程口语改为“替代”“实现/结果”“主要实现”等正式表述。
 - 本次未启动项目、未跑训练、未跑测试、未调用模型；只做静态阅读、文档编写和 Git 状态检查。
+
+# -------------------------7.14 前端模块拆分整理------------------------------
+
+- 按“不改功能、不碰后端链路”的原则整理前端：`App.tsx` 拆出 `appNavigation.ts`、`AppSidebar.tsx`、`ModuleWorkspace.tsx`，保留原有状态管理、流式事件处理、取消/恢复和会话加载逻辑不变。
+- 将 B2/B3 演示页的大型静态样例分别拆到 `B2ModuleExamples.ts`、`B3ModuleExamples.ts`，降低模块页主文件体积。
+- 新增 `moduleViewUtils.ts` 统一 B2/B3/B5 重复的 JSON 解析、record 判断、状态 class、artifact 链接、文本 compact 等纯工具函数；B2/B5 保留原默认截断长度 wrapper，避免显示行为变化。
+- 统一 B1/B2/B3/B5 的 `ModuleMode` 类型来源，减少重复类型定义。
+- 删除显性重复代码：B2/B3/B5 中重复的 `isRecord/asArray/parseJsonObject/pretty/compact/statusClass` 等本地实现已移除；未删除任何业务入口、后端 API 调用或模块页功能。
+- 本次未启动项目、未跑训练、未跑测试、未调用模型；只做静态 grep、diff 和 whitespace 检查。

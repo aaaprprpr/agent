@@ -2,9 +2,8 @@ import { useMemo, useState } from 'react'
 import type { ChangeEvent, ComponentType } from 'react'
 import { Bot, CheckCircle, Circle, Clock, Database, MessageSquare, User, Wrench } from 'lucide-react'
 
+import type { ModuleMode } from './appNavigation'
 import type { ChatMessage, HistoryItem } from './types'
-
-type ModuleMode = 'observe' | 'demo'
 
 type B1ModuleViewProps = {
   mode: ModuleMode

@@ -2,10 +2,21 @@ import { useEffect, useMemo, useState } from 'react'
 import { AlertCircle, ArrowLeftRight, ArrowRight, CheckCircle, Circle, FileText, Play, RefreshCw, XCircle } from 'lucide-react'
 
 import { API_BASE } from './appConfig'
+import type { ModuleMode } from './appNavigation'
 import { fetchB3ToolsSchema, runB3ToolCallsPreview } from './backendApi'
+import { B3_EXAMPLES } from './B3ModuleExamples'
+import {
+  artifactHref as makeArtifactHref,
+  asRecordArray as asArray,
+  compactValue as compact,
+  getRecordString,
+  isRecord,
+  parseJsonObject,
+  prettyValue as pretty,
+  statusClass,
+  toolNameFromLabel,
+} from './moduleViewUtils'
 import type { B3ToolCallsPreviewResponse, B3ToolsSchemaResponse, ChatMessage, ToolDetail } from './types'
-
-type ModuleMode = 'observe' | 'demo'
 
 type B3ModuleViewProps = {
   mode: ModuleMode
@@ -36,172 +47,7 @@ type SchemaState = {
   error: string | null
 }
 
-type B3Example = {
-  label: string
-  note: string
-  sideEffect?: boolean
-  aiMessage: Record<string, unknown>
-}
-
 const DEFAULT_TOOLSET = 'basic_tools'
-
-const B3_EXAMPLES: Record<string, B3Example> = {
-  calculator_success: {
-    label: '计算工具成功调用',
-    note: '展示 B3 读取 tool_calls、校验 calculator 参数、执行 B2 Skill 并包装 ToolMessage。',
-    aiMessage: {
-      role: 'assistant',
-      content: '',
-      tool_calls: [
-        {
-          id: 'call_calc_001',
-          name: 'calculator',
-          args: { expression: '((18 + 24) * 3 - 16) / 5 + 2 ** 3' },
-        },
-      ],
-    },
-  },
-  file_reader_success: {
-    label: '文件读取成功调用',
-    note: '读取 data/docs/agent_intro.txt，展示文件类工具的真实输出、source 和 ToolMessage.content。',
-    aiMessage: {
-      role: 'assistant',
-      content: '',
-      tool_calls: [
-        {
-          id: 'call_read_001',
-          name: 'file_reader',
-          args: { path: 'docs/agent_intro.txt', max_chars: 900 },
-        },
-      ],
-    },
-  },
-  multi_tool_success: {
-    label: '多工具顺序调用',
-    note: '同一个 AIMessage 中包含两个 tool_calls，展示 B3 逐个标准化、校验、执行和返回多个 ToolMessage。',
-    aiMessage: {
-      role: 'assistant',
-      content: '',
-      tool_calls: [
-        {
-          id: 'call_time_001',
-          name: 'current_time',
-          args: { timezone: 'Asia/Shanghai' },
-        },
-        {
-          id: 'call_calc_002',
-          name: 'calculator',
-          args: { expression: '7 * (8 + 5)' },
-        },
-      ],
-    },
-  },
-  missing_required_error: {
-    label: '缺少必填参数',
-    note: '故意不给 calculator.expression，展示 B3 参数校验失败时返回 error ToolMessage，而不是让后端崩溃。',
-    aiMessage: {
-      role: 'assistant',
-      content: '',
-      tool_calls: [
-        {
-          id: 'call_missing_001',
-          name: 'calculator',
-          args: {},
-        },
-      ],
-    },
-  },
-  unknown_tool_error: {
-    label: '未知工具拦截',
-    note: '故意调用 toolset 中不存在的工具，展示 B3 对模型乱调用的拦截。',
-    aiMessage: {
-      role: 'assistant',
-      content: '',
-      tool_calls: [
-        {
-          id: 'call_unknown_001',
-          name: 'unknown_tool',
-          args: {},
-        },
-      ],
-    },
-  },
-  markdown_writer_artifact: {
-    label: '文件生成与 artifact',
-    note: '会真实生成 Markdown 文件，展示 side effect 工具只执行一次、ToolMessage 中带下载入口。',
-    sideEffect: true,
-    aiMessage: {
-      role: 'assistant',
-      content: '',
-      tool_calls: [
-        {
-          id: 'call_md_001',
-          name: 'markdown_file_writer',
-          args: {
-            filename: 'b3_demo/tool_message_report.md',
-            content: '# B3 工具调用验收\n\n- 入口：AIMessage.tool_calls\n- 执行：B3 execute_tool_calls\n- 返回：ToolMessage.content 中的 SkillResult JSON\n',
-          },
-        },
-      ],
-    },
-  },
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-function asArray(value: unknown): Record<string, unknown>[] {
-  return Array.isArray(value) ? value.filter(isRecord) : []
-}
-
-function parseJsonObject(text: string) {
-  try {
-    const value = JSON.parse(text)
-    return isRecord(value) ? value : undefined
-  } catch {
-    return undefined
-  }
-}
-
-function toolNameFromLabel(label: string) {
-  return label
-    .replace(/^\d+\.\s*/, '')
-    .replace(/^调用\s*/, '')
-    .replace(/^结果\s*/, '')
-    .trim()
-    .split(/\s+/)[0] || label
-}
-
-function pretty(value: unknown) {
-  if (value === undefined || value === null || value === '') return '无'
-  if (typeof value === 'string') return value
-  try {
-    return JSON.stringify(value, null, 2)
-  } catch {
-    return String(value)
-  }
-}
-
-function compact(value: unknown, limit = 120) {
-  const text = pretty(value).replace(/\s+/g, ' ').trim()
-  if (!text || text === '无') return '无'
-  return text.length > limit ? `${text.slice(0, limit)}...` : text
-}
-
-function getRecordString(value: Record<string, unknown> | undefined, key: string, fallback = '无') {
-  const item = value?.[key]
-  if (item === undefined || item === null || item === '') return fallback
-  if (typeof item === 'string' || typeof item === 'number' || typeof item === 'boolean') return String(item)
-  return fallback
-}
-
-function statusClass(status: string) {
-  const normalized = status.toLowerCase()
-  if (normalized.includes('error') || normalized.includes('fail')) return 'error'
-  if (normalized.includes('success') || normalized.includes('done')) return 'success'
-  return 'pending'
-}
 
 function schemaName(schema: Record<string, unknown>) {
   const fn = isRecord(schema['function']) ? schema['function'] : undefined
@@ -216,8 +62,7 @@ function schemaParameters(schema: Record<string, unknown>) {
 }
 
 function artifactHref(downloadUrl: unknown) {
-  if (typeof downloadUrl !== 'string' || !downloadUrl) return ''
-  return downloadUrl.startsWith('http') ? downloadUrl : `${API_BASE}${downloadUrl}`
+  return makeArtifactHref(downloadUrl, API_BASE)
 }
 
 function toolFromDetail(detail: ToolDetail): B3ToolItem {
