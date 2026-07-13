@@ -10,6 +10,16 @@ python start_all.py
 
 python test.py
 
+# -------------------------7.13------------------------------
+
+补五模块验收辅助文档
+补 memory_index 兼容样例
+做 python 代码执行沙箱工具
+检查沙箱前端测试结果
+修沙箱超时反馈
+取消代码沙箱默认弹出 json 下载
+不改 B1/B3 主链路
+
 # -------------------------7.12------------------------------
 
 做记忆，改bug
@@ -227,3 +237,13 @@ tool/skill 第一批增强：
 - 新增 `五模块验收辅助文档.md`，按 B1-B5 分别整理验收展示方式、证据文件、命令、基础/进阶要求对照、老师可能追问和回答要点。
 - 文档中特别说明 B5 当前主线是 SQLite 分层记忆，`memory_index.json` 仅作为基础验收和旧命令兼容，不把旧 markdown memory 误说成主存储。
 - 本次只做文档整理；未启动项目、未跑训练、未跑测试、未调用模型。
+
+# -------------------------7.13 Python 代码执行沙箱工具------------------------------
+
+- 新增 `python_sandbox` Skill，接入 `configs/tools.yaml` 的 `basic_tools`，作为 B2 工具供 Agent 在回答过程中执行轻量 Python 代码。
+- 工具使用本地受控子进程执行 `sys.executable -I -S main.py`，不走 shell；每次运行创建独立 `generated_files/python_sandbox/<run_id>/` 沙箱目录。
+- 返回 `stdout`、`stderr`、`exit_code`、`timed_out`、`termination_reason`、`diagnostic`、`text` 等字段；语法错误、运行异常、非零退出码和超时都作为正常执行结果返回，方便 Agent 继续分析。
+- 对代码长度、stdin、argv、超时时间和输出长度做结构性限制；不扫描用户代码内容，不用关键词或正则限制智能体行为。
+- 根据前端测试反馈优化：正常计算、`1/0` 异常、无限循环超时均能进入工具链；超时结果新增明确诊断，避免 Agent 误以为必须读取报告文件。
+- 取消默认弹出 `execution_report.json` 下载卡片：执行报告仍本地保存，但默认不返回 `generated_file_path/relative_output_path`；只有用户明确要求导出/下载执行报告时，模型传 `export_report=true` 才暴露下载入口。
+- 按要求不改 B1、不改 B3，不改变 B5 记忆主线；本次由你通过前端运行 Agent 测试，我只做静态检查和日志分析。
