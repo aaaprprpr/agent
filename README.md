@@ -1,6 +1,6 @@
 # 本地 Agent 智能体实训系统
 
-> 人工智能实训 B 方向团队项目说明。本文面向课程验收教师、项目协作成员和后续维护者，说明系统目标、模块边界、运行方式、配置文件、演示流程、输出产物和当前限制。文档内容以当前仓库为准，历史样例或旧文档中不再属于现行实现的内容单独标明。
+> 人工智能实训 B 方向团队项目说明。本文面向课程验收教师、项目协作成员和后续维护者，说明系统目标、模块边界、运行方式、配置文件、演示流程、输出产物和当前限制。本文是项目唯一维护的 README，内容以当前仓库为准。
 
 ---
 
@@ -105,7 +105,7 @@ React 前端  <-------------------->  FastAPI 后端
 | 项目 | 内容 |
 |---|---|
 | 使用模型 | 课程 PPT 指定 Qwen3.5-4B；当前仓库 `configs/model.yaml` 默认 `runtime.llm_source: qwen_api`，通过本地代理调用 `qwen-plus`；也保留 local/transformers 与 fastapi 两类模型源。 |
-| 模型来源 | Qwen3.5-4B：课程 PPT 给出的 ModelScope 模型 `Qwen/Qwen3.5-4B`；Qwen API：通过本地代理读取环境变量中的 API key；FastAPI：可连接学校/远端模型服务。 |
+| 模型来源 | 本地模型使用 ModelScope 官方模型 [`Qwen/Qwen3.5-4B`](https://modelscope.cn/models/qwen/Qwen3.5-4B)；当前 API 模型为阿里云 Model Studio 的 [`qwen-plus`](https://help.aliyun.com/en/model-studio/text-generation)，通过本地代理读取环境变量中的 API key；FastAPI 模式可连接学校或远端模型服务。 |
 | 项目内相对路径 | 本地模型默认路径为 `models/Qwen3.5-4B`，由 `configs/model.yaml` 的 `model.model_name_or_path` 和 `tokenizer_name_or_path` 指定；Qwen API 代理入口在 `llm_backend/qwen_api/llm_fastapi_server.py`。 |
 | 是否需要 GPU | 本地 transformers 模式需要 GPU 或足够本地算力；`qwen_api` / `fastapi` 模式本机不直接加载大模型，后端本身不要求本地 GPU。 |
 | 是否需要联网运行 | `qwen_api`、`web_search` 和远端模型服务需要网络/API 可用；完全本地 transformers 模式理论上可离线，但需要提前准备模型权重。 |
@@ -124,6 +124,7 @@ React 前端  <-------------------->  FastAPI 后端
 | 数据或文件 | 用途 | 来源 | 项目内相对路径 |
 |---|---|---|---|
 | Runtime 输入样例 | B1 / 完整 Agent CLI 演示，覆盖普通问答、文件读取、表格、写文件、旧格式转换样例等。 | 项目自带 | `data/runtime_input*.json` |
+| 五模块统一验收提问 | 20 个核心用户轮次和 10 个扩展轮次，覆盖长对话、工具闭环、文件产物、错误收束、记忆更新和分层记忆召回。 | 项目自带 | `acceptance_questions.txt` |
 | B1 fixture 样例 | B1 个人演示的预设 memory、tools schema、AIMessage、ToolMessage，不依赖真实模型。 | 项目自带 | `data/b1_fixtures/` |
 | B2 Skill 输入样例 | calculator、current_time、file_reader、local_file_search、table_analyzer、file_writer、web_search 等正常/异常输入。 | 项目自带 | `data/tool_inputs/` |
 | B3 AIMessage / tool_call 样例 | 工具调用正常样例、缺参样例、未知工具样例、文件生成样例、web_search 样例。 | 项目自带 | `data/messages/` |
@@ -131,6 +132,7 @@ React 前端  <-------------------->  FastAPI 后端
 | 示例表格 | table_analyzer 演示 CSV。 | 项目自带 | `data/tables/results.csv` |
 | legacy memory 样例 | 兼容课程 B5 基础要求的 memory id 读取与 markdown memory。 | 项目自带 | `memory/memory_index.json`、`memory/conversations/conv_000.md` |
 | 运行时会话库 | 前端会话、消息、工具步骤、B5 分层记忆、任务记忆和召回日志。 | 本地运行生成 | `memory/conversation_store.sqlite3` |
+| 校方模板与教程 | 课程原始要求、README 模板、报告模板和验收安排，仅用于对照，不参与程序运行。 | 校方提供 | `B方向/` |
 
 ```bash
 # 当前项目不需要额外数据集下载。
@@ -145,10 +147,10 @@ React 前端  <-------------------->  FastAPI 后端
 
 | 项目 | 要求 |
 |---|---|
-| Python 版本 | Python 3.10。课程 PPT 和旧 README 均以 Python 3.10 为基准。 |
-| 操作系统 / 服务器环境 | Windows / Linux 均可做本地开发；本地 transformers 模型通常依赖带 GPU 的服务器环境；当前工作区位于 Windows PowerShell。 |
+| Python 版本 | Python 3.10；当前依赖文件和服务器验证环境均以该版本为基准。 |
+| 操作系统 / 服务器环境 | 支持 Windows / Linux 本地开发；本地 transformers 模式通常依赖带 GPU 的服务器环境。 |
 | GPU 要求 | `qwen_api` / `fastapi` 模式本机不要求 GPU；local/transformers 模式需要可用 GPU 或足够本地算力。 |
-| 主要依赖 | 后端与工具：FastAPI、Uvicorn、PyYAML、Pydantic、ddgs、langchain-openai、paramiko；完整本地模型环境还包括 torch、transformers、accelerate、sentencepiece 等。前端：React、Vite、TypeScript、lucide-react。 |
+| 主要依赖 | 后端与工具：FastAPI、Uvicorn、PyYAML、Pydantic、ddgs、langchain-openai、paramiko；本地模型环境还需要 transformers、accelerate、sentencepiece 和与机器环境匹配的 PyTorch。前端：React、Vite、TypeScript、lucide-react。 |
 
 ### 4.2 安装步骤
 
@@ -159,11 +161,14 @@ React 前端  <-------------------->  FastAPI 后端
 conda create -n agent python=3.10 -y
 conda activate agent
 
-# 2. 安装完整 Python 依赖；适合本地模型服务、完整后端和工具能力
+# 2. 安装项目 Python 依赖
 pip install -r requirements.txt
 
 # 如只使用 fastapi/qwen_api 模型源，可选择轻量依赖
 pip install -r requirements_fastapi.txt
+
+# 仅 local/transformers 模式需要：根据本机 CUDA/CPU 环境另行安装兼容的 PyTorch。
+# 当前 requirements.txt 不固定 torch 版本，避免与不同机器的运行环境冲突。
 
 # 3. 安装前端依赖
 cd frontend
@@ -171,14 +176,17 @@ npm install
 cd ..
 
 # 4. 如使用 qwen_api，准备本地 .env；密钥不提交到仓库
-# QWEN_API_KEY=你的 key
+# QWEN_API_KEY=<Qwen API Key>
 # QWEN_MODEL=qwen-plus
 # QWEN_EMBEDDING_MODEL=text-embedding-v4
 ```
 
+`.env` 放在项目根目录。默认 `qwen_api` 模式下，`start_all.py` 会依次启动 Qwen API 代理、FastAPI 后端和 Vite 前端，并打开浏览器。
+
 常见环境问题：
 
 - 模型路径不存在：使用 local/transformers 模式前，确认 `models/Qwen3.5-4B` 或 `configs/model.yaml` 指向的模型目录真实存在。
+- local/transformers 缺少 PyTorch：根据运行机器的 CUDA/CPU 环境安装兼容版本；默认 `qwen_api` 模式不需要在本机加载 PyTorch 模型。
 - API 或 embedding 不可用：`qwen_api` 和 B5 向量召回依赖本地代理或远端服务可访问；服务不可用时 B5 会尽量降级，但回答质量可能下降。
 - 前端无法连接后端：检查 `frontend/src/appConfig.ts` 中默认 API `http://127.0.0.1:8020`，或通过 `VITE_AGENT_API_BASE` 覆盖。
 - 运行脚本中的临时服务器连接信息：面向共享或提交前应改为环境变量，不应把个人或临时凭据继续硬编码。
@@ -207,6 +215,7 @@ cd ..
 
 | 输入文件 | 用途 | 适用场景 |
 |---|---|---|
+| `acceptance_questions.txt` | 30 条按顺序手动发送的验收问题，前 20 条为核心验收，后 10 条为扩展验收。 | 浏览器现场提问 / B1-B5 联合验收 |
 | `data/runtime_input.json` | 读取 `docs/agent_intro.txt` 并总结三条中文要点，覆盖 B5 memory、B3 file_reader schema、B4 tool_call、B2 文件读取、B1 二次模型回答。 | 完整系统 / B1 集成演示 |
 | `data/runtime_input_0.json` | 不使用工具的 Agent 问答样例，验证 B1 可以直接回答并保存 memory。 | 完整系统 / 无工具路径 |
 | `data/runtime_input_2.json`、`data/runtime_input_3.json`、`data/runtime_input_4.json` | 补充 Agent 任务样例，具体能力以文件内容为准。 | 完整系统 / 模块联调 |
@@ -234,6 +243,7 @@ cd ..
 
 | Demo | 输入文件 / 输入内容 | 演示目的 |
 |---|---|---|
+| 浏览器五模块统一验收 | `acceptance_questions.txt` | 在同一新会话按顺序完成 20 个核心轮次，或继续完成全部 30 轮；分别形成至少 40 或 60 条 Human/AI 可见消息，覆盖 B1-B5。 |
 | 浏览器完整 Agent Demo | 前端输入：`帮我阅读 docs/agent_intro.txt，总结三条中文要点。` | 展示前端、后端、B1、B5、B3、B4、B2 的完整工具闭环和流式回答。 |
 | 生成文件与下载 Demo | 前端输入：`生成一个 txt 文件，内容是三条 Agent 学习要点。` | 展示 B4 选择写文件工具、B2 生成文件、B3 附加 download_url、后端受限下载、前端下载卡片。 |
 | B1 集成 CLI Demo | `data/runtime_input.json` | 展示 B1 在 CLI 中调用 B5/B3/B4/B2 并输出 messages、trace、final_answer。 |
@@ -244,12 +254,40 @@ cd ..
 | B4 浏览器验收 Demo | 前端 B4“验收演示”模式 | 展示普通回复、单/多 tool_calls、多 ToolMessage、工具错误收束、流式输出、协议容错和无效消息拒绝；模型类用例调用当前模型服务，解析器类用例只回放 B4 协议。 |
 | B5 memory Demo | `memory/memory_index.json` + `data/memory_inputs/memory_save_input.json` | 展示 legacy memory 查找/保存；当前前端主要使用 SQLite 分层记忆。 |
 
-### 6.2 运行命令
+### 6.2 浏览器统一验收提问
+
+正式验收按 `acceptance_questions.txt` 逐条手动提问。该文件只提供问题，不会自动执行对话；模型回答、工具结果和记忆召回必须以本次实际运行证据为准。
+
+- 第 1-14 轮用于验收前准备，建立早期约定并形成文档、计算、表格、代码沙箱和 Markdown 产物记录。
+- 第 15-20 轮适合现场执行，依次展示 CSV 产物、工具错误收束、成功/失败证据区分和跨阶段长期记忆召回。
+- 第 21-30 轮是扩展提问，进一步展示记忆更新、DOCX/PPTX 读取、实时工具、同轮多工具调用、Word 产物和 30 轮综合召回。
+- 每轮等待回答与工具过程结束后再继续。第 9、17、20、25、30 轮后刷新 B5 页面，确认后台反思完成；B5 写入有延迟时不能立即把空结果判定为失败。
+- B2 演示页建议依次展示 calculator、file_reader、table_analyzer、markdown_file_writer，再将 calculator 输入改为 `1 / 0` 展示标准错误 SkillResult。
+- B3 演示页建议依次展示多工具成功、缺少必填参数和 Markdown artifact 三个预设；这些预设可编辑且不会调用 B4 模型。
+- B4 先用观察页对照主对话的 prompt、raw output 与 AIMessage，再在验收演示页执行全部协议用例。
+- B5 在核心对话完成后使用第 18、19 轮问题验证早期约定和跨阶段事实召回；完整 30 轮后再用第 29 轮验证记忆更新、产物与错误记录。
+- 模型措辞可以不同，但工具名、参数、真实结果、错误、下载产物和记忆来源必须与运行证据一致。提问中的参考数值不得代替实际运行结果。
+
+### 6.3 运行命令
 
 ```bash
 # 浏览器完整系统；从项目根目录执行
 # 会启动模型代理/后端/前端，具体取决于 configs/model.yaml 的 runtime.llm_source
 python start_all.py
+```
+
+需要分别启动服务时，从项目根目录打开三个终端：
+
+```bash
+# 终端 1：当前默认 qwen_api 模型代理，监听 8012
+python llm_backend/qwen_api/llm_fastapi_server.py
+
+# 终端 2：业务后端，监听 8020
+python backend/main.py
+
+# 终端 3：前端开发服务器，默认监听 5173
+cd frontend
+npm run dev -- --host 127.0.0.1 --port 5173
 ```
 
 ```bash
@@ -281,7 +319,7 @@ python b5_memory.py --config ../configs/memory.yaml --select_memory_ids mem_conv
 python b5_memory.py --config ../configs/memory.yaml --save_type conversation --save_input_path ../data/memory_inputs/memory_save_input.json --outdir ../outputs/B5_memory
 ```
 
-### 6.3 关键参数说明
+### 6.4 关键参数说明
 
 | 参数 | 说明 |
 |---|---|
@@ -297,7 +335,7 @@ python b5_memory.py --config ../configs/memory.yaml --save_type conversation --s
 | `runtime.llm_source` | `configs/model.yaml` 中的模型来源，可为 `qwen_api`、`fastapi`、`local` / `transformers`。 |
 | `save_memory` | runtime 输入中的记忆保存策略：`none`、`conversation` 或 `global`。 |
 
-### 6.4 运行成功的判断方式
+### 6.5 运行成功的判断方式
 
 成功运行的判断标准如下。
 
@@ -346,8 +384,8 @@ python b5_memory.py --config ../configs/memory.yaml --save_type conversation --s
 
 ```text
 截图 1：前端主对话页面
-- 用户输入：帮我阅读 docs/agent_intro.txt，总结三条中文要点。
-- 页面可见：流式回答、工具调用过程、最终中文要点。
+- 会话：按 acceptance_questions.txt 完成的“星桥项目长期协作展示”。
+- 页面可见：20 个核心用户轮次或完整 30 轮、流式回答、工具调用过程、文件下载和最终验收总结。
 
 截图 2：B3 / B2 工具过程
 - 页面可见：AIMessage.tool_calls、B3 校验/执行、B2 SkillResult、ToolMessage。
@@ -372,8 +410,8 @@ python b5_memory.py --config ../configs/memory.yaml --save_type conversation --s
 - `configs/model.yaml` 是 B4 与模型服务的协作边界。切换 `qwen_api`、`fastapi` 或 `local` 不应影响 B1/B2/B3/B5 的接口。
 - `configs/memory.yaml` 是 B5 的协作边界。legacy memory 文档用于基础验收兼容，SQLite 分层记忆是当前主要实现；摘要只用于定位，精确事实以原始消息和工具步骤为准。
 - 前端 B1-B5 模块页用于验收观察：B4 观察模式读取当前会话的真实模型调用产物，区分 Agent 主链路和记忆辅助调用；验收演示模式通过独立 API 运行模型协议用例或解析器回放，不执行 B2/B3 工具，不写 B5 记忆。
-- 团队同步文档为 `log.md`，个人开发记录为 `lisn.md`。开发时应先看同步日志，避免重复实现或误删队友代码。
-- 旧 README 已保留为 `README_old.md`，新的团队 README 使用 `README.md`。历史说明 `README_712.md` 和 `五模块验收辅助文档.md` 作为补充材料，正式入口以本文件为准。
+- `当前开发方向.md`、成员日志和 `lisn.md` 属于协作过程记录；校方原始模板和教程统一保存在 `B方向/`。这些文件不替代项目说明。
+- 项目正式说明只维护根目录 `README.md`，其他目录不再保留项目 README。
 
 ---
 
