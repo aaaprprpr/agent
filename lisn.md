@@ -10,6 +10,12 @@ python start_all.py
 
 python test.py
 
+# -------------------------7.14------------------------------
+
+
+
+
+
 # -------------------------7.13------------------------------
 
 补五模块验收辅助文档
@@ -317,3 +323,14 @@ tool/skill 第一批增强：
 - 统一 B1/B2/B3/B5 的 `ModuleMode` 类型来源，减少重复类型定义。
 - 删除显性重复代码：B2/B3/B5 中重复的 `isRecord/asArray/parseJsonObject/pretty/compact/statusClass` 等本地实现已移除；未删除任何业务入口、后端 API 调用或模块页功能。
 - 本次未启动项目、未跑训练、未跑测试、未调用模型；只做静态 grep、diff 和 whitespace 检查。
+
+# -------------------------7.14 B4 验收页与协议优化------------------------------
+
+- 基于用户实际运行产物 `outputs/backend_runs/b4_demo/20260714_103436_741498/` 复核 B4 验收结果：初始 9 项中 5 项通过、4 项失败；普通内容和流式输出未遵守 JSON 协议，单/多工具调用使用 `parameters` 导致标准 `args` 丢失。
+- B4 解析器增加结构兼容：tool_call 的 `parameters`/`arguments` 统一归一化为 `args`；明显非 JSON 的纯文本可恢复为 content AIMessage；远程流式未提取到 JSON content delta 时，在解析成功后补发最终 content。损坏 JSON 和 Markdown JSON 代码块仍保留错误，不静默当作普通回答。
+- `b1_stage_prompts.json` 的 legacy 和 workspace tool_calling 协议补充明确的 `id/name/args` 子结构，避免模型照抄 tools schema 的 `parameters` 字段。
+- Qwen API 代理增加按请求启用的 `response_format={"type":"json_object"}`；仅 B4 的 qwen_api prompt_json 请求携带该字段，不改变代理的普通生成、批量和 embedding 默认行为。
+- B4 验收服务新增工具参数别名归一化回放，修正普通内容用例的项目语境和语义判定；观察记录增加 Agent 主链路、记忆辅助调用和独立调用分类。
+- B4 前端拆分为 `B4ObservationPanel.tsx`、`B4DemoPanel.tsx` 和 `B4ViewShared.tsx`；观察轮询改为 5 秒且后台标签页暂停，验收结果默认展开失败项、折叠通过项，并明确“执行全部”包含真实模型调用。
+- 同步修正 README 和验收讲解文档中“B4 页面未连接后端”等过期描述，保留跨模型成功率、token 统计和 schema 注入对比尚未形成完整实验的限制说明。
+- 本次未启动项目、未运行测试、未调用模型；只读取用户生成的结果并执行静态 JSON、diff、引用和格式检查。Qwen JSON mode 与修正后的 10 项验收结果需要用户重启后端和 qwen_api 代理后重新运行确认。

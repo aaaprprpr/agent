@@ -23,7 +23,7 @@
 | 基础要求 | B1-B5 基础链路已在当前仓库实现：B1 能接收用户问题、读取 prompt 和 B5 memory、维护 System/Human/AI/Tool messages、调用 B3 schema、调用 B4、执行至少一次 `LLM -> Tool -> LLM` 工具闭环并限制 `max_turns`；B2 提供超过 5 个 JSON 可序列化 Skill；B3 能从 `tools.yaml` 生成 tools schema、校验并执行 tool_calls、保存工具记录；B4 能读取 `model.yaml`、注入 tools schema、解析 raw model output 为 AIMessage 并记录产物；B5 兼容课程要求的 `memory_index.json + markdown` 样例，同时主要使用 SQLite 分层记忆。 |
 | 进阶要求 | 已实现或部分实现：多轮前端会话、多次 tool_calls 循环、取消/恢复与 checkpoint、B1 workspace 分阶段流程、文件上传、流式回答、生成文件下载、B3 函数签名补充 schema、可恢复错误重试、工具缓存、工具统计、B2 文件浏览/Office 读取/联网搜索/文件生成/Python 沙箱、B5 轮级摘要、块级记忆、任务记忆、关键词/字段评分、向量召回、LLM rerank。 |
 | 支持的主要任务类型 | 普通问答、本地文件读取与总结、本地目录浏览、本地文件搜索、表格分析、数学计算、当前时间查询、联网搜索、生成 txt/md/code/json/docx/csv/tsv 文件、轻量 Python 代码执行、带历史记忆的多轮任务推进。 |
-| 当前限制 | 未保留 `format_converter` 同名工具，当前由更细的文件生成工具组替代；B1 尚未提供独立批量任务 runner；严格意义的“中断后继续某个未完成 LLM/tool call”仍依赖当前 checkpoint/resume 链路，尚未形成完整实验报告；B4 前端验收页处于展示稿阶段，尚未连接后端 B4 inspection API；模型内置 tools_schema 与 prompt 注入、不同模型成功率/token 对比、错误 memory 影响分析等实验尚未形成完整结果。 |
+| 当前限制 | 未保留 `format_converter` 同名工具，当前由更细的文件生成工具组替代；B1 尚未提供独立批量任务 runner；严格意义的“中断后继续某个未完成 LLM/tool call”仍依赖当前 checkpoint/resume 链路，尚未形成完整实验报告；模型内置 tools_schema 与 prompt 注入的完整对照、不同模型成功率/token 对比、错误 memory 影响分析等实验尚未形成完整结果。 |
 
 ---
 
@@ -41,7 +41,7 @@
 | B3 说明生成与工具调用模块 | `code/b3_tool_layer.py`；`get_tools_schema()`、`execute_tool_calls()` | 读取 `configs/tools.yaml`，生成 OpenAI-style tools schema，校验 tool_calls，动态加载并执行 B2 Skill，封装 ToolMessage，记录缓存、重试、统计和 artifact 下载链接。 | tools config、toolset、AIMessage/tool_calls、B2 运行上下文。 | `tools_schema.json`、`tool_messages.json`、`tool_call_log.jsonl`、`tool_stats.json`、ToolMessage 列表。 |
 | B4 Agent LLM 决策模块 | `code/b4_local_agent_llm.py`；`generate_ai_message()`、`stream_ai_message()`、`generate_json_object()` | 读取模型配置，组装 prompt/tools schema，调用 local/fastapi/qwen_api 模型源，解析 raw output 为标准 AIMessage；不执行工具、不写记忆。 | `configs/model.yaml`、messages、tools_schema、图片输入可选、生成参数。 | `raw_model_output.json`、`ai_message.json`、`prompt_messages.json`、`llm_run_log.jsonl`、AIMessage。 |
 | B5 记忆文档存储与查找模块 | `code/b5_memory.py`；`code/b5_memory_parts/*` | 兼容课程 memory 文档读取/保存接口；当前主要维护 SQLite 会话库、轮级摘要、块级记忆、任务记忆、召回日志、向量召回和 LLM rerank。 | `configs/memory.yaml`、conversation id、当前输入、历史消息、selected memory ids、工具 trace。 | `selected_memory.json`、`layered_memory_context.json`、`workspace_memory_context.json`、SQLite 记忆记录、legacy markdown memory。 |
-| FastAPI 后端 | `backend/main.py` | 提供浏览器对话、流式回答、上传、会话列表/删除、prompt 编辑、B2/B3/B5 预览、artifact 下载、取消/恢复接口。 | HTTP 请求、上传文件、前端会话状态。 | SSE 流式事件、JSON API 响应、`outputs/backend_runs/...` 运行产物。 |
+| FastAPI 后端 | `backend/main.py` | 提供浏览器对话、流式回答、上传、会话列表/删除、prompt 编辑、B2/B3/B4/B5 验收接口、artifact 下载、取消/恢复接口。 | HTTP 请求、上传文件、前端会话状态。 | SSE 流式事件、JSON API 响应、`outputs/backend_runs/...` 运行产物。 |
 | React 前端 | `frontend/src/App.tsx`；`frontend/src/B1ModuleView.tsx` 等 | 提供主对话页面和 B1-B5 观察/演示页，展示工具过程、文件下载、历史会话、提示词面板、取消/恢复。 | 用户输入、上传文件、后端 API 响应。 | 浏览器 UI、消息列表、工具轨迹、下载卡片、模块验收页。 |
 | 模型服务 / API 代理 | `llm_backend/server/llm_fastapi_server.py`；`llm_backend/qwen_api/llm_fastapi_server.py` | 为 B4 提供 `/generate`、`/generate_stream`、`/embeddings` 等接口。当前 `configs/model.yaml` 默认走本地 Qwen API 代理。 | B4 prompt messages、生成参数、embedding 文本。 | 模型文本输出、流式 token、embedding 向量。 |
 
@@ -241,6 +241,7 @@ cd ..
 | B2 单工具 Demo | `data/tool_inputs/tool_input_calculator.json` 等 | 展示单个 Skill 的输入、输出、错误捕获和日志。 |
 | B3 tool_calls Demo | `data/messages/ai_message_with_tool_calls.json` | 展示 B3 schema 导出、tool_call 校验、B2 执行和 ToolMessage 封装。 |
 | B4 LLM Demo | `data/messages/messages_no_tool.json` + `data/messages/tools_schema_basic.json` | 展示 B4 读取 model config、注入 schema、解析 AIMessage；正式演示应使用 `prompt_json`。 |
+| B4 浏览器验收 Demo | 前端 B4“验收演示”模式 | 展示普通回复、单/多 tool_calls、多 ToolMessage、工具错误收束、流式输出、协议容错和无效消息拒绝；模型类用例调用当前模型服务，解析器类用例只回放 B4 协议。 |
 | B5 memory Demo | `memory/memory_index.json` + `data/memory_inputs/memory_save_input.json` | 展示 legacy memory 查找/保存；当前前端主要使用 SQLite 分层记忆。 |
 
 ### 6.2 运行命令
@@ -328,6 +329,7 @@ python b5_memory.py --config ../configs/memory.yaml --save_type conversation --s
 | `outputs/backend_runs/<conversation_id>/<run_id>/raw_model_output*.json` | B4 | JSON | 模型原始输出、解析候选、状态和错误信息。 |
 | `outputs/backend_runs/<conversation_id>/<run_id>/ai_message*.json` | B4 | JSON | B4 标准化后的 AIMessage。 |
 | `outputs/backend_runs/<conversation_id>/<run_id>/prompt_messages*.json` | B4 | JSON | 实际发送给模型的 prompt messages。 |
+| `outputs/backend_runs/b4_demo/<run_id>/b4_protocol_test_result.json` | B4 验收页 | JSON | B4 验收用例的输入、raw output、标准 AIMessage、流式分片、错误和通过/失败汇总。 |
 | `outputs/backend_runs/<conversation_id>/<run_id>/selected_memory.json` | B5 legacy | JSON | B1 初始阶段加载的全局/指定 memory 文档记录。 |
 | `outputs/backend_runs/<conversation_id>/<run_id>/workspace_memory_context.json` | B5 -> B1 | JSON | B5 为 B1 workspace 准备的近期原文、任务记忆、召回块、召回轮次和 source evidence。 |
 | `outputs/backend_runs/<conversation_id>/<run_id>/layered_memory_context.json` | B5 retrieval | JSON | B5 分层召回的完整调试产物，包括候选、得分、向量状态、rerank 状态。 |
@@ -369,7 +371,7 @@ python b5_memory.py --config ../configs/memory.yaml --save_type conversation --s
 - `configs/tools.yaml` 是 B2/B3 的协作边界。新增工具需要同时保证 Python 函数、schema 描述、参数、返回说明和样例输入一致。
 - `configs/model.yaml` 是 B4 与模型服务的协作边界。切换 `qwen_api`、`fastapi` 或 `local` 不应影响 B1/B2/B3/B5 的接口。
 - `configs/memory.yaml` 是 B5 的协作边界。legacy memory 文档用于基础验收兼容，SQLite 分层记忆是当前主要实现；摘要只用于定位，精确事实以原始消息和工具步骤为准。
-- 前端 B1-B5 模块页用于验收观察：B2/B3/B5 已接后端真实预览接口；B4 当前处于前端展示稿阶段，明确标注未调用模型，后续可接 B4 inspection API。
+- 前端 B1-B5 模块页用于验收观察：B4 观察模式读取当前会话的真实模型调用产物，区分 Agent 主链路和记忆辅助调用；验收演示模式通过独立 API 运行模型协议用例或解析器回放，不执行 B2/B3 工具，不写 B5 记忆。
 - 团队同步文档为 `log.md`，个人开发记录为 `lisn.md`。开发时应先看同步日志，避免重复实现或误删队友代码。
 - 旧 README 已保留为 `README_old.md`，新的团队 README 使用 `README.md`。历史说明 `README_712.md` 和 `五模块验收辅助文档.md` 作为补充材料，正式入口以本文件为准。
 
@@ -383,7 +385,7 @@ python b5_memory.py --config ../configs/memory.yaml --save_type conversation --s
 | `data/runtime_input_5.json` 是旧样例 | 仍请求 `format_converter Skill`，与当前 `configs/tools.yaml` 不一致。 | 更新该样例为 `json_file_writer` 或 `markdown_file_writer` 任务，或标记为历史样例。 |
 | B1 批量任务 runner 未实现 | 当前实现重点在前端多轮会话和单任务 Agent loop。 | 增加批量 runtime JSONL/JSON 输入，循环调用 B1，并汇总每个任务的 trace、成功率和工具统计。 |
 | 严格断点续跑能力仍需实测收口 | 现有链路有取消、checkpoint、resume_stream 和历史恢复，但不是完整的实验报告式“未完成 LLM/tool call 后续执行”证明。 | 增加可控中断样例和恢复报告，明确从哪个 stage、哪条 tool_call 或哪次 LLM 调用继续。 |
-| B4 前端验收页尚未连接后端 | 当前 `frontend/src/B4ModuleView.tsx` 处于前端展示稿阶段，只展示静态样例和前端可观察信号，不调用模型。 | 新增 B4 inspection/preview API，读取真实 B4 产物或在用户允许时触发 B4 预览。 |
+| B4 模型类验收结果受当前模型服务影响 | 验收页会真实调用 `configs/model.yaml` 当前配置的模型源；模型输出具有波动，代理不可用时模型类用例会失败，解析器回放不受影响。 | 验收前固定模型版本和配置，保留 `b4_protocol_test_result.json`；后续补充多模型批量统计。 |
 | 模型内置 tools_schema 与 prompt 注入对比未完成 | 当前主要使用 `prompt_json` 注入 schema，尚无对照实验。 | 构造固定样例集，对比不同 schema 注入方式的 tool_call 合法率、成功率和 token 使用。 |
 | 不同模型成功率/token 统计未完成 | `model.yaml` 支持切换模型源，但没有自动批量统计。 | 增加批量评测脚本，收集每个模型的工具调用成功率、失败类型、平均耗时和 token 统计。 |
 | B5 指定 memory 文档更新的冲突合并未完整实现 | 当前主要使用 SQLite 分层记忆和任务记忆，legacy markdown memory 更新较基础。 | 为 legacy memory 或 SQLite task memory 增加显式 duplicate/supplement/conflict 标注和人工确认流程。 |

@@ -135,6 +135,17 @@ def _validate_generation_options(options: Any) -> dict[str, Any]:
     return result
 
 
+def _validate_response_format(value: Any) -> dict[str, str] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != {"type"}:
+        raise ValueError("response_format must contain only type")
+    response_type = value.get("type")
+    if response_type not in {"text", "json_object"}:
+        raise ValueError("response_format.type must be text or json_object")
+    return {"type": response_type}
+
+
 def _merge_generation_options(base_options: Any, override_options: Any) -> dict[str, Any]:
     if base_options is None:
         base_options = {}
@@ -288,8 +299,16 @@ def _make_chat_model(model: str | None, options: dict[str, Any], streaming: bool
 
 
 class QwenApiServer:
-    def generate(self, messages: list[dict[str, Any]], options: dict[str, Any], model: str | None = None) -> dict[str, Any]:
+    def generate(
+        self,
+        messages: list[dict[str, Any]],
+        options: dict[str, Any],
+        model: str | None = None,
+        response_format: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
         llm = _make_chat_model(model, options, streaming=False)
+        if response_format is not None:
+            llm = llm.bind(response_format=response_format)
         response = llm.invoke(_langchain_messages(messages))
         return {
             "raw_text": _content_to_text(getattr(response, "content", "")),
@@ -301,8 +320,11 @@ class QwenApiServer:
         messages: list[dict[str, Any]],
         options: dict[str, Any],
         model: str | None = None,
+        response_format: dict[str, str] | None = None,
     ) -> Iterator[str]:
         llm = _make_chat_model(model, options, streaming=True)
+        if response_format is not None:
+            llm = llm.bind(response_format=response_format)
         for chunk in llm.stream(_langchain_messages(messages)):
             text = _content_to_text(getattr(chunk, "content", ""))
             if text:
@@ -427,8 +449,14 @@ def generate(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     try:
         messages = _validate_messages(payload.get("messages"))
         options = _validate_generation_options(payload.get("generation"))
+        response_format = _validate_response_format(payload.get("response_format"))
         model = payload.get("model")
-        return MODEL_SERVER.generate(messages, options, model if isinstance(model, str) and model.strip() else None)
+        return MODEL_SERVER.generate(
+            messages,
+            options,
+            model if isinstance(model, str) and model.strip() else None,
+            response_format,
+        )
     except ValueError as exc:
         raise _api_error(400, str(exc), "invalid_request_error") from exc
     except Exception as exc:
@@ -465,8 +493,14 @@ def generate_stream(payload: dict[str, Any], request: Request) -> StreamingRespo
     try:
         messages = _validate_messages(payload.get("messages"))
         options = _validate_generation_options(payload.get("generation"))
+        response_format = _validate_response_format(payload.get("response_format"))
         model = payload.get("model")
-        stream = MODEL_SERVER.generate_stream(messages, options, model if isinstance(model, str) and model.strip() else None)
+        stream = MODEL_SERVER.generate_stream(
+            messages,
+            options,
+            model if isinstance(model, str) and model.strip() else None,
+            response_format,
+        )
         return StreamingResponse(stream, media_type="text/plain; charset=utf-8")
     except ValueError as exc:
         raise _api_error(400, str(exc), "invalid_request_error") from exc

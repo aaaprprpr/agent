@@ -14,6 +14,7 @@ B4_TEST_CASES = [
         "id": "content_response",
         "title": "普通内容回复",
         "kind": "model",
+        "level": "基础要求",
         "description": "验证模型原始输出能够被解析为只包含 content 的标准 AIMessage。",
         "expected": "content 非空，tool_calls 为空，control.action=finish",
     },
@@ -21,13 +22,15 @@ B4_TEST_CASES = [
         "id": "single_tool_call",
         "title": "单工具调用",
         "kind": "model",
+        "level": "基础要求",
         "description": "向 B4 传入 calculator schema，验证模型生成一个标准 tool_call。",
-        "expected": "至少生成一个 calculator tool_call",
+        "expected": "生成包含 id、name、args 的 calculator tool_call，并进入 call_tools",
     },
     {
         "id": "multiple_tool_calls",
         "title": "单轮多个工具调用",
         "kind": "model",
+        "level": "进阶要求",
         "description": "同时提供 calculator 与 current_time schema，验证单个 AIMessage 携带多个 tool_calls。",
         "expected": "同一 AIMessage 同时包含 calculator 和 current_time",
     },
@@ -35,20 +38,47 @@ B4_TEST_CASES = [
         "id": "multiple_tool_messages",
         "title": "接收多个 ToolMessage",
         "kind": "model",
+        "level": "进阶要求",
         "description": "一次传入两个已完成的 ToolMessage，验证 B4 生成基于全部结果的最终回复。",
         "expected": "content 非空，tool_calls 为空，control.action=finish",
+    },
+    {
+        "id": "error_tool_message",
+        "title": "工具错误后收束",
+        "kind": "model",
+        "level": "基础要求",
+        "description": "传入执行失败的 ToolMessage，验证 B4 能基于错误证据生成最终说明。",
+        "expected": "不重复调用工具，生成包含错误说明的最终 content",
     },
     {
         "id": "stream_response",
         "title": "流式输出与最终解析",
         "kind": "stream",
+        "level": "工程增强",
         "description": "记录流式 delta，并在流结束后验证完整 AIMessage。",
         "expected": "至少产生一个 delta，最终 AIMessage 协议有效",
+    },
+    {
+        "id": "content_with_tool_call",
+        "title": "说明与工具调用共存",
+        "kind": "parser",
+        "level": "工程增强",
+        "description": "回放同时包含简短 content 和 tool_calls 的输出，验证当前协议允许二者共存。",
+        "expected": "保留 content 与 tool_call，并规范化为 call_tools",
+    },
+    {
+        "id": "normalize_parameters_alias",
+        "title": "工具参数别名归一化",
+        "kind": "parser",
+        "level": "工程增强",
+        "description": "回放模型使用 parameters 表示工具参数的输出，验证 B4 将其归一化为标准 args。",
+        "expected": "calculator 的 parameters.expression 被保留到 args.expression",
     },
     {
         "id": "recover_trailing_markers",
         "title": "可恢复格式偏差",
         "kind": "parser",
+        "level": "工程增强",
         "description": "回放带多余 Markdown 标记的模型输出，验证现有容错解析路径。",
         "expected": "解析成功并生成标准 content AIMessage",
     },
@@ -56,6 +86,7 @@ B4_TEST_CASES = [
         "id": "reject_empty_message",
         "title": "拒绝无效 AIMessage",
         "kind": "parser",
+        "level": "基础要求",
         "description": "输入 content 与 tool_calls 都为空的对象，验证协议校验明确拒绝无效消息。",
         "expected": "解析失败，返回 AIMessage must contain content or tool_calls",
     },
@@ -81,6 +112,7 @@ def _model_info() -> dict[str, Any]:
     source = runtime.get("llm_source", "local") if isinstance(runtime, dict) else "local"
     source_config = config.get("qwen_api" if source == "qwen_api" else "fastapi", {}) if isinstance(config, dict) else {}
     model_config = config.get("model", {}) if isinstance(config, dict) else {}
+    tool_calling = config.get("tool_calling", {}) if isinstance(config, dict) else {}
     if source == "local":
         model = model_config.get("model_name_or_path") if isinstance(model_config, dict) else None
         endpoint = None
@@ -92,6 +124,9 @@ def _model_info() -> dict[str, Any]:
         "model": model,
         "endpoint": endpoint,
         "mode": runtime.get("default_mode", "prompt_json") if isinstance(runtime, dict) else "prompt_json",
+        "tool_binding": tool_calling.get("mode", "prompt_json") if isinstance(tool_calling, dict) else "prompt_json",
+        "config_path": MODEL_CONFIG.resolve().relative_to(MODEL_CONFIG.parents[1].resolve()).as_posix(),
+        "available_sources": ["local", "fastapi", "qwen_api"],
     }
 
 
@@ -101,6 +136,14 @@ def _call_stage(path: Path) -> str:
         if stage in stem:
             return stage
     return stem
+
+
+def _call_scope(path: Path) -> str:
+    if "memory_reflection" in path.parts or path.name.startswith("b5_memory_"):
+        return "memory_support"
+    if "llm_calls" in path.parts:
+        return "agent_runtime"
+    return "standalone"
 
 
 def _call_summary(path: Path) -> dict[str, Any]:
@@ -113,6 +156,7 @@ def _call_summary(path: Path) -> dict[str, Any]:
     return {
         "id": relative,
         "stage": _call_stage(path),
+        "scope": _call_scope(path),
         "kind": kind,
         "status": record.get("status", "unknown") if isinstance(record, dict) else "unknown",
         "source": record.get("llm_source", record.get("backend", "unknown")) if isinstance(record, dict) else "unknown",
@@ -133,9 +177,15 @@ def list_b4_calls(conversation_id: str | None, limit: int = 60) -> dict[str, Any
         root = OUTPUT_ROOT / safe_id
     files = list(root.rglob("*_raw_model_output.json")) if root.exists() else []
     files = [path for path in files if "b4_demo" not in path.parts]
-    files.sort(key=lambda item: item.stat().st_mtime, reverse=True)
+    dated_files: list[tuple[float, Path]] = []
+    for path in files:
+        try:
+            dated_files.append((path.stat().st_mtime, path))
+        except OSError:
+            continue
+    dated_files.sort(key=lambda item: item[0], reverse=True)
     calls = []
-    for path in files[: max(1, min(limit, 200))]:
+    for _, path in dated_files[: max(1, min(limit, 200))]:
         try:
             calls.append(_call_summary(path))
         except (OSError, ValueError, json.JSONDecodeError):
@@ -191,14 +241,21 @@ def _tool_schemas(names: set[str]) -> list[dict]:
     ]
 
 
-def _skill_result(name: str, input_data: dict, output: dict) -> str:
+def _skill_result(
+    name: str,
+    input_data: dict,
+    output: dict | None,
+    *,
+    status: str = "success",
+    error: dict | None = None,
+) -> str:
     return json.dumps(
         {
             "skill_name": name,
-            "status": "success",
+            "status": status,
             "input": input_data,
             "output": output,
-            "error": None,
+            "error": error,
             "latency_ms": 1.0,
         },
         ensure_ascii=False,
@@ -207,7 +264,16 @@ def _skill_result(name: str, input_data: dict, output: dict) -> str:
 
 def _model_case(case_id: str) -> tuple[list[dict], list[dict], bool]:
     if case_id == "content_response":
-        return ([{"role": "user", "content": "请用一句简短中文说明 B4 的职责，不要调用工具。"}], [], False)
+        return (
+            [
+                {
+                    "role": "user",
+                    "content": "在本 Agent 系统中，B4 只负责模型通信、tools_schema 注入和 AIMessage 解析，不执行工具。请用一句简短中文准确复述，不要调用工具。",
+                }
+            ],
+            [],
+            False,
+        )
     if case_id == "single_tool_call":
         return ([{"role": "user", "content": "计算 (18 + 24) * 3，只请求调用 calculator，不要直接计算。"}], _tool_schemas({"calculator"}), False)
     if case_id == "multiple_tool_calls":
@@ -247,6 +313,29 @@ def _model_case(case_id: str) -> tuple[list[dict], list[dict], bool]:
             _tool_schemas({"calculator", "current_time"}),
             False,
         )
+    if case_id == "error_tool_message":
+        tool_call = {"id": "call_error_demo", "name": "calculator", "args": {"expression": "10 / 0"}}
+        return (
+            [
+                {"role": "user", "content": "计算 10 / 0；如果工具报错，请直接说明原因，不要再次调用工具。"},
+                {"role": "assistant", "content": "", "tool_calls": [tool_call]},
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_error_demo",
+                    "name": "calculator",
+                    "status": "error",
+                    "content": _skill_result(
+                        "calculator",
+                        {"expression": "10 / 0"},
+                        None,
+                        status="error",
+                        error={"type": "ZeroDivisionError", "message": "division by zero"},
+                    ),
+                },
+            ],
+            _tool_schemas({"calculator"}),
+            False,
+        )
     if case_id == "stream_response":
         return ([{"role": "user", "content": "请用一句简短中文说明流式输出的作用，不要调用工具。"}], [], False)
     raise ValueError(f"unsupported model test case: {case_id}")
@@ -259,28 +348,42 @@ def _evaluate(case_id: str, result: dict[str, Any], deltas: list[str]) -> tuple[
     content = ai_message.get("content")
     tool_calls = ai_message.get("tool_calls")
     control = ai_message.get("control") if isinstance(ai_message.get("control"), dict) else {}
+    result_ok = result.get("status") == "success"
     names = {call.get("name") for call in tool_calls if isinstance(call, dict)} if isinstance(tool_calls, list) else set()
     calls_by_name = {
         str(call.get("name")): call
         for call in tool_calls
         if isinstance(call, dict) and isinstance(call.get("name"), str)
     } if isinstance(tool_calls, list) else {}
-    if case_id in {"content_response", "multiple_tool_messages"}:
-        passed = isinstance(content, str) and bool(content.strip()) and tool_calls == [] and control.get("action") == "finish"
+    if case_id == "content_response":
+        semantic_ok = (
+            isinstance(content, str)
+            and ("模型" in content or "LLM" in content)
+            and ("AIMessage" in content or "AI Message" in content or "AI 消息" in content)
+        )
+        passed = result_ok and semantic_ok and tool_calls == [] and control.get("action") == "finish"
+        return passed, "已生成职责准确的最终 content" if passed else "最终 content 的协议或 B4 职责表述不符合预期"
+    if case_id in {"multiple_tool_messages", "error_tool_message"}:
+        passed = result_ok and isinstance(content, str) and bool(content.strip()) and tool_calls == [] and control.get("action") == "finish"
         return passed, "已生成最终 content" if passed else "未形成最终 content AIMessage"
     if case_id == "single_tool_call":
         calculator = calls_by_name.get("calculator", {})
         args = calculator.get("args") if isinstance(calculator, dict) else None
-        passed = isinstance(args, dict) and isinstance(args.get("expression"), str) and bool(args["expression"].strip())
-        return passed, "已生成带完整参数的 calculator tool_call" if passed else "calculator tool_call 缺少标准 args.expression"
+        has_id = isinstance(calculator.get("id"), str) and bool(calculator["id"].strip()) if isinstance(calculator, dict) else False
+        has_expression = isinstance(args, dict) and isinstance(args.get("expression"), str) and bool(args["expression"].strip())
+        passed = result_ok and has_id and has_expression and control.get("action") == "call_tools"
+        return passed, "已生成结构完整的 calculator tool_call" if passed else "calculator tool_call 的 id、args.expression 或 control.action 不完整"
     if case_id == "multiple_tool_calls":
         calculator = calls_by_name.get("calculator", {})
         calculator_args = calculator.get("args") if isinstance(calculator, dict) else None
         has_expression = isinstance(calculator_args, dict) and isinstance(calculator_args.get("expression"), str) and bool(calculator_args["expression"].strip())
-        passed = {"calculator", "current_time"}.issubset(names) and has_expression
-        return passed, "同轮生成两个带有效参数的独立 tool_calls" if passed else f"实际工具：{', '.join(sorted(str(name) for name in names)) or '无'}；calculator 参数有效={has_expression}"
+        current_time = calls_by_name.get("current_time", {})
+        current_time_args = current_time.get("args") if isinstance(current_time, dict) else None
+        has_timezone = isinstance(current_time_args, dict) and isinstance(current_time_args.get("timezone"), str) and bool(current_time_args["timezone"].strip())
+        passed = result_ok and {"calculator", "current_time"}.issubset(names) and has_expression and has_timezone and control.get("action") == "call_tools"
+        return passed, "同轮生成两个带有效参数的独立 tool_calls" if passed else f"实际工具：{', '.join(sorted(str(name) for name in names)) or '无'}；calculator 参数有效={has_expression}；current_time 参数有效={has_timezone}"
     if case_id == "stream_response":
-        passed = bool(deltas) and isinstance(content, str) and bool(content.strip())
+        passed = result_ok and bool(deltas) and isinstance(content, str) and bool(content.strip()) and control.get("action") == "finish"
         return passed, f"收到 {len(deltas)} 个 delta" if passed else "未同时获得 delta 与最终 AIMessage"
     return False, "未知测试类型"
 
@@ -288,11 +391,34 @@ def _evaluate(case_id: str, result: dict[str, Any], deltas: list[str]) -> tuple[
 def _run_parser_case(case_id: str) -> dict[str, Any]:
     from b4_local_agent_llm import parse_model_output
 
-    raw_text = (
-        '{"content":"协议修复成功。","tool_calls":[]}```'
-        if case_id == "recover_trailing_markers"
-        else '{"content":"","tool_calls":[]}'
-    )
+    raw_inputs = {
+        "content_with_tool_call": json.dumps(
+            {
+                "content": "我会先调用计算器核对结果。",
+                "tool_calls": [
+                    {"id": "call_parser_demo", "name": "calculator", "args": {"expression": "2 + 3"}}
+                ],
+                "control": {"state": "in_progress", "action": "call_tools", "reason": "需要准确计算"},
+            },
+            ensure_ascii=False,
+        ),
+        "normalize_parameters_alias": json.dumps(
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_parameters_demo",
+                        "name": "calculator",
+                        "parameters": {"expression": "8 * 9"},
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        "recover_trailing_markers": '{"content":"协议修复成功。","tool_calls":[]}```',
+        "reject_empty_message": '{"content":"","tool_calls":[]}',
+    }
+    raw_text = raw_inputs[case_id]
     started = time.perf_counter()
     try:
         parsed = parse_model_output(raw_text)
@@ -301,7 +427,27 @@ def _run_parser_case(case_id: str) -> dict[str, Any]:
         parsed = None
         error = {"type": type(exc).__name__, "message": str(exc)}
     elapsed_ms = round((time.perf_counter() - started) * 1000, 3)
-    if case_id == "recover_trailing_markers":
+    if case_id == "content_with_tool_call":
+        ai_message = parsed.get("ai_message") if isinstance(parsed, dict) else None
+        tool_calls = ai_message.get("tool_calls") if isinstance(ai_message, dict) else None
+        control = ai_message.get("control") if isinstance(ai_message, dict) else None
+        passed = (
+            isinstance(ai_message, dict)
+            and bool(str(ai_message.get("content", "")).strip())
+            and isinstance(tool_calls, list)
+            and len(tool_calls) == 1
+            and isinstance(control, dict)
+            and control.get("action") == "call_tools"
+        )
+        verdict = "content 与 tool_call 均已保留" if passed else "共存协议解析失败"
+    elif case_id == "normalize_parameters_alias":
+        ai_message = parsed.get("ai_message") if isinstance(parsed, dict) else None
+        tool_calls = ai_message.get("tool_calls") if isinstance(ai_message, dict) else None
+        first_call = tool_calls[0] if isinstance(tool_calls, list) and tool_calls else None
+        args = first_call.get("args") if isinstance(first_call, dict) else None
+        passed = isinstance(args, dict) and args.get("expression") == "8 * 9"
+        verdict = "parameters 已归一化为标准 args" if passed else "工具参数别名归一化失败"
+    elif case_id == "recover_trailing_markers":
         passed = isinstance(parsed, dict) and isinstance(parsed.get("ai_message"), dict)
         verdict = "容错解析成功" if passed else "容错解析失败"
     else:
@@ -386,7 +532,12 @@ def run_b4_protocol_tests(case_id: str) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     results = []
     for item in ordered:
-        if item in {"recover_trailing_markers", "reject_empty_message"}:
+        if item in {
+            "content_with_tool_call",
+            "normalize_parameters_alias",
+            "recover_trailing_markers",
+            "reject_empty_message",
+        }:
             result = _run_parser_case(item)
         else:
             try:

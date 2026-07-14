@@ -142,11 +142,15 @@ export type B4ModelInfo = {
   model?: string | null
   endpoint?: string | null
   mode?: string | null
+  tool_binding?: string | null
+  config_path?: string | null
+  available_sources?: string[]
 }
 
 export type B4CallSummary = {
   id: string
   stage: string
+  scope: string
   kind: string
   status: string
   source: string
@@ -178,6 +182,7 @@ export type B4ProtocolCase = {
   id: string
   title: string
   kind: string
+  level: string
   description: string
   expected: string
 }

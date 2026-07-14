@@ -88,6 +88,7 @@ def _fastapi_config(config: dict, source: str | None = None) -> dict:
     if timeout <= 0:
         raise ValueError(f"{config_key}.timeout_seconds must be positive")
     return {
+        "source": source,
         "base_url": base_url.rstrip("/"),
         "generate_path": generate_path,
         "stream_path": stream_path,
@@ -274,6 +275,13 @@ def _parse_content_fragment(raw_text: str, original_error: json.JSONDecodeError)
     return {"content": content, "tool_calls": []}
 
 
+def _parse_plain_text_output(raw_text: str, original_error: json.JSONDecodeError) -> dict:
+    text = raw_text.strip()
+    if not text or text[0] in "[{" or text.startswith("```"):
+        raise original_error
+    return {"content": text, "tool_calls": []}
+
+
 def _parse_malformed_tool_call_fragment(raw_text: str, original_error: json.JSONDecodeError) -> dict:
     marker = json.dumps("tool_calls", ensure_ascii=False)
     marker_index = raw_text.find(marker)
@@ -407,12 +415,19 @@ def _candidate_to_message(candidate: dict, has_tool_messages: bool = False) -> t
     if (not raw_tool_calls) and isinstance(raw_control, dict) and isinstance(raw_control.get("tool_calls"), list):
         raw_tool_calls = raw_control.get("tool_calls", [])
     if isinstance(raw_tool_calls, list):
-        raw_tool_calls = [
-            {**call, "args": call.get("arguments")}
-            if isinstance(call, dict) and "args" not in call and "arguments" in call
-            else call
-            for call in raw_tool_calls
-        ]
+        normalized_calls = []
+        for call in raw_tool_calls:
+            if not isinstance(call, dict) or "args" in call:
+                normalized_calls.append(call)
+                continue
+            if "arguments" in call:
+                normalized_calls.append({**call, "args": call.get("arguments")})
+                continue
+            if "parameters" in call:
+                normalized_calls.append({**call, "args": call.get("parameters")})
+                continue
+            normalized_calls.append(call)
+        raw_tool_calls = normalized_calls
     content = candidate.get("content", "")
     if content is None:
         content = ""
@@ -473,7 +488,10 @@ def _parse_model_output(raw_text: str, has_tool_messages: bool = False) -> tuple
                 try:
                     candidate = _parse_malformed_tool_call_fragment(raw_text, exc)
                 except Exception:
-                    candidate = _parse_content_fragment(raw_text, exc)
+                    try:
+                        candidate = _parse_content_fragment(raw_text, exc)
+                    except Exception:
+                        candidate = _parse_plain_text_output(raw_text, exc)
     return _candidate_to_message(candidate, has_tool_messages)
 
 
@@ -745,6 +763,8 @@ def _fastapi_prompt_json_generate(
         "messages": prompt_messages,
         "generation": _generation_options(config),
     }
+    if api_config["source"] == "qwen_api":
+        payload["response_format"] = {"type": "json_object"}
     if isinstance(api_config["model"], str) and api_config["model"].strip():
         payload["model"] = api_config["model"]
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -805,6 +825,8 @@ def _fastapi_prompt_json_stream(
         "messages": prompt_messages,
         "generation": _generation_options(config),
     }
+    if api_config["source"] == "qwen_api":
+        payload["response_format"] = {"type": "json_object"}
     if isinstance(api_config["model"], str) and api_config["model"].strip():
         payload["model"] = api_config["model"]
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -1033,6 +1055,7 @@ def stream_ai_message(
     parsed_candidate = None
     status = "success"
     error = None
+    emitted_chars = 0
 
     if mode == "mock":
         ai_message = _mock_generate(messages)
@@ -1048,7 +1071,6 @@ def stream_ai_message(
         prompt_messages = _prompt_messages_for_model(messages, tools_schema, prompt_ready)
         if source in {"fastapi", "qwen_api"}:
             raw_parts = []
-            emitted_chars = 0
             for chunk in _fastapi_prompt_json_stream(config_path, config, messages, tools_schema, prompt_ready):
                 raw_parts.append(chunk)
                 content = _streaming_content_prefix("".join(raw_parts))
@@ -1067,7 +1089,7 @@ def stream_ai_message(
                 raw_text,
                 any(message.get("role") == "tool" for message in messages),
             )
-            if source == "local" and ai_message["content"]:
+            if ai_message["content"] and (source == "local" or emitted_chars == 0):
                 yield {"type": "delta", "text": ai_message["content"]}
         except Exception as exc:
             ai_message = make_ai_message(_parse_error_fallback_content(raw_text), [])
