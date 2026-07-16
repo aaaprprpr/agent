@@ -1,0 +1,69 @@
+  b1本节实训基础要求（可以在当前代码的引导下完全实现）：
+支持接收一个用户问题
+调用B5获取全局memory与用户所选memory
+将system prompt、memory context、用户输入构造成初始messages，将后续生成的AIMessage和ToolMessage依次追加到messages
+调用B3获取当前tools_schema，传给B4完成模型与工具绑定
+调用B4，输入messages，获得AIMessage，判断 AIMessage 是否包含tool_calls
+支持调用B3执行工具，支持至少一次“LLM → Tool → LLM”闭环，支持 max_turns，避免工具调用死循环
+能够说明SystemMessage、HumanMessage、AIMessage、ToolMessage在Agent运行中的作用
+  本节实训进阶要求（需要自己学习并修改代码实现）：
+支持多轮用户输入，实现多次 tool_calls 循环
+支持断点续跑，能实现状态恢复，在中断后继续执行后续LLM或工具调用。
+支持批量任务运行，能读取一个批量任务输入文件，执行多个Agent任务
+将历史消息压缩为摘要后继续对话
+支持一次对话里，不同system prompt模板切换或添加*
+
+  b2本节实训基础要求（可以在当前代码的引导下完全实现）：
+至少实现5个基础Skill，推荐：
+calculator：计算数学表达式		file_reader：读取本地txt / md文件
+local_file_search：在本地目录中搜索相关文件，返回文件路径、命中片段和匹配分数
+table_analyzer：读取本地 CSV / TSV 文件，输出表格基本信息和统计摘要
+format_converter：将文本转换为markdown或json，并生成文件
+每个Skill必须有明确输入参数、返回值、工具功能描述，输出必须可以 JSON 序列化
+每个Skill必须支持独立命令行测试，正常与异常输入样例至少各提供一个
+每个Skill必须被B3正确加载、执行，写入基础运行日志
+能够说明Skill和Tool Schema的区别
+  本节实训进阶要求（需要自己学习并修改代码实现）：
+增强现有Skill，例如增强local_file_search的本地检索能力
+支持更进阶Skill，例如代码执行（但必须限制沙箱）
+支持复合Skill，例如“读取文件后转换格式”
+支持更完善的错误分类，支持复杂的异常类型和错误码
+对高耗时或风险较高的Skill增加限制
+
+  b3本节实训基础要求（可以在当前代码的引导下完全实现）：
+支持读取 `tools.yaml`
+根据toolset和tools.yaml，加载可用工具，并生成 tools_schema
+tools_schema至少包含工具的名称、描述、输入输出参数
+支持接收B4 LLM生成的tool_calls，并检验工具名是否存在，参数是否完整，然后调用B2对应的Skill
+支持用json格式保存tools_schema和tool_call运行记录
+  本节实训进阶要求（需要自己学习并修改代码实现）：
+自动从Python函数文件生成tools_schema
+支持对可恢复错误进行有限重试
+支持tool_call结果缓存，对相同name和args的工具调用复用历史结果
+统计工具调用次数、失败率、平均耗时，需自行构造批量tool_call样例进行统计
+比较不同工具schema描述对模型工具调用准确率的影响，需自行构造批量tool_call样例进行统计*
+
+  b4本节实训基础要求（可以在当前代码的引导下完全实现）：
+支持读取model.yaml，加载本地模型配置
+支持在一次任务开始时接收 tools_schema，完成工具绑定
+支持接收messages，将模型原始输出解析为包含content或tool_calls的标准AIMessage
+以JSON格式记录模型的原始输出与AIMessage
+  本节实训进阶要求（需要自己学习并修改代码实现）：
+支持单轮AIMessage生成多个tool_calls与单轮接收多个ToolMessage
+支持Plan-and-Execute*
+支持根据任务需求，进行不同本地模型切换
+支持模型内置tools_schema传参方法，并与prompt注入tools_schema的方式进行效果对比。
+比较不同系列模型的工具调用成功率与token使用量，需自行构造批量样例进行统计
+
+  b5本节实训基础要求（可以在当前代码的引导下完全实现）：
+支持读取本地memory配置文件，读取全局记忆文档，根据用户指定的id的读取文档
+支持将所选记忆返回给B1，并限制最大长度，并生成记录文件selected_memory.json
+更新 memory_index.json,记录memory_id、类型、标题、路径、创建时间等元信息
+生成记录当前对话的messages、trace、final_answer的记忆文档
+记忆文档分为全局与对话两种类型保存
+  本节实训进阶要求（需要自己学习并修改代码实现）：
+支持按关键词检索排序，取返回最相关的前k个memory文档
+优化对memory文档的长度管理，如自动将较长messages/answer压缩为总结摘要*
+支持对指定memory文档进行更新，并在更新过程中对比新旧文档内容，对重复、补充或冲突信息进行合并、修正或冲突管理。
+支持向量检索，返回相似度最高的前k个memory文档
+分析错误memory对最终回答的影响
