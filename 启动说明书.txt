@@ -1,9 +1,0 @@
-
-用服务器fastapi的时候去config，model.yaml里面调source
-一键启动
-
-python start_all.py
-
-
-【腾讯文档】实训文档
-https://docs.qq.com/doc/DWVhIbEFUWXFpSXhH?scene=0f28ecddbb067f56a63a50a2Ff6lw1
