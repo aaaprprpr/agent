@@ -16,3 +16,4 @@ outputs/full_demo
 data/uploads/
 checkpoints
 prompts/conversation_prompts.jsonconfigs/model.yaml
+agent.zip

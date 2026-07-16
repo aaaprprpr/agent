@@ -18,7 +18,7 @@
 |   组长   |      王玺尊      |   20236481   | 模块B4、B5（Agent LLM决策模块、记忆文档存储与查找模块） |   [https://github.com/aaaprprpr/agent]   |
 | **组员** | **郭嘉（本人）** | **20236529** |          **模块B1（Agent运行与消息管理模块）**          | **[https://github.com/aaaprprpr/agent]** |
 |   组员   |      刘锐凌      |   20236543   |            模块B3（说明生成与工具调用模块）             |   [https://github.com/aaaprprpr/agent]   |
-|   组员   |       徐赫       |   202x...    |               模块B2（Skill工具函数模块）               |   [https://github.com/aaaprprpr/agent]   |
+|   组员   |       徐赫       |   20236513    |               模块B2（Skill工具函数模块）               |   [https://github.com/aaaprprpr/agent]   |
 ---
 
 ## 二、 整体系统架构与最终成果展示
