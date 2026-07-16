@@ -1,3 +1,4 @@
+# 测试千问api能不能连上
 import json
 import urllib.error
 import urllib.request
