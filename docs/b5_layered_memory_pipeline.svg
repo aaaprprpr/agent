@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000" role="img" aria-labelledby="title desc">
+  <title id="title">B5 分层记忆、混合召回与来源回查</title>
+  <desc id="desc">展示原始事实保存、轮反思、定位信息生成、混合候选评分、向量召回、LLM 重排、来源回查和预算化上下文输出。</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#fbf9ff"/><stop offset="1" stop-color="#f6fbff"/></linearGradient>
+    <linearGradient id="purple" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#8b5cf6"/><stop offset="1" stop-color="#5b21b6"/></linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#312e81" flood-opacity=".13"/></filter>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto"><path d="M0 0L12 6L0 12Z" fill="#3b3b72"/></marker>
+    <style>
+      .t{font-family:'Microsoft YaHei','Noto Sans CJK SC',sans-serif;fill:#1f2451}.h{font-weight:700}.muted{fill:#616681}.white{fill:#fff}.box{fill:#fff;stroke:#dedcf0;stroke-width:2}.fact{fill:#f9f7ff;stroke:#7657cc;stroke-width:2}.locator{fill:#fff;stroke:#8b5cf6;stroke-width:2}.retrieval{fill:#f7fbff;stroke:#3977b8;stroke-width:2}.small{font-size:19px}.body{font-size:22px}.label{font-size:19px;font-weight:700;letter-spacing:.06em}.mono{font-family:Consolas,'SFMono-Regular',monospace}
+    </style>
+  </defs>
+  <rect width="1600" height="1000" fill="url(#bg)"/>
+  <text class="t h" x="70" y="76" font-size="43">B5 分层记忆、混合召回与来源回查</text>
+  <text class="t muted" x="70" y="114" font-size="22">设计原则：原始消息与工具步骤是事实；摘要、任务与记忆块只负责定位和筛选</text>
+  <rect x="1245" y="43" width="285" height="78" rx="18" fill="url(#purple)" filter="url(#shadow)"/>
+  <text class="t h white" x="1387" y="77" font-size="22" text-anchor="middle">负责人：王玺尊</text>
+  <text class="t white" x="1387" y="103" font-size="18" text-anchor="middle">code/b5_memory_parts/</text>
+
+  <text class="t label" x="70" y="172">A. 事实层：先持久化，再增强</text>
+  <g filter="url(#shadow)"><rect class="fact" x="70" y="195" width="555" height="215" rx="24"/></g>
+  <text class="t h" x="105" y="238" font-size="27">SQLite 原始事实</text>
+  <rect class="box" x="105" y="265" width="145" height="58" rx="16"/><text class="t h small mono" x="177" y="301" text-anchor="middle">messages</text>
+  <rect class="box" x="270" y="265" width="145" height="58" rx="16"/><text class="t h small mono" x="342" y="301" text-anchor="middle">tool_steps</text>
+  <rect class="box" x="435" y="265" width="145" height="58" rx="16"/><text class="t h small mono" x="507" y="301" text-anchor="middle">turns</text>
+  <text class="t small" x="105" y="360">稳定 ID · 时间顺序 · 状态 · 原始 input/output/error</text>
+  <text class="t muted small" x="105" y="390">摘要失败时，事实仍完整保留</text>
+
+  <path d="M645 302H700" stroke="#3b3b72" stroke-width="4" marker-end="url(#arrow)"/>
+  <g filter="url(#shadow)"><rect class="locator" x="715" y="195" width="410" height="215" rx="24"/></g>
+  <text class="t h" x="750" y="238" font-size="27">完成轮次后的反思</text>
+  <text class="t small" x="750" y="282">B4 generate_json_object()</text>
+  <text class="t small" x="750" y="318">提取主题、决定、纠正、偏好与任务状态</text>
+  <rect x="750" y="345" width="335" height="42" rx="20" fill="#f3ecff" stroke="#8b5cf6"/>
+  <text class="t h small" x="917" y="372" text-anchor="middle">失败 → neutral_fallback，不阻断主链路</text>
+
+  <path d="M1145 302H1200" stroke="#3b3b72" stroke-width="4" marker-end="url(#arrow)"/>
+  <g filter="url(#shadow)"><rect class="locator" x="1215" y="175" width="315" height="255" rx="24"/></g>
+  <text class="t h" x="1250" y="220" font-size="27">定位层</text>
+  <text class="t small mono" x="1250" y="262">turn_memory_tags</text>
+  <text class="t small mono" x="1250" y="298">turn_summaries</text>
+  <text class="t small mono" x="1250" y="334">task_memories</text>
+  <text class="t small mono" x="1250" y="370">memory_blocks</text>
+  <text class="t muted small" x="1250" y="404">均保留 source IDs</text>
+
+  <text class="t label" x="70" y="485">B. 召回层：当前问题驱动的候选选择</text>
+  <rect class="retrieval" x="70" y="510" width="240" height="150" rx="22"/>
+  <text class="t h body" x="190" y="554" text-anchor="middle">当前问题 + 近期历史</text>
+  <text class="t small" x="190" y="593" text-anchor="middle">任务、偏好、文件、工具</text>
+  <text class="t muted small" x="190" y="627" text-anchor="middle">构造检索 query</text>
+  <path d="M330 585H385" stroke="#3b3b72" stroke-width="4" marker-end="url(#arrow)"/>
+
+  <rect class="retrieval" x="400" y="480" width="330" height="210" rx="22"/>
+  <text class="t h body" x="565" y="525" text-anchor="middle">非向量候选评分</text>
+  <text class="t small" x="440" y="567">• 文本相似度与字段重合</text>
+  <text class="t small" x="440" y="603">• 工具信号与任务角色</text>
+  <text class="t small" x="440" y="639">• 长期价值与新近度</text>
+  <text class="t muted small" x="440" y="674">始终可用的基础排序</text>
+  <path d="M750 585H805" stroke="#3b3b72" stroke-width="4" marker-end="url(#arrow)"/>
+
+  <rect class="retrieval" x="820" y="480" width="330" height="210" rx="22"/>
+  <text class="t h body" x="985" y="525" text-anchor="middle">语义补分与重排</text>
+  <text class="t small" x="860" y="567">• embedding 缓存 + cosine</text>
+  <text class="t small" x="860" y="603">• block / turn 加权融合</text>
+  <text class="t small" x="860" y="639">• LLM 只能返回候选 ID</text>
+  <text class="t muted small" x="860" y="674">服务失败 → 回退已有排序</text>
+  <path d="M1170 585H1225" stroke="#3b3b72" stroke-width="4" marker-end="url(#arrow)"/>
+
+  <rect class="retrieval" x="1240" y="480" width="290" height="210" rx="22"/>
+  <text class="t h body" x="1385" y="525" text-anchor="middle">来源回查</text>
+  <text class="t small" x="1280" y="570">source_message_ids</text>
+  <text class="t small" x="1280" y="606">source_tool_step_ids</text>
+  <text class="t small" x="1280" y="642">加载原文与工具证据</text>
+  <text class="t muted small" x="1280" y="674">精确事实不依赖摘要猜测</text>
+
+  <path d="M1385 710V755" stroke="#3b3b72" stroke-width="4" marker-end="url(#arrow)"/>
+  <g filter="url(#shadow)"><rect x="470" y="770" width="1060" height="145" rx="26" fill="#fff" stroke="#6d55bd" stroke-width="2.5"/></g>
+  <text class="t h" x="510" y="816" font-size="27">输出给 B1 的预算化 Memory Context</text>
+  <text class="t small" x="510" y="856">近期 4 轮原文 + 最多 3 个记忆块 + 最多 5 个较早轮次 + 任务状态 + source evidence</text>
+  <text class="t small" x="510" y="891">max_memory_chars = 2000 · 超预算按优先级裁剪 · 记录 vector / rerank / retrieval 状态</text>
+  <rect x="70" y="770" width="350" height="145" rx="26" fill="#f4efff" stroke="#8b5cf6" stroke-width="2"/>
+  <text class="t h body" x="245" y="814" text-anchor="middle">legacy 兼容路径</text>
+  <text class="t small" x="245" y="852" text-anchor="middle">memory_index.json + Markdown</text>
+  <text class="t muted small" x="245" y="886" text-anchor="middle">用于课程基础独立验收</text>
+  <text class="t muted" x="70" y="965" font-size="18">图：依据 reflection.py、retrieval.py、vector_retrieval.py、rerank.py、conversation_store.py 与 memory.yaml 绘制。</text>
+</svg>
