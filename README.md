@@ -274,21 +274,31 @@ python code/b1_agent_runtime.py --input data/b1_fixtures/b1_fixture_input.json -
 | `memory/conversation_store.sqlite3` | B5 | SQLite | 会话、消息、工具步骤、摘要、任务、记忆块和召回日志 |
 | `outputs/startup_logs/` | 启动脚本 | Log | 模型代理、后端和前端启动日志 |
 
-### 7.2 运行截图或结果图例
+### 7.2 实际运行截图
 
-#### 主对话界面
+以下图片均来自项目真实 Web 运行记录。文档只把已经产生后端结果的页面作为运行证据，不使用尚未点击执行的演示配置页冒充结果。
 
-![主对话界面](images/对话界面.png)
+#### 主对话与文件交付
 
-#### B1-B5 模块观察与演示界面
+![主对话界面：上传文档、工具处理、生成 DOCX 和 Python 文件](images/对话界面.png)
 
-| 模块 | 观察界面 | 演示界面 |
+该任务同时验证了文件上传、模型决策、工具调用、文档生成、代码文件生成和 artifact 下载。
+
+#### B1-B5 真实模块观察
+
+| 模块 | 可核查的运行证据 | 实际截图 |
 |---|---|---|
-| B1 Agent 运行与消息管理 | ![B1 观察界面](images/B1模块观察界面.png) | ![B1 演示界面](images/B1模块演示界面.png) |
-| B2 Skill 工具函数 | ![B2 观察界面](images/B2模块观察界面.png) | ![B2 演示界面](images/B2模块演示界面.png) |
-| B3 说明生成与工具调用 | ![B3 观察界面](images/B3模块观察界面.png) | ![B3 演示界面](images/B3模块演示界面.png) |
-| B4 Agent LLM 决策 | ![B4 观察界面](images/B4模块观察界面.png) | ![B4 演示界面](images/B4模块演示界面.png) |
-| B5 记忆文档存储与查找 | ![B5 观察界面](images/B5模块观察界面.png) | ![B5 演示界面](images/B5模块演示界面.png) |
+| B1 Agent 运行与消息管理 | 执行轨道、消息流、Workspace、checkpoint 和最终状态 | ![B1 实际运行观察界面](images/B1模块观察界面.png) |
+| B2 Skill 工具函数 | 多次 Skill 的输入、输出、耗时、成功与错误状态 | ![B2 实际运行观察界面](images/B2模块观察界面.png) |
+| B3 说明生成与工具调用 | tool calls 解析、参数校验、B2 分发、ToolMessage 和真实 schema | ![B3 实际运行观察界面](images/B3模块观察界面.png) |
+| B4 Agent LLM 决策 | 模型配置、调用分类、原始输出和解析后 JSON | ![B4 实际运行观察界面](images/B4模块观察界面.png) |
+| B5 记忆文档存储与查找 | 近期原文、轮摘要、记忆块、任务记忆和 B1 上下文 | ![B5 实际运行观察界面](images/B5模块观察界面.png) |
+
+#### B1 独立状态流演示
+
+![B1 信息流与状态控制实际演示结果](images/B1模块演示界面.png)
+
+B1 演示页已经加载真实 Workspace 快照，能够看到 `answering` 状态、最终回答、工具调用信息和运行轨迹。`images/` 中保留的 B2-B5 演示页图片为执行前界面，仅用于说明交互入口，因此不在本节作为结果证据展示。
 
 ---
 

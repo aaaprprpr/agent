@@ -1,0 +1,227 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080" role="img" aria-labelledby="title desc">
+  <title id="title">本地 Agent 智能体实训系统架构图 V3</title>
+  <desc id="desc">白底简约风格的系统架构图，展示用户、React、FastAPI、B1 至 B5、模型服务、SQLite、工具和运行产物之间的数据流与成员分工。</desc>
+  <defs>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="8" stdDeviation="14" flood-color="#0f172a" flood-opacity="0.08"/>
+    </filter>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10Z" fill="#64748b"/>
+    </marker>
+    <marker id="arrowBlue" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10Z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrowGreen" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10Z" fill="#16a34a"/>
+    </marker>
+    <marker id="arrowPurple" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10Z" fill="#7c3aed"/>
+    </marker>
+    <style>
+      .font { font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", Arial, sans-serif; }
+      .page-title { font-size: 40px; font-weight: 750; fill: #0f172a; letter-spacing: 0.5px; }
+      .subtitle { font-size: 16px; font-weight: 500; fill: #64748b; letter-spacing: 1.5px; }
+      .zone { font-size: 14px; font-weight: 750; fill: #64748b; letter-spacing: 1.6px; }
+      .module-id { font-size: 13px; font-weight: 800; letter-spacing: 1.2px; }
+      .module-title { font-size: 25px; font-weight: 750; fill: #0f172a; }
+      .module-copy { font-size: 15px; font-weight: 500; fill: #475569; }
+      .small-title { font-size: 19px; font-weight: 750; fill: #0f172a; }
+      .small-copy { font-size: 14px; fill: #64748b; }
+      .member { font-size: 13px; font-weight: 700; }
+      .flow { font-size: 12px; font-weight: 650; fill: #475569; }
+      .pill { font-size: 13px; font-weight: 650; fill: #334155; }
+    </style>
+  </defs>
+
+  <rect width="1920" height="1080" fill="#ffffff"/>
+  <rect x="0" y="0" width="1920" height="8" fill="#2563eb"/>
+
+  <g class="font">
+    <!-- Header -->
+    <text x="70" y="70" class="page-title">本地 Agent 智能体实训系统</text>
+    <text x="72" y="107" class="subtitle">总体架构 · 模块边界 · 数据流向 · 成员分工</text>
+    <rect x="1530" y="43" width="320" height="46" rx="23" fill="#f8fafc" stroke="#dbe4ee"/>
+    <circle cx="1560" cy="66" r="7" fill="#22c55e"/>
+    <text x="1580" y="72" font-size="14" font-weight="700" fill="#334155">React · FastAPI · Python · SQLite</text>
+
+    <!-- Main board and zones -->
+    <rect x="40" y="145" width="1840" height="875" rx="28" fill="#ffffff" stroke="#e2e8f0" stroke-width="1.5"/>
+    <rect x="60" y="198" width="340" height="790" rx="22" fill="#f8fafc"/>
+    <rect x="450" y="198" width="620" height="790" rx="22" fill="#f8fafc"/>
+    <rect x="1120" y="198" width="430" height="790" rx="22" fill="#f8fafc"/>
+    <rect x="1590" y="198" width="270" height="790" rx="22" fill="#f8fafc"/>
+
+    <text x="80" y="230" class="zone">01 · 交互与接入</text>
+    <text x="475" y="230" class="zone">02 · 编排与工具协议</text>
+    <text x="1145" y="230" class="zone">03 · 模型与记忆能力</text>
+    <text x="1615" y="230" class="zone">04 · 基础设施</text>
+
+    <!-- Connections behind cards -->
+    <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M230 350V390" stroke="#64748b" stroke-width="2.4" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+      <path d="M230 530V570" stroke="#64748b" stroke-width="2.4" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+      <path d="M380 640H450V425H520" stroke="#2563eb" stroke-width="2.8" marker-start="url(#arrowBlue)" marker-end="url(#arrowBlue)"/>
+      <path d="M1040 355H1180" stroke="#2563eb" stroke-width="2.8" marker-start="url(#arrowBlue)" marker-end="url(#arrowBlue)"/>
+      <path d="M1530 355H1610" stroke="#ea580c" stroke-width="2.8" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+      <path d="M1040 490H1100V650H1180" stroke="#7c3aed" stroke-width="2.8" marker-start="url(#arrowPurple)" marker-end="url(#arrowPurple)"/>
+      <path d="M1530 650H1610" stroke="#7c3aed" stroke-width="2.8" marker-start="url(#arrowPurple)" marker-end="url(#arrowPurple)"/>
+      <path d="M1355 535V480" stroke="#7c3aed" stroke-width="2.2" stroke-dasharray="7 7" marker-end="url(#arrowPurple)"/>
+      <path d="M645 590V710" stroke="#2563eb" stroke-width="2.8" marker-start="url(#arrowBlue)" marker-end="url(#arrowBlue)"/>
+      <path d="M750 825H810" stroke="#16a34a" stroke-width="2.8" marker-start="url(#arrowGreen)" marker-end="url(#arrowGreen)"/>
+      <path d="M1040 825H1100V875H1180" stroke="#16a34a" stroke-width="2.8" marker-start="url(#arrowGreen)" marker-end="url(#arrowGreen)"/>
+      <path d="M520 535H450V865H380" stroke="#64748b" stroke-width="2.2" marker-end="url(#arrow)"/>
+      <path d="M230 790V710" stroke="#64748b" stroke-width="2.2" stroke-dasharray="7 7" marker-end="url(#arrow)"/>
+    </g>
+
+    <!-- Interaction cards -->
+    <g filter="url(#shadow)">
+      <rect x="80" y="250" width="300" height="100" rx="18" fill="#ffffff" stroke="#d8e1eb"/>
+      <rect x="80" y="390" width="300" height="140" rx="18" fill="#ffffff" stroke="#bfdbfe"/>
+      <rect x="80" y="570" width="300" height="140" rx="18" fill="#ffffff" stroke="#bfdbfe"/>
+      <rect x="80" y="790" width="300" height="150" rx="18" fill="#ffffff" stroke="#d8e1eb"/>
+    </g>
+
+    <circle cx="122" cy="300" r="25" fill="#eff6ff"/>
+    <circle cx="122" cy="293" r="7" fill="#2563eb"/>
+    <path d="M106 319C108 303 136 303 138 319" fill="#2563eb"/>
+    <text x="164" y="294" class="small-title">用户</text>
+    <text x="164" y="320" class="small-copy">自然语言任务与文件输入</text>
+
+    <rect x="80" y="390" width="6" height="140" rx="3" fill="#0ea5e9"/>
+    <text x="110" y="428" class="module-id" fill="#0284c7">WEB CLIENT</text>
+    <text x="110" y="461" class="small-title">React 前端</text>
+    <text x="110" y="488" class="small-copy">交互 · 模块观察 · 文件下载</text>
+    <rect x="110" y="500" width="240" height="22" rx="11" fill="#f0f9ff"/>
+    <text x="230" y="515" font-size="12" fill="#0369a1" text-anchor="middle">前端协作：王玺尊 · 郭嘉</text>
+
+    <rect x="80" y="570" width="6" height="140" rx="3" fill="#0ea5e9"/>
+    <text x="110" y="608" class="module-id" fill="#0284c7">WEB API</text>
+    <text x="110" y="641" class="small-title">FastAPI 后端</text>
+    <text x="110" y="668" class="small-copy">API · NDJSON 流 · Artifact</text>
+    <text x="110" y="693" font-size="12" fill="#64748b">统一 Web 接入与会话接口</text>
+
+    <text x="110" y="828" class="module-id" fill="#64748b">RUNTIME EVIDENCE</text>
+    <text x="110" y="861" class="small-title">运行产物</text>
+    <rect x="110" y="880" width="112" height="29" rx="9" fill="#f1f5f9"/>
+    <rect x="230" y="880" width="120" height="29" rx="9" fill="#f1f5f9"/>
+    <text x="166" y="899" class="pill" text-anchor="middle">messages · trace</text>
+    <text x="290" y="899" class="pill" text-anchor="middle">checkpoint</text>
+    <text x="110" y="929" font-size="12" fill="#64748b">artifacts · raw output · logs</text>
+
+    <!-- B1 orchestration card -->
+    <g filter="url(#shadow)">
+      <rect x="520" y="270" width="520" height="320" rx="22" fill="#ffffff" stroke="#93c5fd" stroke-width="1.6"/>
+    </g>
+    <rect x="520" y="270" width="520" height="6" rx="3" fill="#2563eb"/>
+    <text x="550" y="315" class="module-id" fill="#2563eb">B1 · ORCHESTRATOR</text>
+    <text x="550" y="357" class="module-title">Agent 运行与消息管理</text>
+    <rect x="910" y="296" width="100" height="32" rx="16" fill="#eff6ff"/>
+    <text x="960" y="317" class="member" fill="#1d4ed8" text-anchor="middle">郭嘉</text>
+    <path d="M550 382H1010" stroke="#dbeafe"/>
+    <text x="550" y="423" class="module-copy">消息管理  ·  Workspace  ·  Agent Loop</text>
+    <text x="550" y="460" class="module-copy">Planning  ·  Observation  ·  Checkpoint</text>
+    <rect x="550" y="500" width="460" height="55" rx="12" fill="#f8fafc" stroke="#e2e8f0"/>
+    <circle cx="578" cy="528" r="6" fill="#22c55e"/>
+    <text x="596" y="534" font-size="14" font-weight="650" fill="#334155">系统唯一运行编排中心</text>
+
+    <!-- B3 and B2 -->
+    <g filter="url(#shadow)">
+      <rect x="520" y="710" width="230" height="230" rx="20" fill="#ffffff" stroke="#86efac" stroke-width="1.5"/>
+      <rect x="810" y="710" width="230" height="230" rx="20" fill="#ffffff" stroke="#86efac" stroke-width="1.5"/>
+    </g>
+    <rect x="520" y="710" width="230" height="5" rx="2.5" fill="#16a34a"/>
+    <text x="545" y="752" class="module-id" fill="#15803d">B3 · TOOL PROTOCOL</text>
+    <text x="545" y="790" font-size="21" font-weight="750" fill="#0f172a">说明生成与工具调用</text>
+    <rect x="545" y="811" width="90" height="28" rx="14" fill="#f0fdf4"/>
+    <text x="590" y="830" class="member" fill="#15803d" text-anchor="middle">刘锐凌</text>
+    <path d="M545 856H725" stroke="#dcfce7"/>
+    <text x="545" y="884" class="small-copy">tools_schema · 参数校验</text>
+    <text x="545" y="910" class="small-copy">SkillResult → ToolMessage</text>
+    <text x="545" y="931" font-size="11" fill="#15803d">重试 · 缓存 · 统计</text>
+
+    <rect x="810" y="710" width="230" height="5" rx="2.5" fill="#16a34a"/>
+    <text x="835" y="752" class="module-id" fill="#15803d">B2 · SKILLS</text>
+    <text x="835" y="790" class="module-title">Skill 工具函数</text>
+    <rect x="835" y="811" width="90" height="28" rx="14" fill="#f0fdf4"/>
+    <text x="880" y="830" class="member" fill="#15803d" text-anchor="middle">徐赫</text>
+    <path d="M835 856H1015" stroke="#dcfce7"/>
+    <text x="835" y="884" class="small-copy">确定性执行 · SkillResult</text>
+    <text x="835" y="910" class="small-copy">本地文件 · 联网能力</text>
+    <text x="835" y="931" font-size="11" fill="#15803d">15 Skills · 统一契约</text>
+
+    <!-- B4 and B5 -->
+    <g filter="url(#shadow)">
+      <rect x="1180" y="250" width="350" height="230" rx="20" fill="#ffffff" stroke="#fdba74" stroke-width="1.5"/>
+      <rect x="1180" y="535" width="350" height="230" rx="20" fill="#ffffff" stroke="#c4b5fd" stroke-width="1.5"/>
+    </g>
+    <rect x="1180" y="250" width="350" height="5" rx="2.5" fill="#ea580c"/>
+    <text x="1210" y="292" class="module-id" fill="#c2410c">B4 · LLM BRIDGE</text>
+    <text x="1210" y="332" class="module-title">Agent LLM 决策</text>
+    <rect x="1404" y="274" width="96" height="30" rx="15" fill="#fff7ed"/>
+    <text x="1452" y="294" class="member" fill="#c2410c" text-anchor="middle">王玺尊</text>
+    <path d="M1210 355H1500" stroke="#ffedd5"/>
+    <text x="1210" y="389" class="module-copy">模型通信 · Prompt JSON</text>
+    <text x="1210" y="421" class="module-copy">AIMessage 解析 · 流式输出</text>
+    <text x="1210" y="451" font-size="12" fill="#c2410c">local / fastapi / qwen_api</text>
+
+    <rect x="1180" y="535" width="350" height="5" rx="2.5" fill="#7c3aed"/>
+    <text x="1210" y="577" class="module-id" fill="#6d28d9">B5 · MEMORY</text>
+    <text x="1210" y="617" class="module-title">记忆存储与查找</text>
+    <rect x="1404" y="559" width="96" height="30" rx="15" fill="#f5f3ff"/>
+    <text x="1452" y="579" class="member" fill="#6d28d9" text-anchor="middle">王玺尊</text>
+    <path d="M1210 640H1500" stroke="#ede9fe"/>
+    <text x="1210" y="674" class="module-copy">SQLite · 分层记忆</text>
+    <text x="1210" y="706" class="module-copy">向量召回 · LLM Rerank</text>
+    <text x="1210" y="736" font-size="12" fill="#6d28d9">来源回查 · 失败降级</text>
+
+    <!-- Infrastructure -->
+    <g filter="url(#shadow)">
+      <rect x="1610" y="250" width="220" height="230" rx="20" fill="#ffffff" stroke="#d8e1eb"/>
+      <rect x="1610" y="535" width="220" height="230" rx="20" fill="#ffffff" stroke="#d8e1eb"/>
+      <rect x="1180" y="815" width="650" height="125" rx="20" fill="#ffffff" stroke="#bbf7d0"/>
+    </g>
+    <text x="1638" y="290" class="small-title">模型服务</text>
+    <rect x="1638" y="312" width="164" height="39" rx="10" fill="#f8fafc" stroke="#e2e8f0"/>
+    <rect x="1638" y="362" width="164" height="39" rx="10" fill="#f8fafc" stroke="#e2e8f0"/>
+    <rect x="1638" y="412" width="164" height="39" rx="10" fill="#f8fafc" stroke="#e2e8f0"/>
+    <text x="1720" y="337" class="pill" text-anchor="middle">Qwen3.5-4B 本地</text>
+    <text x="1720" y="387" class="pill" text-anchor="middle">Qwen API</text>
+    <text x="1720" y="437" class="pill" text-anchor="middle">FastAPI 模型服务</text>
+
+    <ellipse cx="1720" cy="590" rx="64" ry="22" fill="#fafafa" stroke="#a78bfa" stroke-width="1.5"/>
+    <path d="M1656 590V681C1656 694 1685 704 1720 704C1755 704 1784 694 1784 681V590" fill="#ffffff" stroke="#a78bfa" stroke-width="1.5"/>
+    <path d="M1656 635C1656 648 1685 658 1720 658C1755 658 1784 648 1784 635" fill="none" stroke="#ddd6fe"/>
+    <text x="1720" y="628" class="small-title" text-anchor="middle">SQLite</text>
+    <text x="1720" y="686" class="small-copy" text-anchor="middle">会话与分层记忆</text>
+
+    <text x="1210" y="854" class="module-id" fill="#15803d">LOCAL &amp; ONLINE TOOLS</text>
+    <text x="1210" y="888" class="small-title">本地与联网工具</text>
+    <rect x="1412" y="846" width="78" height="38" rx="10" fill="#f0fdf4"/>
+    <rect x="1500" y="846" width="92" height="38" rx="10" fill="#f0fdf4"/>
+    <rect x="1602" y="846" width="78" height="38" rx="10" fill="#f0fdf4"/>
+    <rect x="1690" y="846" width="108" height="38" rx="10" fill="#f0fdf4"/>
+    <text x="1451" y="871" class="pill" text-anchor="middle">文件</text>
+    <text x="1546" y="871" class="pill" text-anchor="middle">计算 · 表格</text>
+    <text x="1641" y="871" class="pill" text-anchor="middle">搜索</text>
+    <text x="1744" y="871" class="pill" text-anchor="middle">代码沙箱</text>
+    <text x="1210" y="918" font-size="12" fill="#64748b">受工作区边界约束 · 统一 SkillResult 返回</text>
+
+    <!-- Flow labels, placed last for clarity -->
+    <rect x="397" y="406" width="108" height="25" rx="12" fill="#ffffff" stroke="#bfdbfe"/>
+    <text x="451" y="423" class="flow" text-anchor="middle">Runtime / NDJSON</text>
+    <rect x="1064" y="325" width="91" height="25" rx="12" fill="#ffffff" stroke="#bfdbfe"/>
+    <text x="1109" y="342" class="flow" text-anchor="middle">AIMessage</text>
+    <rect x="1063" y="614" width="92" height="25" rx="12" fill="#ffffff" stroke="#ddd6fe"/>
+    <text x="1109" y="631" class="flow" text-anchor="middle">记忆上下文</text>
+    <rect x="1368" y="493" width="102" height="25" rx="12" fill="#ffffff" stroke="#ddd6fe"/>
+    <text x="1419" y="510" class="flow" text-anchor="middle">反思 · Rerank</text>
+    <rect x="656" y="635" width="100" height="25" rx="12" fill="#ffffff" stroke="#bfdbfe"/>
+    <text x="706" y="652" class="flow" text-anchor="middle">schema / calls</text>
+    <rect x="751" y="797" width="58" height="25" rx="12" fill="#ffffff" stroke="#bbf7d0"/>
+    <text x="780" y="814" class="flow" text-anchor="middle">调用 / 结果</text>
+    <rect x="1059" y="848" width="102" height="25" rx="12" fill="#ffffff" stroke="#bbf7d0"/>
+    <text x="1110" y="865" class="flow" text-anchor="middle">Skill 调用</text>
+    <rect x="393" y="843" width="113" height="25" rx="12" fill="#ffffff" stroke="#d8e1eb"/>
+    <text x="449" y="860" class="flow" text-anchor="middle">trace / checkpoint</text>
+  </g>
+</svg>

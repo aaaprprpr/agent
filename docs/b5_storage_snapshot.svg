@@ -1,0 +1,122 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="920" viewBox="0 0 1600 920" role="img" aria-labelledby="title desc">
+  <title id="title">B5 SQLite 分层记忆运行快照</title>
+  <desc id="desc">展示 2026 年 7 月 17 日只读审计得到的会话、消息、工具步骤、轮次、摘要、记忆块、任务记忆、召回日志和向量缓存数量，以及轮摘要来源分布。</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f7faff"/>
+      <stop offset="1" stop-color="#eef4ff"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#2563eb"/>
+      <stop offset="1" stop-color="#7c3aed"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#1e3a8a" flood-opacity="0.10"/>
+    </filter>
+    <style>
+      .sans { font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", Arial, sans-serif; }
+      .title { font-size: 38px; font-weight: 700; fill: #102047; }
+      .subtitle { font-size: 19px; fill: #52627d; }
+      .section { font-size: 23px; font-weight: 700; fill: #172554; }
+      .card-label { font-size: 18px; font-weight: 600; fill: #53627a; }
+      .card-value { font-size: 41px; font-weight: 750; fill: #183b8f; }
+      .card-note { font-size: 15px; fill: #7a879d; }
+      .legend { font-size: 17px; fill: #46546c; }
+      .small { font-size: 15px; fill: #68758b; }
+    </style>
+  </defs>
+
+  <rect width="1600" height="920" rx="28" fill="url(#bg)"/>
+  <rect x="0" y="0" width="1600" height="10" rx="5" fill="url(#accent)"/>
+
+  <g class="sans">
+    <text x="80" y="82" class="title">B5 SQLite 分层记忆运行快照</text>
+    <text x="80" y="119" class="subtitle">2026-07-17 · memory/conversation_store.sqlite3 · 只读统计</text>
+    <rect x="1287" y="55" width="233" height="48" rx="24" fill="#e0eaff" stroke="#a9c2ff"/>
+    <circle cx="1320" cy="79" r="8" fill="#16a34a"/>
+    <text x="1340" y="86" font-size="18" font-weight="650" fill="#23437e">可追溯运行证据</text>
+
+    <text x="80" y="183" class="section">原始事实与运行轨迹</text>
+
+    <g filter="url(#shadow)">
+      <rect x="80" y="210" width="330" height="170" rx="20" fill="#ffffff"/>
+      <rect x="445" y="210" width="330" height="170" rx="20" fill="#ffffff"/>
+      <rect x="810" y="210" width="330" height="170" rx="20" fill="#ffffff"/>
+      <rect x="1175" y="210" width="345" height="170" rx="20" fill="#ffffff"/>
+    </g>
+
+    <rect x="80" y="210" width="8" height="170" rx="4" fill="#2563eb"/>
+    <rect x="445" y="210" width="8" height="170" rx="4" fill="#0ea5e9"/>
+    <rect x="810" y="210" width="8" height="170" rx="4" fill="#8b5cf6"/>
+    <rect x="1175" y="210" width="8" height="170" rx="4" fill="#14b8a6"/>
+
+    <text x="112" y="254" class="card-label">会话</text>
+    <text x="112" y="319" class="card-value">11</text>
+    <text x="112" y="352" class="card-note">conversations</text>
+
+    <text x="477" y="254" class="card-label">原始消息</text>
+    <text x="477" y="319" class="card-value">176</text>
+    <text x="477" y="352" class="card-note">conversation_messages</text>
+
+    <text x="842" y="254" class="card-label">工具步骤</text>
+    <text x="842" y="319" class="card-value">164</text>
+    <text x="842" y="352" class="card-note">tool_steps</text>
+
+    <text x="1207" y="254" class="card-label">完成轮次</text>
+    <text x="1207" y="319" class="card-value">85</text>
+    <text x="1207" y="352" class="card-note">conversation_turns</text>
+
+    <text x="80" y="442" class="section">定位、压缩与召回证据</text>
+
+    <g filter="url(#shadow)">
+      <rect x="80" y="470" width="222" height="145" rx="18" fill="#ffffff"/>
+      <rect x="323" y="470" width="222" height="145" rx="18" fill="#ffffff"/>
+      <rect x="566" y="470" width="222" height="145" rx="18" fill="#ffffff"/>
+      <rect x="809" y="470" width="222" height="145" rx="18" fill="#ffffff"/>
+      <rect x="1052" y="470" width="222" height="145" rx="18" fill="#ffffff"/>
+      <rect x="1295" y="470" width="225" height="145" rx="18" fill="#ffffff"/>
+    </g>
+
+    <text x="105" y="508" class="card-label">轮标签</text>
+    <text x="105" y="561" font-size="34" font-weight="750" fill="#4338ca">85</text>
+    <text x="105" y="590" class="card-note">turn_memory_tags</text>
+
+    <text x="348" y="508" class="card-label">轮摘要</text>
+    <text x="348" y="561" font-size="34" font-weight="750" fill="#4338ca">85</text>
+    <text x="348" y="590" class="card-note">turn_summaries</text>
+
+    <text x="591" y="508" class="card-label">记忆块</text>
+    <text x="591" y="561" font-size="34" font-weight="750" fill="#4338ca">17</text>
+    <text x="591" y="590" class="card-note">61 条块—轮关联</text>
+
+    <text x="834" y="508" class="card-label">任务记忆</text>
+    <text x="834" y="561" font-size="34" font-weight="750" fill="#4338ca">11</text>
+    <text x="834" y="590" class="card-note">9 完成 · 2 前台</text>
+
+    <text x="1077" y="508" class="card-label">召回日志</text>
+    <text x="1077" y="561" font-size="34" font-weight="750" fill="#4338ca">94</text>
+    <text x="1077" y="590" class="card-note">retrieval_log</text>
+
+    <text x="1320" y="508" class="card-label">向量缓存</text>
+    <text x="1320" y="561" font-size="34" font-weight="750" fill="#4338ca">44</text>
+    <text x="1320" y="590" class="card-note">memory_embeddings</text>
+
+    <text x="80" y="677" class="section">轮摘要来源分布（共 85 条）</text>
+    <rect x="80" y="708" width="1235.3" height="62" rx="16" fill="#2563eb"/>
+    <path d="M1315.3 708 H1484.7 V770 H1315.3 Z" fill="#f59e0b"/>
+    <path d="M1484.7 708 H1520 Q1536 708 1536 724 V754 Q1536 770 1520 770 H1484.7 Z" fill="#ef4444"/>
+    <text x="105" y="748" font-size="19" font-weight="700" fill="#ffffff">模型反思 73（85.9%）</text>
+
+    <circle cx="100" cy="819" r="8" fill="#2563eb"/>
+    <text x="119" y="826" class="legend">model：73</text>
+    <circle cx="300" cy="819" r="8" fill="#f59e0b"/>
+    <text x="319" y="826" class="legend">heuristic：10</text>
+    <circle cx="530" cy="819" r="8" fill="#ef4444"/>
+    <text x="549" y="826" class="legend">neutral fallback：2</text>
+
+    <rect x="990" y="798" width="530" height="55" rx="14" fill="#ffffff" stroke="#d8e2f2"/>
+    <text x="1015" y="831" class="small">注：该图证明链路已产生记录，不等同于检索准确率评估。</text>
+
+    <text x="80" y="887" class="small">证据边界：统计来自本地运行数据库；Recall@K / MRR 仍需冻结标注集后计算。</text>
+  </g>
+</svg>

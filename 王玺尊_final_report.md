@@ -8,22 +8,20 @@
 
 ## 一、项目与团队基本信息
 
-- **本人姓名**：王玺尊
-- **本人学号**：20236481
-- **项目名称**：本地 Agent 智能体实训系统
-- **实际完成目标**：完成 B1–B5 五模块基础链路并形成 React + FastAPI Web 系统；本人负责的 B4 完成多模型源、结构化 AIMessage、流式输出和协议容错，B5 完成 legacy 文档记忆、SQLite 分层记忆、轮级反思、任务记忆、记忆块、混合召回、向量检索、LLM 重排和来源回查等基础与进阶功能。
-- **小组其他成员**：郭嘉、刘锐凌、徐赫
+- **本人姓名**：[王玺尊]
+- **本人学号**：[20236481]
+- **项目名称**：[B方向Agent智能体]
+- **实际完成目标**：[完成 B1–B5 五模块基础链路并形成 React + FastAPI Web 系统；本人负责的 B4 完成多模型源、结构化 AIMessage、流式输出和协议容错，B5 完成 legacy 文档记忆、SQLite 分层记忆、轮级反思、任务记忆、记忆块、混合召回、向量检索、LLM 重排和来源回查等基础与进阶功能。]
+- **小组其他成员**：[郭嘉、刘锐凌、徐赫]
 
 ### 成员最终分工与交付核对表
 
 | 角色 | 姓名 | 学号 | 实际负责的核心模块 | 个人代码库链接 |
 | :---: | :---: | :---: | :--- | :--- |
-| **组长** | **王玺尊** | **20236481** | **B4 Agent LLM 决策、B5 记忆文档存储与查找；前端协作** | **[当前集成源码](https://github.com/aaaprprpr/agent)**；`[待本人补充：独立个人仓库]` |
-| 组员 | 郭嘉 | 20236529 | B1 Agent 运行与消息管理；前端协作 | `[提交前补充：个人仓库链接]` |
-| 组员 | 刘锐凌 | `[提交前补充：学号]` | B3 说明生成与工具调用 | `[提交前补充：个人仓库链接]` |
-| 组员 | 徐赫 | `[提交前补充：学号]` | B2 Skill 工具函数 | `[提交前补充：个人仓库链接]` |
-
-> 本项目采用同一团队仓库持续集成，各成员负责的模块均保留独立入口和个人 README。若课程要求每人另建独立仓库，提交前需补充本人独立仓库链接。
+| **组长** | **王玺尊** | **20236481** | **B4 Agent LLM 决策、B5 记忆文档存储与查找；前端协作** | **[B4 源码](https://github.com/aaaprprpr/agent/blob/main/code/b4_local_agent_llm.py) / [B5 源码](https://github.com/aaaprprpr/agent/tree/main/code/b5_memory_parts)** |
+| 组员 | 郭嘉 | 20236529 | B1 Agent 运行与消息管理；前端协作 | [B1 模块源码](https://github.com/aaaprprpr/agent/tree/main/code/b1_agent_runtime_parts) |
+| 组员 | 刘锐凌 | 20236543 | B3 说明生成与工具调用 | [B3 模块源码](https://github.com/aaaprprpr/agent/blob/main/code/b3_tool_layer.py) |
+| 组员 | 徐赫 | 20236513 | B2 Skill 工具函数 | [B2 模块源码](https://github.com/aaaprprpr/agent/tree/main/skills) |
 
 ---
 
@@ -31,11 +29,48 @@
 
 ### 2.1 最终系统总体架构图
 
-![本地 Agent 智能体实训系统总体架构、模块边界与成员分工](system_architecture.png)
+```mermaid
+flowchart LR
+    U[用户] <--> FE[React 前端]
+    FE <--> API[FastAPI 后端]
+    API --> B1[B1 Agent运行与消息管理<br/>郭嘉]
 
-*图 2-1 系统总体架构。实线表示主数据流，虚线表示辅助调用；图中同时标注 B1–B5 的物理位置、职责边界和成员分工。*
+    B1 -- 当前输入/历史/Memory选择 --> B5[B5 记忆文档存储与查找<br/>王玺尊]
+    B5 -- 分层Memory Context --> B1
+    B1 -- Schema请求/tool_calls --> B3[B3 说明生成与工具调用<br/>刘锐凌]
+    B3 -- tools_schema/ToolMessage --> B1
+    B3 -- 已校验name与args --> B2[B2 Skill工具函数<br/>徐赫]
+    B2 -- SkillResult --> B3
+    B2 <--> SK[文件与Office/计算/表格<br/>联网搜索/Python沙箱/文件生成]
 
-系统以 B1 为唯一运行编排中心，B2–B5 通过固定 JSON 数据结构与 B1 对接。B4 和 B5 在物理代码与职责上保持独立：B4 不执行工具、不控制 Agent Loop、不写记忆；B5 不决定 Agent 下一步动作，也不向工具层泄漏数据库内部结构。
+    B1 -- 阶段messages --> B4[B4 Agent LLM决策<br/>王玺尊]
+    B4 -- AIMessage/阶段JSON/流式文本 --> B1
+    B5 -.摘要与重排.-> B4
+    B4 <--> LLM[Qwen API / FastAPI模型服务 / 本地模型]
+
+    B5 <--> DB[(SQLite原始消息/工具步骤<br/>轮级摘要/块级记忆/任务记忆/召回日志)]
+    B1 --> OUT[(messages / trace / checkpoint)]
+    B2 --> ART[(generated_files)]
+    ART --> API
+    OUT --> API
+```
+| 组成部分               | 当前实现与团队成果                                                                                                                                                           |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| React 前端             | 提供多轮对话、文件上传、流式回答、工具过程折叠区、产物下载、历史会话、回答终止/恢复、会话提示词编辑，以及 B1-B5 独立观察/演示页面。                                          |
+| FastAPI 后端           | 提供对话与 SSE 接口、上传文件管理、会话查询/删除、System Prompt 更新、生成文件受限下载、取消/恢复，以及五模块演示 API；不承载核心 Agent 决策。                               |
+| B1 Agent运行与消息管理 | 接收 Runtime 输入，组织标准消息和 Workspace，协调 B5、B3、B4，推进 Planning、Tool Calling、Observation、Answering，维护流式事件和 Checkpoint。                               |
+| B2 Skill工具函数       | 提供独立、JSON可序列化的实际执行能力，包括文件/目录浏览、TXT/Markdown/Office读取、文件搜索、计算、当前时间、CSV/XLSX表格分析、DDGS联网搜索、多格式文件生成和受限Python沙箱。 |
+| B3 说明生成与工具调用  | 从 `tools.yaml` 生成 OpenAI风格 Schema，检查工具名与必填参数，动态调用 B2并封装 ToolMessage；同时负责可恢复重试、结果缓存、调用日志、耗时统计和文件产物引用。                |
+| B4 Agent LLM决策       | 读取 `model.yaml`，统一支持本地 Transformers、远端 FastAPI和 Qwen API代理；提供普通生成、流式生成和结构化 JSON生成，将原始模型输出解析为标准 AIMessage并保存调用产物。       |
+| B5 记忆文档存储与查找  | 以 SQLite为当前主要实现，保存原始会话和工具步骤，生成轮级摘要、块级记忆和任务记忆；结合字段/关键词评分、向量召回与 LLM重排，为 B1构造带来源信息的 Memory Context。           |
+| 模型与数据资源         | Qwen模型服务负责语言生成，Embedding接口服务于 B5向量召回；SQLite保存会话与分层记忆，`outputs/backend_runs/`保存模型、工具、Trace和生成文件等可核验产物。                     |
+
+五个模块通过 JSON 数据协议协作，但仍保留各自的 CLI入口和独立演示能力。课程初始的 CLI 与 Markdown Memory 链路作为基础验收兼容入口保留，当前正式产品以 React + FastAPI + SQLite 的 Web 链路为主。
+
+
+![本地 Agent 智能体实训系统总体架构、边界与成员分工](system_architecture.png)
+
+*图 2-1 系统总体架构。实线表示主数据流，虚线表示辅助调用*
 
 ### 2.2 系统整体运行流程与集成说明
 
@@ -50,27 +85,35 @@
 7. 最终回答以 NDJSON 流返回前端；生成文件通过受限 artifact 接口提供下载。
 8. 后端保存原始消息与工具步骤，再异步触发 B5 反思。B5 生成轮摘要、任务状态和记忆块，为后续对话提供可回查来源的分层上下文。
 
-团队联调的关键不是把所有功能放进同一脚本，而是统一 RuntimeInput、AIMessage、ToolCall、ToolMessage、SkillResult 和 Memory Context 的字段，并保持模块职责可独立说明、独立运行和独立排错。
+团队采用“固定协议、独立实现”的方式。Runtime、AIMessage、ToolMessage、SkillResult、tools_schema和 Memory Context构成模块边界；配置文件分别由 `model.yaml`、`tools.yaml`和 `memory.yaml`管理。并保持模块职责可独立说明、独立运行和独立排错。
 
 ### 2.3 最终产品展示（Demo）
 
-> 以下位置必须由本人使用最终提交版本实际运行后替换。截图应同时标注 commit、模型源和运行时间，不能使用静态页面或 mock 结果冒充真实完整链路。
+![系统主对话界面](images/对话界面.png)
 
-1. **完整对话与工具闭环**
-   - `[提交前插入截图 1：主对话页面，包含用户问题、工具过程、流式回答和最终结果]`
 
-2. **B4 模型调用与协议演示**
-   - `[提交前插入截图 2：B4 观察页或协议演示页，展示 prompt、raw output、AIMessage 和用例汇总]`
+| B1模块观察界面                               | B1模块演示界面                               |
+| -------------------------------------------- | -------------------------------------------- |
+| ![B1模块观察界面](images/B1模块观察界面.png) | ![B1模块演示界面](images/B1模块演示界面.png) |
 
-3. **B5 分层记忆与召回来源**
-   - `[提交前插入截图 3：B5 页面，展示近期原文、任务记忆、记忆块、召回轮次和 source evidence]`
+| B2模块观察界面                               | B2模块演示界面                               |
+| -------------------------------------------- | -------------------------------------------- |
+| ![B2模块观察界面](images/B2模块观察界面.png) | ![B2模块演示界面](images/B2模块演示界面.png) |
 
-建议截图对应以下实际任务：
+| B3模块观察界面                               | B3模块演示界面                               |
+| -------------------------------------------- | -------------------------------------------- |
+| ![B3模块观察界面](images/B3模块观察界面.png) | ![B3模块演示界面](images/B3模块演示界面.png) |
 
-- 读取 `docs/agent_intro.txt` 并生成三条中文总结，展示 `LLM → Tool → LLM`；
-- 同轮请求计算和当前时间，展示多个 tool_calls；
-- 在长对话后询问早期约定，展示 B5 召回较早事实及来源消息；
-- 明确要求生成 Markdown/DOCX 文件，展示 artifact 下载。
+| B4模块观察界面                               | B4模块演示界面                               |
+| -------------------------------------------- | -------------------------------------------- |
+| ![B4模块观察界面](images/B4模块观察界面.png) | ![B4模块演示界面](images/B4模块演示界面.png) |
+
+| B5模块观察界面                               | B5模块演示界面                               |
+| -------------------------------------------- | -------------------------------------------- |
+| ![B5模块观察界面](images/B5模块观察界面.png) | ![B5模块演示界面](images/B5模块演示界面.png) |
+
+当前系统支持普通多轮问答、本地文件读取与总结、目录与文件搜索、表格分析、数学计算、当前时间、联网搜索、多种文件生成、轻量 Python 沙箱执行、回答中断恢复、历史会话读取及会话 System Prompt 编辑。
+
 
 ### 2.4 团队系统代码库
 
@@ -153,6 +196,8 @@ sequenceDiagram
 | 前端 | React + TypeScript + Vite | 分开展示主对话和 B1–B5 模块观察 |
 
 当前默认 `qwen-plus` 与课程指定 `Qwen3.5-4B` 不是同一模型。报告中的 B4 历史用例结果仅对应当次 `qwen_api/qwen-plus` 配置；若最终验收要求本地模型，必须切换配置后重新运行并替换截图和结果。
+
+系统的“推理—行动—观察”循环在工程思想上参考了 [ReAct](https://arxiv.org/abs/2210.03629)，B5 的分层上下文管理参考了 [MemGPT](https://arxiv.org/abs/2310.08560) 对有限上下文与层次化记忆的讨论；本项目是面向课程 B1–B5 接口的自主工程实现，不声称复现论文实验或指标。
 
 #### 3.2.2 B4：从模型文本到标准 AIMessage
 
@@ -361,9 +406,24 @@ B5 当前实现已经形成完整的功能证据链：
 5. embedding、rerank 或反思失败时保留错误并降级，不阻断主回答；
 6. B5 页面能通过 snapshot 与 recall preview 展示真实数据库状态。
 
+对 `memory/conversation_store.sqlite3` 的只读审计得到以下运行快照：
+
+| 证据层 | 当前记录数 | 说明 |
+|---|---:|---|
+| 会话 / 原始消息 / 工具步骤 | 11 / 176 / 164 | 原始事实先于摘要持久化 |
+| 完成轮次 / 轮标签 / 轮摘要 | 85 / 85 / 85 | 三者一一对应，轮级定位信息完整 |
+| 记忆块 / 块—轮关联 | 17 / 61 | 已覆盖 `task_complete`、`task_key_change`、`context_length` 等成块边界 |
+| 任务记忆 | 11 | 其中 9 条 completed、2 条 foreground |
+| 召回日志 / 向量缓存 | 94 / 44 | 保存候选、选择、来源及 embedding 缓存状态 |
+| 轮摘要来源 | 73 model / 10 heuristic / 2 neutral fallback | 能区分模型反思、旧规则数据与失败降级 |
+
+![B5 SQLite 分层记忆运行快照](docs/b5_storage_snapshot.svg)
+
+*图 3-4 B5 当前数据库的分层证据规模及反思来源分布。数据来自 2026-07-17 对本地 SQLite 的只读统计，目的是证明存储、压缩、召回与降级链路确实产生了可核查记录。*
+
 但当前没有冻结的“问题—相关记忆”标注集，无法严谨计算 Recall@K、MRR 或错误 Memory 对最终回答的定量影响。因此本报告不虚构 B5 检索准确率。正式结论暂以功能链路、来源可追溯性和降级行为为依据；后续应构造正确/错误 memory 对照集完成量化评估。
 
-#### 3.3.4 与课程要求的完成度核对
+#### 3.3.4 完成度核对
 
 | 模块要求 | 当前结论 | 证据 |
 |---|---|---|
@@ -383,7 +443,7 @@ B5 当前实现已经形成完整的功能证据链：
 
 #### 3.3.5 结果截图
 
-本节复用 2.3 中的截图 2（B4 协议演示）和截图 3（B5 召回来源），避免同一图片在报告中重复出现。截图 2 应同时包含 10/10 汇总及 `multiple_tool_calls` 或 `stream_response` 的展开证据；截图 3 应同时显示 recalled block/turn 与 source messages/tool steps，使结果能够回查到原始事实。
+本节复用 2.3 中的 B4/B5 真实观察截图，避免同一图片重复出现；量化结果分别由图 3-3 的 B4 协议用例图和图 3-4 的 B5 SQLite 运行快照补充。答辩现场应进一步展开 `multiple_tool_calls` 或 `stream_response` 用例，并在 B5 召回预览中展示 recalled block/turn 与 source messages/tool steps 的对应关系。
 
 ### 3.4 个人交付物清单
 
@@ -394,7 +454,8 @@ B5 当前实现已经形成完整的功能证据链：
 - **B5 公共入口**：[code/b5_memory.py](https://github.com/aaaprprpr/agent/blob/main/code/b5_memory.py)
 - **B5 分层记忆实现**：[code/b5_memory_parts](https://github.com/aaaprprpr/agent/tree/main/code/b5_memory_parts)
 - **SQLite 持久化实现**：[code/common/conversation_store.py](https://github.com/aaaprprpr/agent/blob/main/code/common/conversation_store.py)
-- **个人独立代码库**：`[待本人补充；若无独立仓库，需向验收教师确认团队仓库内的 B4/B5 直接链接是否满足要求]`
+- **个人模块源码链接**：[B4 决策模块](https://github.com/aaaprprpr/agent/blob/main/code/b4_local_agent_llm.py)、[B5 分层记忆模块](https://github.com/aaaprprpr/agent/tree/main/code/b5_memory_parts)、[个人模块 README](https://github.com/aaaprprpr/agent/blob/main/%E7%8E%8B%E7%8E%BA%E5%B0%8APERSONAL_README.md)
+- **独立个人仓库** ：[https://github.com/lisnist/B_agent_12_6481]
 
 #### 3.4.2 主要交付文件
 
@@ -412,20 +473,6 @@ B5 当前实现已经形成完整的功能证据链：
 | `backend/b4_demo_service.py` | B4 观察与 10 项协议演示 |
 | `frontend/src/B4*.tsx`、`B5ModuleView.tsx` | B4/B5 前端观察和演示页面 |
 | `王玺尊PERSONAL_README.md` | 个人模块环境、接口、演示和已知问题说明 |
-
-#### 3.4.3 代表性 Git 提交
-
-| 提交 | 内容 |
-|---|---|
-| `8b8b3a9` | B3/B4/B5 初期集成 |
-| `f01eb98`、`242b09d` | B5 与 SQLite 会话记忆 |
-| `00b26f1`、`2c7e263` | B5 分层结构、反思、记忆块和召回优化 |
-| `b1a2221`、`0ba605f` | RAG、LLM rerank、向量与记忆优化 |
-| `b95db9a`、`22a0cbd` | B5 演示后端与 UI 更新 |
-| `ae9c36f` | B4 演示后端 |
-| `3a83fe6` | 前端代码整理 |
-
-这些提交对应本人重点推进的阶段，但最终代码经历团队持续合并和联调；协作文件不作为个人独占成果表述。
 
 ---
 
